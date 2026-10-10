@@ -56,6 +56,10 @@ pub fn migrate(raw: Value) -> Result<ShowFile, String> {
         value = upgrade_6_to_7(value);
         current_version = 7;
     }
+    if current_version == 7 {
+        value = upgrade_7_to_8(value);
+        current_version = 8;
+    }
 
     debug_assert_eq!(current_version, CURRENT_SCHEMA_VERSION);
 
@@ -206,6 +210,18 @@ fn upgrade_6_to_7(value: Value) -> Value {
     obj.entry("playbacks").or_insert(Value::Array(Vec::new()));
     obj.entry("releaseOnPageChange").or_insert(Value::Bool(false));
     obj.insert("schemaVersion".to_string(), Value::from(7));
+    Value::Object(obj)
+}
+
+/// v7 -> v8: cues gain an optional `timecodeMs` fire time (Phase 8). Absent
+/// means "no time", which is what it deserializes as, so only the version
+/// changes.
+fn upgrade_7_to_8(value: Value) -> Value {
+    let mut obj = match value {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert("schemaVersion".to_string(), Value::from(8));
     Value::Object(obj)
 }
 
@@ -461,5 +477,19 @@ mod tests {
     fn non_object_input_is_rejected() {
         let err = migrate(serde_json::json!([1, 2, 3])).unwrap_err();
         assert!(err.contains("not a JSON object"));
+    }
+
+    #[test]
+    fn older_files_upgrade_with_cues_that_have_no_timecode() {
+        let mut show = serde_json::to_value(ShowFile::new_default("Old")).unwrap();
+        show["schemaVersion"] = Value::from(5);
+        show["cuelists"] = serde_json::json!([{
+            "id": 1, "name": "L", "kind": { "kind": "timecode" }, "tracking": false,
+            "cues": [{ "number": 1.0, "name": "Cue 1", "values": [], "fadeInMs": 0.0,
+                       "fadeOutMs": 0.0, "delayInMs": 0.0, "mark": false }]
+        }]);
+        let migrated = migrate(show).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(migrated.cuelists[0].cues[0].timecode_ms, None);
     }
 }

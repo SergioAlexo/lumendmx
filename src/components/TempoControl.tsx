@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import * as engineApi from "../lib/engine";
+import * as timing from "../lib/timing";
+import type { TimingStatus } from "../lib/showfile/generated";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
 const POLL_MS = 50;
+const TIMING_POLL_MS = 500;
 /** The beat light stays lit for this fraction of each beat. */
 const BEAT_FLASH = 0.15;
 
@@ -13,6 +16,14 @@ export function TempoControl() {
   const [bpm, setBpm] = useState(120);
   const [onBeat, setOnBeat] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
+  const [timingStatus, setTimingStatus] = useState<TimingStatus | null>(null);
+
+  useEffect(() => {
+    const poll = () => void timing.timingStatus().then(setTimingStatus).catch(() => undefined);
+    poll();
+    const id = setInterval(poll, TIMING_POLL_MS);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const poll = () =>
@@ -70,6 +81,33 @@ export function TempoControl() {
       >
         TAP
       </Button>
+      {timingStatus && (
+        <select
+          aria-label="Tempo source"
+          title={
+            timingStatus.settings.tempoSource === "audio"
+              ? timingStatus.audio.error ?? (timingStatus.audio.locked ? "Locked to the audio input" : "Listening for a beat…")
+              : "Where the tempo comes from (more in the Timing tab)"
+          }
+          value={timingStatus.settings.tempoSource}
+          onChange={(e) =>
+            void timing
+              .timingConfigure({ ...timingStatus.settings, tempoSource: e.target.value as TimingStatus["settings"]["tempoSource"] })
+              .then(setTimingStatus)
+              .catch(() => undefined)
+          }
+          className={cn(
+            "h-8 rounded border border-input bg-transparent px-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            timingStatus.settings.tempoSource === "audio" && timingStatus.audio.locked && "border-success text-success",
+          )}
+        >
+          {timing.TEMPO_SOURCES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

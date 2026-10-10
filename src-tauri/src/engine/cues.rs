@@ -64,6 +64,9 @@ pub struct Cue {
     /// holds a literal for every channel it captured, so a tracked effect
     /// could never be stopped by a later cue — see DECISIONS.md.
     pub effects: Vec<EffectInstance>,
+    /// When a Timecode cuelist fires this cue, in ms on the timecode clock
+    /// (Phase 8). Ignored by other cuelist kinds.
+    pub timecode_ms: Option<f64>,
 }
 
 impl Cue {
@@ -84,6 +87,7 @@ impl Cue {
             loop_count: None,
             mark: false,
             effects: Vec::new(),
+            timecode_ms: None,
         }
     }
 }
@@ -113,10 +117,9 @@ pub enum CuelistKind {
     /// stepping — always renders cue 0's (tracked) state, scaled by the
     /// playback's fader.
     Submaster,
-    /// Per-cue fire times exist (`Cue`'s eventual timecode field would live
-    /// here), but nothing drives playback from an external clock yet — LTC/
-    /// MTC input is Phase 8. A Timecode cuelist behaves like Standard
-    /// (manual GO) until then.
+    /// Each cue carries a fire time (`Cue::timecode_ms`); a playback of this
+    /// cuelist follows the timecode clock (internal transport, MTC or LTC —
+    /// see `timecode.rs`) and still takes a manual GO.
     Timecode,
 }
 

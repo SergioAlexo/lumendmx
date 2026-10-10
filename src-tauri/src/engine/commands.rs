@@ -373,6 +373,18 @@ pub fn engine_set_highlight(engine: State<EngineManager>, on: bool) {
     engine.set_highlight(on);
 }
 
+// --- Timecode cues (Phase 8) ---
+
+#[tauri::command]
+pub fn engine_set_cue_timecode(
+    engine: State<EngineManager>,
+    cuelist_id: u32,
+    cue_number: f64,
+    ms: Option<f64>,
+) -> Result<(), String> {
+    engine.set_cue_timecode(cuelist_id, cue_number, ms)
+}
+
 // --- Tempo (Phase 7) ---
 
 #[tauri::command]

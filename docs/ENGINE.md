@@ -270,6 +270,63 @@ already there.
 - **Cue sheet editing:** `engine_update_cue` replaces a cue's name, timing,
   follow/wait, link/loop and mark. Re-recording a cue keeps those settings.
 
+## Timing sources (Phase 8)
+
+Everything below lives in `src-tauri/src/timing/` (inputs and DSP) and
+`engine/{timecode,audio_reactive}.rs` (the state the tick reads). Inputs
+write into shared `Arc<Mutex<..>>` state obtained from
+`EngineManager::timing_handles()`; nothing here touches the output threads.
+
+- **Tempo sources** (`TimingSettings.tempo_source`): Manual and Tap (nothing
+  automatic), Audio, MIDI clock. All end in `Tempo::set_bpm`. Chases keep their
+  own BPM unless `chases_follow_tempo` is on, in which case the tick hands
+  every chase playback the show BPM (`PlaybackRuntime::tempo_bpm`).
+- **Audio** (`timing::audio_input`, `timing::analysis`): `cpal` captures one
+  channel of one input device on its own thread. `Analyzer` runs a 1024-point
+  FFT every 256 samples and produces (a) low/mid/high band levels
+  (30-250 Hz, 250-2.5 kHz, 2.5-12 kHz, normalized against a slowly decaying
+  peak, 0-1) and (b) a spectral-flux onset signal. Every 0.5 s the last 8 s of
+  onsets are autocorrelated to a beat period in 70-180 BPM (octave ties lean
+  towards 120), refined on the 2nd-4th multiples of the period for
+  sub-BPM resolution, and median-filtered. The estimate is "locked" when the
+  last four agree within 1.5 BPM; only a locked estimate drives the tempo.
+  Tested against synthesized click tracks (90-150 BPM within 1 BPM, with
+  off-beat hats and a bass hum). It tracks the tempo, not the beat phase: the
+  beat grid isn't aligned to the audio's downbeat. Very fast tracks (above
+  ~160) can lock to half time.
+- **MIDI** (`io::midi`, `timing::mtc`): `io::midi::{list_input_ports,
+  open_input}` is the reusable port layer (Phase 9 builds on it). MIDI clock
+  (24 PPQN) is averaged over two beats; Start snaps the beat grid. MTC
+  quarter frames (plus full-frame SysEx) decode to a position, advanced a
+  quarter frame per message and corrected by +2 frames on each complete
+  sequence.
+- **LTC** (`timing::ltc`): a biphase-mark decoder over zero crossings of one
+  audio channel (adaptive bit period, sync word 0xBFFC); 24/25/30 fps
+  detected from the bit rate. A decoded frame is positioned one frame after its
+  label (it has just finished).
+- **Timecode clock** (`engine::timecode::TimecodeClock`): one position with a
+  selectable source (Internal / MTC / LTC). Internal is the Timeline
+  transport (play/pause/stop/seek). External sources count as running only
+  while positions keep arriving (250 ms timeout). Each tick, while the clock
+  runs (and once after any seek), every Timecode-cuelist playback jumps to
+  `target_index`: the cue with the latest `timecode_ms` at or before the
+  position. That is chase-style, so scrubbing backwards or locating re-fires
+  the right cue. A manual GO still works. **Learn mode** stamps the cue a GO
+  lands on with the current position.
+- **Audio-reactive triggers** (`engine::audio_reactive`): a trigger maps a
+  band to a playback flash (`PlaybackRuntime::audio_flash` lifts the
+  intensity scale, like holding Flash) or an effect's size (multiplies its
+  crossfade weight). Level = band × sensitivity × 2, cut below the gate, fast
+  attack, linear release. Triggers reference runtime playback / effect ids and
+  aren't saved with the show.
+- **Show timeline** (`TimelinePanel.tsx`): the UI draws the audio waveform
+  (decoded in the webview), cue blocks at their `timecode_ms` and a playhead on
+  the engine clock; dragging a block sets its time, clicking the ruler or
+  waveform seeks. With the internal clock the webview plays the audio file in
+  step with the engine's position (re-seeking on drift). The audio isn't
+  sample-locked to DMX; it is a monitor, and MTC/LTC are the sample-accurate
+  routes.
+
 ## What isn't here yet
 
 - **An attribute encoder bar / full manual programmer UI**: `CommandLine.tsx`

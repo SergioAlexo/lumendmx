@@ -25,7 +25,9 @@ use super::pixelmap::{self, PixelMap, PixelMapRuntime, PixelMapStore};
 use super::playback::{FaderMode, PlayInfo, PlaybackRuntime};
 use super::presets::{Preset, PresetFamily, PresetStore};
 use super::state::{ChannelKey, EngineState, Highlight, Layer, LayerEffect};
+use super::audio_reactive::{AudioMods, AudioReactive};
 use super::tempo::{Tempo, TempoStatus};
+use super::timecode::{self, TimecodeClock};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 
@@ -187,6 +189,9 @@ pub struct CueDto {
     pub link_to: Option<f64>,
     #[serde(default)]
     pub loop_count: Option<u32>,
+    /// Phase 8 (schema v8): when a Timecode cuelist fires this cue.
+    #[serde(default)]
+    pub timecode_ms: Option<f64>,
 }
 
 impl From<&Cue> for CueDto {
@@ -213,6 +218,7 @@ impl From<&Cue> for CueDto {
             wait_ms: cue.wait_ms,
             link_to: cue.link_to,
             loop_count: cue.loop_count,
+            timecode_ms: cue.timecode_ms,
         }
     }
 }
@@ -246,6 +252,7 @@ impl From<CuelistDto> for Cuelist {
             cue.wait_ms = cue_dto.wait_ms;
             cue.link_to = cue_dto.link_to;
             cue.loop_count = cue_dto.loop_count;
+            cue.timecode_ms = cue_dto.timecode_ms;
             list.upsert_cue(cue); // keeps cues sorted even if the file isn't
         }
         list
@@ -336,6 +343,9 @@ struct TickShared {
     play_info: Arc<Mutex<Arc<PlayInfo>>>,
     /// The rate master as `f32` bits (1.0 = normal speed).
     rate_master: Arc<AtomicU32>,
+    timecode: Arc<Mutex<TimecodeClock>>,
+    audio: Arc<Mutex<AudioReactive>>,
+    chases_follow_tempo: Arc<AtomicBool>,
 }
 
 impl TickShared {
@@ -350,6 +360,15 @@ impl TickShared {
             tempo.advance(dt_ms * rate_master as f64);
             EffectClock { seconds: tempo.seconds(), beats: tempo.beat() }
         };
+        // Timecode position (Phase 8): `Some` when Timecode cuelists should
+        // follow the clock this tick.
+        let timecode_pos = {
+            let mut tc = self.timecode.lock().unwrap();
+            tc.advance(dt_ms);
+            tc.take_follow().then(|| tc.position_ms())
+        };
+        let audio_mods = self.audio.lock().unwrap().compute(dt_ms);
+        let follow_bpm = self.chases_follow_tempo.load(Ordering::Relaxed).then(|| clock_bpm(&self.tempo));
 
         {
             // Lock order: patch index before state, as everywhere else.
@@ -384,6 +403,15 @@ impl TickShared {
                 };
                 pb.info = info.clone();
                 pb.rate_master = rate_master;
+                pb.audio_flash = audio_mods.flash.get(&pb.id).copied().unwrap_or(0.0);
+                pb.tempo_bpm = follow_bpm;
+                if let (Some(pos), CuelistKind::Timecode) = (timecode_pos, cuelist.kind) {
+                    if let Some(target) = timecode::target_index(cuelist, pos) {
+                        if pb.current_index != Some(target) {
+                            pb.go(cuelist, &presets, target);
+                        }
+                    }
+                }
                 pb.tick(dt_ms, cuelist, &presets);
                 let entry = state.playbacks.entry(key).or_insert_with(|| (pb.priority, Default::default()));
                 entry.0 = pb.priority;
@@ -408,7 +436,7 @@ impl TickShared {
             }
             drop(maps);
 
-            render_layer_effects(&mut state, &patch, &presets, clock);
+            render_layer_effects(&mut state, &patch, &presets, clock, &audio_mods);
         }
     }
 }
@@ -437,6 +465,27 @@ pub struct EngineManager {
     /// Bumped by every change to groups/presets/cuelists, so the frontend
     /// can tell the show has unsaved engine-side edits (see `ShowEngineData`).
     data_revision: AtomicU64,
+    /// Phase 8 timing: the timecode clock, audio-reactive triggers, whether
+    /// chases run at the show tempo, and timecode learn mode. The
+    /// `crate::timing` sources write into these.
+    timecode: Arc<Mutex<TimecodeClock>>,
+    audio: Arc<Mutex<AudioReactive>>,
+    chases_follow_tempo: Arc<AtomicBool>,
+    timecode_learn: Arc<AtomicBool>,
+}
+
+/// What `crate::timing` needs from the engine to feed it.
+#[derive(Clone)]
+pub struct TimingHandles {
+    pub tempo: Arc<Mutex<Tempo>>,
+    pub timecode: Arc<Mutex<TimecodeClock>>,
+    pub audio: Arc<Mutex<AudioReactive>>,
+    pub chases_follow_tempo: Arc<AtomicBool>,
+    pub timecode_learn: Arc<AtomicBool>,
+}
+
+fn clock_bpm(tempo: &Mutex<Tempo>) -> f32 {
+    tempo.lock().unwrap().bpm()
 }
 
 impl EngineManager {
@@ -461,6 +510,10 @@ impl EngineManager {
             current_page: AtomicU32::new(0),
             release_on_page_change: AtomicBool::new(false),
             data_revision: AtomicU64::new(0),
+            timecode: Arc::new(Mutex::new(TimecodeClock::new())),
+            audio: Arc::new(Mutex::new(AudioReactive::new())),
+            chases_follow_tempo: Arc::new(AtomicBool::new(false)),
+            timecode_learn: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -477,6 +530,19 @@ impl EngineManager {
             map_runtimes: self.map_runtimes.clone(),
             play_info: self.play_info.clone(),
             rate_master: self.rate_master.clone(),
+            timecode: self.timecode.clone(),
+            audio: self.audio.clone(),
+            chases_follow_tempo: self.chases_follow_tempo.clone(),
+        }
+    }
+
+    pub fn timing_handles(&self) -> TimingHandles {
+        TimingHandles {
+            tempo: self.tempo.clone(),
+            timecode: self.timecode.clone(),
+            audio: self.audio.clone(),
+            chases_follow_tempo: self.chases_follow_tempo.clone(),
+            timecode_learn: self.timecode_learn.clone(),
         }
     }
 
@@ -1169,6 +1235,8 @@ impl EngineManager {
             cue.loop_count = existing.loop_count;
             cue.mark = existing.mark;
         }
+        // Re-recording a cue keeps its timecode fire time.
+        cue.timecode_ms = list.cues.iter().find(|c| c.number == number).and_then(|c| c.timecode_ms);
         list.upsert_cue(cue);
         Ok(())
     }
@@ -1367,6 +1435,19 @@ impl EngineManager {
     pub fn tap_tempo(&self, now_ms: f64) -> f32 {
         self.mark_data_changed();
         self.tempo.lock().unwrap().tap(now_ms)
+    }
+
+    // --- Timing (Phase 8) ---
+
+    /// Sets (or clears) when a Timecode cuelist fires a cue.
+    pub fn set_cue_timecode(&self, cuelist_id: u32, cue_number: f64, ms: Option<f64>) -> Result<(), String> {
+        let mut cues = self.cues.lock().unwrap();
+        let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
+        let cue = list.cues.iter_mut().find(|c| c.number == cue_number).ok_or_else(|| format!("No cue {cue_number}"))?;
+        cue.timecode_ms = ms.map(|t| t.max(0.0));
+        drop(cues);
+        self.mark_data_changed();
+        Ok(())
     }
 
     // --- Programmer effects (Phase 7) ---
@@ -1702,7 +1783,23 @@ impl EngineManager {
     }
 
     pub fn playback_go(&self, id: u32) -> Result<(), String> {
-        self.with_playback(id, |pb, list, presets| pb.go_next(list, presets))
+        let landed = self.with_playback(id, |pb, list, presets| {
+            pb.go_next(list, presets);
+            (list.id, list.kind, pb.current_index)
+        })?;
+        // Learn mode: GO on a Timecode cuelist stamps the cue it lands on
+        // with the current timecode position, so a run-through records the
+        // cue times.
+        if let (list_id, CuelistKind::Timecode, Some(index)) = landed {
+            if self.timecode_learn.load(Ordering::Relaxed) {
+                let pos = self.timecode.lock().unwrap().position_ms();
+                if let Some(cue) = self.cues.lock().unwrap().get_mut(list_id).and_then(|l| l.cues.get_mut(index)) {
+                    cue.timecode_ms = Some(pos);
+                }
+                self.mark_data_changed();
+            }
+        }
+        Ok(())
     }
 
     pub fn playback_go_back(&self, id: u32) -> Result<(), String> {
@@ -1774,7 +1871,13 @@ fn programmer_effects_for(programmer: &Layer, fixture_numbers: &HashSet<u32>) ->
 }
 
 /// Renders every layer's effects into its `fx_values` for this tick.
-fn render_layer_effects(state: &mut EngineState, patch: &[PatchIndexEntry], presets: &PresetStore, clock: EffectClock) {
+fn render_layer_effects(
+    state: &mut EngineState,
+    patch: &[PatchIndexEntry],
+    presets: &PresetStore,
+    clock: EffectClock,
+    audio: &AudioMods,
+) {
     let any_effects = state.programmer.has_effects() || state.playbacks.values().any(|(_, l)| l.has_effects());
     if !any_effects {
         state.programmer.fx_values.clear();
@@ -1813,7 +1916,8 @@ fn render_layer_effects(state: &mut EngineState, patch: &[PatchIndexEntry], pres
         let resolved: Vec<ResolvedEffect> = effects
             .iter()
             .zip(&defs)
-            .map(|(e, def)| ResolvedEffect { def, fixtures: &e.instance.fixtures, scale: e.scale })
+            .map(|(e, def)| ResolvedEffect { def, fixtures: &e.instance.fixtures, scale: e.scale * audio.effect_size.get(&e.instance.id).copied().unwrap_or(1.0),
+            })
             .collect();
         let base = |key: ChannelKey| {
             values
@@ -2505,5 +2609,147 @@ mod tests {
         engine.step(50.0);
         assert_eq!(reds(&engine)[0], 255, "red moved while the fixture was dark");
         assert_eq!(dimmers(&engine)[0], 0);
+    }
+
+    // --- Phase 8: timing sources through the real tick ---
+
+    /// Records two dimmer cues (full, then ~half) into a new cuelist of `kind`.
+    fn two_level_cuelist(engine: &EngineManager, kind: CuelistKind) -> u32 {
+        engine.set_patch_index(vec![patched_fixture(1, 1, 1)]);
+        let list = engine.create_cuelist("TC".to_string(), kind, true);
+        engine.set_current_cuelist(Some(list));
+        assert!(engine.execute_command("1 @ 100").ok);
+        assert!(engine.execute_command("RECORD CUE 1").ok);
+        assert!(engine.execute_command("1 @ 50").ok);
+        assert!(engine.execute_command("RECORD CUE 2").ok);
+        engine.execute_command("CLEAR"); // deselects
+        engine.execute_command("CLEAR"); // clears the programmer
+        list
+    }
+
+    /// Sends 8 quarter-frame messages (25fps) for `s` seconds, 0 frames,
+    /// through the MTC decoder into the clock, as the MIDI callback does.
+    fn send_mtc(engine: &EngineManager, dec: &mut crate::timing::mtc::MtcDecoder, s: u8) {
+        let nibbles = [0, 0, s & 0xF, s >> 4, 0, 0, 0, 1 << 1];
+        for (i, n) in nibbles.iter().enumerate() {
+            if let Some(pos) = dec.feed(&[0xF1, ((i as u8) << 4) | n]) {
+                engine.timing_handles().timecode.lock().unwrap().set_external(
+                    crate::engine::timecode::TimecodeSource::Mtc,
+                    pos.ms,
+                    pos.fps,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_timecode_cuelist_fires_its_cues_as_mtc_arrives() {
+        let engine = EngineManager::new();
+        let list = two_level_cuelist(&engine, CuelistKind::Timecode);
+        engine.set_cue_timecode(list, 1.0, Some(2000.0)).unwrap();
+        engine.set_cue_timecode(list, 2.0, Some(5000.0)).unwrap();
+        let pb = engine.create_playback(list).unwrap();
+        engine.timing_handles().timecode.lock().unwrap().set_source(crate::engine::timecode::TimecodeSource::Mtc);
+        let mut dec = crate::timing::mtc::MtcDecoder::new();
+
+        // MTC at 00:00:01 -- before the first cue.
+        send_mtc(&engine, &mut dec, 1);
+        engine.step(25.0);
+        assert_eq!(engine.get_universe_data(1)[0], 0);
+
+        // MTC reaches 00:00:03 (+2 frames of latency compensation): cue 1.
+        send_mtc(&engine, &mut dec, 3);
+        engine.step(25.0);
+        engine.step(25.0);
+        assert_eq!(engine.get_universe_data(1)[0], 255);
+
+        // 00:00:06: cue 2.
+        send_mtc(&engine, &mut dec, 6);
+        engine.step(25.0);
+        engine.step(25.0);
+        let level = engine.get_universe_data(1)[0];
+        assert!((126..=129).contains(&level), "{level}");
+
+        // Scrubbing back (a locate) re-fires cue 1.
+        send_mtc(&engine, &mut dec, 2);
+        engine.step(25.0);
+        engine.step(25.0);
+        assert_eq!(engine.get_universe_data(1)[0], 255);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+        let _ = pb;
+    }
+
+    #[test]
+    fn the_internal_transport_drives_timecode_cues_and_learn_records_times() {
+        let engine = EngineManager::new();
+        let list = two_level_cuelist(&engine, CuelistKind::Timecode);
+        let pb = engine.create_playback(list).unwrap();
+
+        // Learn: run the clock and GO by hand; each GO stamps its cue.
+        engine.timing_handles().timecode_learn.store(true, Ordering::Relaxed);
+        let clock = engine.timing_handles().timecode;
+        clock.lock().unwrap().seek(1500.0);
+        engine.playback_go(pb).unwrap();
+        clock.lock().unwrap().seek(4000.0);
+        engine.playback_go(pb).unwrap();
+        engine.timing_handles().timecode_learn.store(false, Ordering::Relaxed);
+        let cues = &engine.list_cuelists()[0].cues;
+        assert_eq!((cues[0].timecode_ms, cues[1].timecode_ms), (Some(1500.0), Some(4000.0)));
+
+        // Play back from the top: cue 1 at 1.5s, cue 2 at 4s.
+        {
+            let mut c = clock.lock().unwrap();
+            c.seek(0.0);
+            c.play();
+        }
+        engine.step(1.0);
+        engine.step(1600.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+        engine.step(2500.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(2.0));
+    }
+
+    #[test]
+    fn chases_run_at_the_show_tempo_when_asked() {
+        let engine = EngineManager::new();
+        let list = two_level_cuelist(&engine, CuelistKind::Chase { bpm: 60.0, direction: crate::engine::cues::ChaseDirection::Forward });
+        let pb = engine.create_playback(list).unwrap();
+        engine.timing_handles().chases_follow_tempo.store(true, Ordering::Relaxed);
+        engine.set_bpm(240.0); // 250ms per step; the chase's own 60 BPM would be 1000ms
+        engine.step(1.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+        engine.step(260.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(2.0));
+        let _ = pb;
+    }
+
+    #[test]
+    fn an_audio_trigger_flashes_a_playback_to_the_band_level() {
+        use crate::engine::audio_reactive::{AudioTrigger, Band, TriggerTarget};
+        let engine = EngineManager::new();
+        let list = two_level_cuelist(&engine, CuelistKind::Standard);
+        engine.set_htp_channels(1, vec![1]); // the fader scales intensity channels
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.playback_set_fader(pb, 0.0).unwrap();
+        engine.step(10.0);
+        assert_eq!(engine.get_universe_data(1)[0], 0);
+
+        let handles = engine.timing_handles();
+        handles.audio.lock().unwrap().upsert(AudioTrigger {
+            id: 0,
+            band: Band::Low,
+            sensitivity: 0.5,
+            gate: 0.2,
+            release_ms: 50.0,
+            target: TriggerTarget::Flash { playback_id: pb },
+            enabled: true,
+        });
+        handles.audio.lock().unwrap().levels.low = 1.0; // a kick
+        engine.step(10.0);
+        assert_eq!(engine.get_universe_data(1)[0], 255);
+        handles.audio.lock().unwrap().levels.low = 0.0;
+        engine.step(500.0);
+        assert_eq!(engine.get_universe_data(1)[0], 0);
     }
 }

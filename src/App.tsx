@@ -16,6 +16,8 @@ import { PixelMapPanel } from "./components/PixelMapPanel";
 import { DmxMonitor } from "./components/DmxMonitor";
 import { LiveSheet } from "./components/LiveSheet";
 import { StagePlot } from "./components/StagePlot";
+import { TimingPanel } from "./components/TimingPanel";
+import { TimelinePanel } from "./components/TimelinePanel";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -28,7 +30,7 @@ import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
 // three.js is only fetched when the 3D tab is first opened.
 const Visualizer3D = lazy(() => import("./components/Visualizer3D"));
 
-type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "stage" | "visualizer" | "livesheet" | "monitor" | "setup";
+type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "stage" | "visualizer" | "livesheet" | "monitor" | "timing" | "timeline" | "setup";
 
 const VIEW_LABELS: Record<MainView, string> = {
   fixtures: "Fixtures",
@@ -41,6 +43,8 @@ const VIEW_LABELS: Record<MainView, string> = {
   visualizer: "3D",
   livesheet: "Output",
   monitor: "DMX monitor",
+  timing: "Timing",
+  timeline: "Timeline",
   setup: "Setup",
 };
 
@@ -106,6 +110,10 @@ function App() {
               <LiveSheet />
             ) : mainView === "monitor" ? (
               <DmxMonitor />
+            ) : mainView === "timing" ? (
+              <TimingPanel />
+            ) : mainView === "timeline" ? (
+              <TimelinePanel />
             ) : (
               <SetupPanel />
             )}

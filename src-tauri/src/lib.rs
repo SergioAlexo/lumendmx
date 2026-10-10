@@ -1,10 +1,13 @@
 mod engine;
+mod io;
 mod output;
 mod showfile;
+mod timing;
 
 use engine::manager::EngineManager;
 use output::input::DmxInputManager;
 use output::manager::OutputManager;
+use timing::manager::TimingManager;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -21,6 +24,7 @@ pub fn run() {
 
             let engine = EngineManager::new();
             engine.start_tick(app.handle().clone());
+            app.manage(TimingManager::new(engine.timing_handles()));
             app.manage(engine);
 
             Ok(())
@@ -100,6 +104,19 @@ pub fn run() {
             engine::commands::engine_tempo_status,
             engine::commands::engine_set_bpm,
             engine::commands::engine_tap_tempo,
+            engine::commands::engine_set_cue_timecode,
+            timing::commands::timing_status,
+            timing::commands::timing_configure,
+            timing::commands::timing_list_audio_inputs,
+            timing::commands::timing_list_midi_inputs,
+            timing::commands::timing_list_triggers,
+            timing::commands::timing_upsert_trigger,
+            timing::commands::timing_delete_trigger,
+            timing::commands::timing_timecode_play,
+            timing::commands::timing_timecode_pause,
+            timing::commands::timing_timecode_stop,
+            timing::commands::timing_timecode_seek,
+            timing::commands::timing_set_timecode_learn,
             engine::commands::engine_start_effect,
             engine::commands::engine_update_effect,
             engine::commands::engine_stop_effect,

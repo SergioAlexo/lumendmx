@@ -78,6 +78,12 @@ impl Tempo {
         self.beat += dt_ms / 60_000.0 * self.bpm as f64;
     }
 
+    /// Snaps the beat grid to the nearest whole beat (an external clock's
+    /// start message, or a tap).
+    pub fn align_beat(&mut self) {
+        self.beat = self.beat.round();
+    }
+
     /// Registers a tap at `now_ms` and, once there are at least two taps
     /// close enough together, sets the BPM from the average of the recent
     /// intervals. A tap also re-aligns the beat grid so the tap lands on a

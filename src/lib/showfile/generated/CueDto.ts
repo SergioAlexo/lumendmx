@@ -11,4 +11,8 @@ effects: Array<EffectInstance>,
  * Cue timing, follows and links; absent in files saved before they
  * were acted on (all default to "off").
  */
-delayOutMs: number, attrFadeMs: number | null, attrDelayMs: number | null, followMs: number | null, waitMs: number | null, linkTo: number | null, loopCount: number | null, };
+delayOutMs: number, attrFadeMs: number | null, attrDelayMs: number | null, followMs: number | null, waitMs: number | null, linkTo: number | null, loopCount: number | null, 
+/**
+ * Phase 8 (schema v8): when a Timecode cuelist fires this cue.
+ */
+timecodeMs: number | null, };

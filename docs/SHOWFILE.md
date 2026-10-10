@@ -46,7 +46,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `7`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `8`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -125,7 +125,17 @@ with the rest of the patch and are edited by dragging in the plot.
 - Cues gained optional fields (`delayOutMs`, `attrFadeMs`, `attrDelayMs`,
   `followMs`, `waitMs`, `linkTo`, `loopCount`); a v5 cue without them loads
   with no delay out, attribute timing following the in-timing, and no
-  follow or link. `upgrade_5_to_6` adds the two top-level fields.
+  follow or link. `upgrade_6_to_7` adds the two top-level fields.
+
+## Timecode cues (v8+)
+
+- `cuelists[].cues[].timecodeMs`: when a Timecode cuelist fires the cue, in
+  milliseconds on the timecode clock. Optional (`null`/absent = never fires
+  from timecode); older files load without it.
+- The timing source settings (tempo source, audio/MIDI devices, timecode
+  source) and audio-reactive triggers are runtime/machine state and aren't
+  saved: a show moves between machines, device ids and runtime playback ids
+  don't.
 
 ## Restoring the last session
 

@@ -498,3 +498,53 @@ are not built.
   "intensity versus the rest", move-in-black for link targets, a main
   playback fader, saving the masters in the show, and a push event for
   playback status (still polled).
+
+## Phase 8 — Timing sources
+
+- **Audio and MIDI in Rust: `cpal` (Apache-2.0) and `midir` (MIT).** Both
+  free and permissive. `cpal` 0.18 needs ALSA headers on Linux builds
+  (`libasound2-dev`); macOS and Windows need nothing extra.
+- **No FFT crate.** A 60-line radix-2 FFT in `timing/analysis.rs` covers the
+  one transform size used, so there's no `rustfft` dependency to track.
+- **Beat detection tracks tempo, not phase.** Onset autocorrelation gives a
+  stable BPM within the ±1 target on steady music; aligning the beat grid to
+  the downbeat is unreliable without a tap or a bar-level model. TAP still
+  re-aligns the grid. Half-time ambiguity above ~160 BPM is accepted (a lighting
+  chase at half speed is musically fine).
+- **Only locked estimates move the tempo.** Four consecutive estimates within
+  1.5 BPM; until then the BPM holds its last value rather than wandering.
+- **Chases follow the show tempo only when asked** (`chases_follow_tempo`,
+  default off), so existing shows and per-chase BPMs don't change under a
+  user. With it on, every chase runs at the global BPM.
+- **Manual and Tap are separate selector entries but behave the same**: both
+  mean "nothing automatic". Tap and the BPM field work in every mode, though
+  an automatic source overwrites them on its next estimate.
+- **Ableton Link was skipped.** The Link SDK is GPL-2.0-or-later (a separate
+  commercial licence is available from Ableton), and the Rust crates bind that
+  SDK. Linking it would force the app under the GPL or need a paid licence,
+  which the project rules out. Revisit if Ableton's terms change or a
+  clean-room, permissively licensed implementation appears. MIDI clock (which
+  Ableton Live and most DJ software can send) covers the same need.
+- **Pioneer Pro DJ Link is research only** (docs/research/PRO_DJ_LINK.md).
+- **Timecode is chase-style, not edge-triggered.** A Timecode cuelist always
+  shows the cue whose time most recently passed, so scrubbing, locating and
+  starting mid-show land on the right look. The cost: a manual GO is
+  overridden at the next tick while the clock is running.
+- **Cue times are milliseconds, not hh:mm:ss:ff.** Frame rate is a property of
+  the incoming signal, so storing ms keeps a show valid whichever source is
+  used. The UI shows frames at the source's rate. Show file schema 6.
+- **Timecode source, devices and audio triggers aren't saved in the show.**
+  Device ids differ per machine, and triggers point at playback ids that exist
+  only for a session (playbacks aren't saved either). The Timing tab is
+  per-session. Persisting machine settings belongs with a settings store.
+- **The Timeline plays audio in the webview**, kept within 0.2 s of the engine
+  clock. Nothing frame-accurate depends on it. One audio track and one
+  cuelist are shown at a time; function/chase blocks and multiple tracks are
+  left for later.
+- **Audio flash is a level, not a gate.** The playback follows the band
+  (gate, attack, release) rather than flipping to full, so a kick drum gives
+  a pulse shaped like the kick.
+- **LTC is decoded from a mono channel with zero crossings.** It copes with
+  fractional bit lengths and low levels; it does not handle reverse play or
+  29.97 drop-frame labelling (30 fps is assumed).
+
