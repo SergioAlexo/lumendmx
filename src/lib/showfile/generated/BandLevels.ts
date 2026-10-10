@@ -4,4 +4,8 @@ export type BandLevels = { low: number, mid: number, high: number,
 /**
  * Overall loudness, 0.0-1.0.
  */
-rms: number, };
+rms: number, 
+/**
+ * Absolute loudness: the input's dBFS mapped -60 dB → 0.0, 0 dB → 1.0.
+ */
+loudness: number, };

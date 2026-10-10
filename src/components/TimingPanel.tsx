@@ -22,6 +22,7 @@ const BANDS: { id: Band; label: string }[] = [
   { id: "low", label: "Low" },
   { id: "mid", label: "Mid" },
   { id: "high", label: "High" },
+  { id: "loudness", label: "Loudness (absolute)" },
 ];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -275,6 +276,7 @@ export function TimingPanel() {
                 <Meter label="Low" value={status.audio.levels.low} />
                 <Meter label="Mid" value={status.audio.levels.mid} />
                 <Meter label="High" value={status.audio.levels.high} />
+                <Meter label="Loud" value={status.audio.levels.loudness} />
               </>
             )}
           </div>

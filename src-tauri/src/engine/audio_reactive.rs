@@ -15,6 +15,9 @@ pub enum Band {
     Low,
     Mid,
     High,
+    /// Absolute input loudness, not normalized to recent peaks, so the gate
+    /// is a real "this loud" threshold (a clap or shout, not the room tone).
+    Loudness,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
@@ -56,6 +59,8 @@ pub struct BandLevels {
     pub high: f32,
     /// Overall loudness, 0.0-1.0.
     pub rms: f32,
+    /// Absolute loudness: the input's dBFS mapped -60 dB → 0.0, 0 dB → 1.0.
+    pub loudness: f32,
 }
 
 impl BandLevels {
@@ -64,6 +69,7 @@ impl BandLevels {
             Band::Low => self.low,
             Band::Mid => self.mid,
             Band::High => self.high,
+            Band::Loudness => self.loudness,
         }
     }
 }

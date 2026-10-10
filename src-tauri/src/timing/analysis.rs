@@ -136,6 +136,7 @@ impl Analyzer {
             mid: level(raw[1], self.peaks[1]),
             high: level(raw[2], self.peaks[2]),
             rms: level(total, self.rms_peak),
+            loudness: loudness(&self.ring),
         };
 
         // Onset strength: positive change in log-compressed magnitude.
@@ -241,6 +242,14 @@ impl Analyzer {
 /// The period (in frames per beat) of the autocorrelation peak at `peak`,
 /// refined by a parabola through its neighbours and divided by `k` (the
 /// number of beats it spans).
+/// Absolute loudness of a block of samples: its RMS in dBFS, mapped
+/// -60 dB → 0.0 and 0 dB (full scale) → 1.0.
+fn loudness(samples: &[f32]) -> f32 {
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+    let db = 20.0 * rms.max(1e-9).log10();
+    ((db + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
 fn interpolated_peak(ac: &[f32], peak: usize, k: usize) -> f32 {
     let (a, b, c) = (ac[peak - 1], ac[peak], ac[peak + 1]);
     let denom = a - 2.0 * b + c;
@@ -371,6 +380,23 @@ mod tests {
         analyzer.push(&treble);
         let l = analyzer.levels();
         assert!(l.high > 0.5 && l.low < 0.1, "{l:?}");
+    }
+
+    #[test]
+    fn loudness_is_absolute_not_normalized_to_recent_peaks() {
+        // Quiet room tone stays low however long it runs (the relative
+        // bands creep up to ~1.0 on it as their peak decays).
+        let mut analyzer = Analyzer::new(SR);
+        let hiss: Vec<f32> = (0..(12.0 * SR) as usize).map(|i| 0.001 * (2.0 * PI * 1000.0 * i as f32 / SR).sin()).collect();
+        analyzer.push(&hiss);
+        assert!(analyzer.levels().loudness < 0.1, "{:?}", analyzer.levels());
+
+        // A loud tone (about -9 dBFS) reads high straight away.
+        let loud: Vec<f32> = (0..8192).map(|i| 0.5 * (2.0 * PI * 1000.0 * i as f32 / SR).sin()).collect();
+        analyzer.push(&loud);
+        let l = analyzer.levels().loudness;
+        assert!((l - 0.85).abs() < 0.02, "{l}");
+        assert_eq!(loudness(&[0.0; 64]), 0.0);
     }
 
     #[test]
