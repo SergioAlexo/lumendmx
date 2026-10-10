@@ -264,6 +264,12 @@ fn hash_unit(cycle: i64, seed: u64) -> f32 {
     (x as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
 }
 
+/// A stable per-attribute seed (FNV-1a), so Random effects on red, green
+/// and blue of the same fixture don't all draw the same value (grey).
+fn attribute_seed(attribute: &str) -> u64 {
+    attribute.bytes().fold(0xCBF2_9CE4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3))
+}
+
 /// The waveform's value in [-1,1] at phase `p` in [0,1). `cycle` and `seed`
 /// only matter for `Random`.
 pub fn waveform_value(waveform: Waveform, p: f64, width: f32, cycle: i64, seed: u64) -> f32 {
@@ -346,7 +352,8 @@ pub fn render(
             };
             match &def.target {
                 EffectTarget::Attribute { attribute, waveform } => {
-                    write(attribute, waveform_value(*waveform, p, def.width, cycle as i64, position as u64));
+                    let seed = position as u64 ^ attribute_seed(attribute);
+                    write(attribute, waveform_value(*waveform, p, def.width, cycle as i64, seed));
                 }
                 EffectTarget::Position { shape } => {
                     let (pan, tilt) = shape_value(*shape, p);
@@ -413,6 +420,24 @@ mod tests {
         let others: Vec<f32> = (0..8).map(|c| waveform_value(Waveform::Random, 0.0, 50.0, c, 1)).collect();
         assert!(others.windows(2).any(|w| w[0] != w[1]));
         assert_ne!(a, waveform_value(Waveform::Random, 0.1, 50.0, 7, 2));
+    }
+
+    #[test]
+    fn random_on_red_green_blue_gives_a_colour_not_grey() {
+        let mut rgb_par = par(1, 1);
+        rgb_par.attribute_channels =
+            [("red".to_string(), 2), ("green".to_string(), 3), ("blue".to_string(), 4)].into_iter().collect();
+        let patch = vec![rgb_par];
+        let clock = EffectClock { beats: 3.5, seconds: 0.0 };
+        let rgb: Vec<f32> = ["red", "green", "blue"]
+            .iter()
+            .map(|a| {
+                let def = EffectDef::new_attribute(a, Waveform::Random);
+                let out = render_once(&def, &[1], &patch, clock);
+                *out.values().next().unwrap()
+            })
+            .collect();
+        assert!(rgb[0] != rgb[1] && rgb[1] != rgb[2] && rgb[0] != rgb[2], "{rgb:?}");
     }
 
     #[test]
