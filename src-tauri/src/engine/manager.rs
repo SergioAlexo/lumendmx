@@ -24,7 +24,7 @@ use super::presets::{Preset, PresetFamily, PresetStore};
 use super::state::{ChannelKey, EngineState, Layer, LayerEffect};
 use super::audio_reactive::{AudioMods, AudioReactive};
 use super::tempo::{Tempo, TempoStatus};
-use super::timecode::{self, TimecodeClock, TimecodeStatus};
+use super::timecode::{self, TimecodeClock};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 
@@ -1061,27 +1061,6 @@ impl EngineManager {
 
     // --- Timing (Phase 8) ---
 
-    /// Chases run at the show tempo instead of their own BPM.
-    pub fn set_chases_follow_tempo(&self, follow: bool) {
-        self.chases_follow_tempo.store(follow, Ordering::Relaxed);
-    }
-
-    pub fn chases_follow_tempo(&self) -> bool {
-        self.chases_follow_tempo.load(Ordering::Relaxed)
-    }
-
-    pub fn set_timecode_learn(&self, on: bool) {
-        self.timecode_learn.store(on, Ordering::Relaxed);
-    }
-
-    pub fn timecode_learn(&self) -> bool {
-        self.timecode_learn.load(Ordering::Relaxed)
-    }
-
-    pub fn timecode_status(&self) -> TimecodeStatus {
-        self.timecode.lock().unwrap().status()
-    }
-
     /// Sets (or clears) when a Timecode cuelist fires a cue.
     pub fn set_cue_timecode(&self, cuelist_id: u32, cue_number: f64, ms: Option<f64>) -> Result<(), String> {
         let mut cues = self.cues.lock().unwrap();
@@ -1801,13 +1780,13 @@ mod tests {
         let pb = engine.create_playback(list).unwrap();
 
         // Learn: run the clock and GO by hand; each GO stamps its cue.
-        engine.set_timecode_learn(true);
+        engine.timing_handles().timecode_learn.store(true, Ordering::Relaxed);
         let clock = engine.timing_handles().timecode;
         clock.lock().unwrap().seek(1500.0);
         engine.playback_go(pb).unwrap();
         clock.lock().unwrap().seek(4000.0);
         engine.playback_go(pb).unwrap();
-        engine.set_timecode_learn(false);
+        engine.timing_handles().timecode_learn.store(false, Ordering::Relaxed);
         let cues = &engine.list_cuelists()[0].cues;
         assert_eq!((cues[0].timecode_ms, cues[1].timecode_ms), (Some(1500.0), Some(4000.0)));
 
@@ -1829,7 +1808,7 @@ mod tests {
         let engine = EngineManager::new();
         let list = two_level_cuelist(&engine, CuelistKind::Chase { bpm: 60.0, direction: crate::engine::cues::ChaseDirection::Forward });
         let pb = engine.create_playback(list).unwrap();
-        engine.set_chases_follow_tempo(true);
+        engine.timing_handles().chases_follow_tempo.store(true, Ordering::Relaxed);
         engine.set_bpm(240.0); // 250ms per step; the chase's own 60 BPM would be 1000ms
         engine.step(1.0);
         assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));

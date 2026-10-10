@@ -67,10 +67,6 @@ impl TimecodeClock {
         }
     }
 
-    pub fn source(&self) -> TimecodeSource {
-        self.source
-    }
-
     pub fn set_source(&mut self, source: TimecodeSource) {
         if source == self.source {
             return;

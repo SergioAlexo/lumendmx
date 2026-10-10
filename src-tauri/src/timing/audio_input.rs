@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
+use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 use serde::Serialize;
 use ts_rs::TS;
 

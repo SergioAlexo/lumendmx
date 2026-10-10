@@ -13,6 +13,8 @@ import { SetupPanel } from "./components/SetupPanel";
 import { PalettesPanel } from "./components/PalettesPanel";
 import { EffectsPanel } from "./components/EffectsPanel";
 import { PixelMapPanel } from "./components/PixelMapPanel";
+import { TimingPanel } from "./components/TimingPanel";
+import { TimelinePanel } from "./components/TimelinePanel";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -22,7 +24,7 @@ import { useShowStore } from "./store/useShowStore";
 import { useUniverseStatusesStore } from "./store/useUniverseStatusesStore";
 import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
 
-type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "setup";
+type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "timing" | "timeline" | "setup";
 
 const VIEW_LABELS: Record<MainView, string> = {
   fixtures: "Fixtures",
@@ -31,6 +33,8 @@ const VIEW_LABELS: Record<MainView, string> = {
   palettes: "Palettes",
   effects: "Effects",
   pixelmaps: "Pixel maps",
+  timing: "Timing",
+  timeline: "Timeline",
   setup: "Setup",
 };
 
@@ -86,6 +90,10 @@ function App() {
               <EffectsPanel />
             ) : mainView === "pixelmaps" ? (
               <PixelMapPanel />
+            ) : mainView === "timing" ? (
+              <TimingPanel />
+            ) : mainView === "timeline" ? (
+              <TimelinePanel />
             ) : (
               <SetupPanel />
             )}

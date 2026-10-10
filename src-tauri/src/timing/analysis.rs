@@ -140,11 +140,9 @@ impl Analyzer {
 
         // Onset strength: positive change in log-compressed magnitude.
         let mut flux = 0.0;
-        for k in 1..mag.len() {
-            let now = (1.0 + 1000.0 * mag[k]).ln();
-            let before = (1.0 + 1000.0 * self.prev_mag[k]).ln();
-            flux += (now - before).max(0.0);
-            self.prev_mag[k] = mag[k];
+        for (prev, &m) in self.prev_mag.iter_mut().zip(&mag).skip(1) {
+            flux += ((1.0 + 1000.0 * m).ln() - (1.0 + 1000.0 * *prev).ln()).max(0.0);
+            *prev = m;
         }
         self.flux.push(flux);
         if self.flux.len() > self.flux_cap {

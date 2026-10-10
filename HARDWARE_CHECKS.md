@@ -157,3 +157,41 @@ UI too, not just the rig.
 - [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
       displayed BPM lands within about ±1 and the beat light sits on the
       beat.
+
+## Phase 8 — Timing sources
+
+These need real audio, a MIDI device and the built desktop app (the unit
+tests use synthesized signals).
+
+- [ ] **Audio beat lock.** Timing tab: pick the line-in / loopback device,
+      set Tempo source to Audio, play a steady 4-on-the-floor track. After
+      ~6 s the badge should read Locked and the top bar BPM should match the
+      track within ±1. Turn on "Chases run at the show tempo" and check a
+      chase follows it. Try a track with a long breakdown (the BPM should hold,
+      not wander) and a very quiet input.
+- [ ] **Device permissions.** On macOS the first capture asks for microphone
+      access; confirm the prompt appears and that denying it shows an error in
+      the Timing tab instead of a crash. `src-tauri/Info.plist` supplies
+      `NSMicrophoneUsageDescription`; check it ends up in the built bundle's
+      Info.plist (the prompt never appearing means it didn't).
+- [ ] **Spectrum meters and triggers.** With Analysis on, the Low/Mid/High
+      bars should follow kick / vocals / hats. Add a trigger (Low → Flash
+      playback) with a playback running at fader 0: the rig should pulse on
+      kicks. Raise the gate until only the loudest kicks fire.
+- [ ] **MIDI clock.** Send clock from a DAW or DJ app to a virtual MIDI port
+      (IAC / loopMIDI). Select the port and Tempo source MIDI clock: the BPM
+      should follow within 0.1 and Start should snap the beat light.
+- [ ] **MTC.** Send MTC from a DAW. Set Timecode source to MTC, select the
+      port: the Timing tab clock should track it. Make a Timecode cuelist,
+      give two cues times (Timeline tab) and confirm they fire as the DAW
+      passes those times, including after relocating backwards.
+- [ ] **LTC.** Play an LTC file/generator into a line input, set the
+      source to LTC and the right device/channel: the clock should lock within
+      a second. Check 25 and 30 fps, and a quiet signal.
+- [ ] **Learn mode.** Internal clock playing, Learn on, GO a Timecode
+      cuelist's cues by hand; their times should be recorded on the Timeline.
+- [ ] **Timeline audio.** Load an MP3/WAV on the Timeline: waveform draws,
+      Play starts the audio from the playhead and keeps it in step, clicking
+      the ruler scrubs both, and dragging a cue block retimes it. Check a long
+      (10+ minute) file for decode time and memory.
+

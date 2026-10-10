@@ -149,13 +149,13 @@ mod tests {
         let mut level = amp;
         let mut t = 0.0f64; // in samples
         let bit_len = sr as f64 / (fps as f64 * 80.0);
-        let mut emit_until = |t_end: f64, level: f32, out: &mut Vec<f32>| {
+        let emit_until = |t_end: f64, level: f32, out: &mut Vec<f32>| {
             while (out.len() as f64) < t_end {
                 out.push(level);
             }
         };
-        let mut frame_no = h * 3600 * fps + m * 60 * fps + s * fps + f0;
-        for _ in 0..count {
+        let first = h * 3600 * fps + m * 60 * fps + s * fps + f0;
+        for frame_no in first..first + count {
             let total_secs = frame_no / fps;
             let (hh, mm, ss, ff) = (total_secs / 3600, total_secs / 60 % 60, total_secs % 60, frame_no % fps);
             let mut word: u128 = 0;
@@ -179,7 +179,6 @@ mod tests {
                 t += bit_len;
                 emit_until(t, level, &mut out);
             }
-            frame_no += 1;
         }
         out
     }
