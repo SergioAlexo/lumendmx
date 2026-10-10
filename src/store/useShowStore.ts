@@ -2,7 +2,14 @@ import { create } from "zustand";
 import * as dmx from "../lib/dmx";
 import * as engineApi from "../lib/engine";
 import { PRIMARY_UNIVERSE_ID } from "../lib/constants";
-import { showfileAutosave, showfileNew, showfileOpen, showfileRecent, showfileSave } from "../lib/showfile/api";
+import {
+  showfileAutosave,
+  showfileNew,
+  showfileOpen,
+  showfileRecent,
+  showfileRestoreSession,
+  showfileSave,
+} from "../lib/showfile/api";
 import type {
   DriverConfig,
   PatchIndexEntry,
@@ -24,6 +31,8 @@ import { usePatchStore } from "./usePatchStore";
 export const EMPTY_UNIVERSES: UniverseConfig[] = [];
 
 const AUTOSAVE_INTERVAL_MS = 60_000;
+/** How often to check the engine for unsaved group/preset/cuelist edits. */
+const ENGINE_DIRTY_POLL_MS = 1_000;
 
 /** Everything in a `ShowFile` except `patch` and `legacyAssets`, which live in
  * (and are read live from) `usePatchStore`/`useLibraryStore` instead of being
@@ -52,19 +61,35 @@ function toMeta(show: ShowFile): ShowMeta {
   };
 }
 
-function assembleShowFile(meta: ShowMeta): ShowFile {
+/** Groups/presets/cuelists live in the Rust engine, so a complete show file
+ * has to fetch them. `engineRevision` is the engine's data revision the
+ * fetch reflects (read first, so an edit racing the save still reads as
+ * unsaved afterwards). */
+async function assembleShowFile(meta: ShowMeta): Promise<{ show: ShowFile; engineRevision: number }> {
+  const engineRevision = await engineApi.showDataRevision();
+  const engineData = await engineApi.exportShowData();
   return {
-    ...meta,
-    patch: usePatchStore.getState().fixtures,
-    legacyAssets: assetsToLegacy(useLibraryStore.getState().assets),
+    show: {
+      ...meta,
+      patch: usePatchStore.getState().fixtures,
+      legacyAssets: assetsToLegacy(useLibraryStore.getState().assets),
+      ...engineData,
+    },
+    engineRevision,
   };
 }
+
+/** The engine's data revision as of the last save/load; any other value
+ * means unsaved group/preset/cuelist edits. Null while a show is loading. */
+let savedEngineRevision: number | null = null;
 
 /** True while a show is being loaded into `usePatchStore`/`useLibraryStore`,
  * so their change subscriptions below don't mark the freshly-opened show dirty. */
 let applyingShow = false;
 
-function applyPatchAndAssets(show: ShowFile): void {
+/** Loads `show` into the patch/library stores and its groups/presets/
+ * cuelists into the engine. */
+async function applyShow(show: ShowFile): Promise<void> {
   applyingShow = true;
   try {
     usePatchStore.getState().replaceAll(show.patch);
@@ -72,6 +97,9 @@ function applyPatchAndAssets(show: ShowFile): void {
   } finally {
     applyingShow = false;
   }
+  savedEngineRevision = null;
+  await engineApi.loadShowData({ groups: show.groups, presets: show.presets, cuelists: show.cuelists });
+  savedEngineRevision = await engineApi.showDataRevision();
 }
 
 /** Spins up (or re-spins-up) each of the show's universes' output drivers to
@@ -96,6 +124,9 @@ interface ShowState {
   dirty: boolean;
   saving: boolean;
   recent: RecentShowEntry[];
+  /** Bumped every time a show is loaded, so views holding engine data they
+   * fetched once (cuelists, presets, groups) can remount and re-fetch. */
+  loadCount: number;
 
   init: () => Promise<void>;
   newShow: () => Promise<void>;
@@ -113,6 +144,7 @@ interface ShowState {
 }
 
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+let engineDirtyTimer: ReturnType<typeof setInterval> | null = null;
 
 export const useShowStore = create<ShowState>((set, get) => ({
   meta: null,
@@ -120,27 +152,63 @@ export const useShowStore = create<ShowState>((set, get) => ({
   dirty: false,
   saving: false,
   recent: [],
+  loadCount: 0,
 
   init: async () => {
-    await get().newShow();
+    // Reopen the last session (unsaved work from an autosave, else the last
+    // show file); only start a blank show when there's nothing to restore.
+    let restored = null;
+    try {
+      restored = await showfileRestoreSession();
+    } catch (err) {
+      console.warn("Could not restore last session:", err);
+    }
+    if (restored) {
+      await applyShow(restored.show);
+      set((s) => ({
+        meta: toMeta(restored.show),
+        path: restored.path,
+        dirty: restored.recovered,
+        loadCount: s.loadCount + 1,
+      }));
+      void activateUniverses(restored.show);
+    } else {
+      await get().newShow();
+    }
     void get().refreshRecent();
 
     if (!autosaveTimer) {
       autosaveTimer = setInterval(() => {
         const { meta, dirty } = get();
         if (!meta || !dirty) return;
-        void showfileAutosave(assembleShowFile(meta)).catch((err) => {
-          console.warn("Autosave failed:", err);
-        });
+        void assembleShowFile(meta)
+          .then(({ show }) => showfileAutosave(show))
+          .catch((err) => {
+            console.warn("Autosave failed:", err);
+          });
       }, AUTOSAVE_INTERVAL_MS);
+    }
+
+    if (!engineDirtyTimer) {
+      engineDirtyTimer = setInterval(() => {
+        const baseline = savedEngineRevision;
+        if (baseline === null || get().dirty) return;
+        void engineApi
+          .showDataRevision()
+          .then((revision) => {
+            // Ignore a reply that raced a show load (baseline moved on).
+            if (savedEngineRevision === baseline && revision !== baseline) set({ dirty: true });
+          })
+          .catch(() => undefined);
+      }, ENGINE_DIRTY_POLL_MS);
     }
   },
 
   newShow: async () => {
     try {
       const show = await showfileNew();
-      applyPatchAndAssets(show);
-      set({ meta: toMeta(show), path: null, dirty: false });
+      await applyShow(show);
+      set((s) => ({ meta: toMeta(show), path: null, dirty: false, loadCount: s.loadCount + 1 }));
       void activateUniverses(show);
     } catch (err) {
       // Expected outside the Tauri runtime (plain browser preview).
@@ -150,8 +218,8 @@ export const useShowStore = create<ShowState>((set, get) => ({
 
   openShow: async (path) => {
     const [show, usedPath] = await showfileOpen(path);
-    applyPatchAndAssets(show);
-    set({ meta: toMeta(show), path: usedPath, dirty: false });
+    await applyShow(show);
+    set((s) => ({ meta: toMeta(show), path: usedPath, dirty: false, loadCount: s.loadCount + 1 }));
     void get().refreshRecent();
     void activateUniverses(show);
   },
@@ -161,7 +229,9 @@ export const useShowStore = create<ShowState>((set, get) => ({
     if (!meta) return;
     set({ saving: true });
     try {
-      const [usedPath, saved] = await showfileSave(assembleShowFile(meta), path ?? undefined);
+      const { show, engineRevision } = await assembleShowFile(meta);
+      const [usedPath, saved] = await showfileSave(show, path ?? undefined);
+      savedEngineRevision = engineRevision;
       set({ meta: toMeta(saved), path: usedPath, dirty: false });
       void get().refreshRecent();
     } finally {
@@ -174,7 +244,9 @@ export const useShowStore = create<ShowState>((set, get) => ({
     if (!meta) return;
     set({ saving: true });
     try {
-      const [usedPath, saved] = await showfileSave(assembleShowFile(meta), undefined);
+      const { show, engineRevision } = await assembleShowFile(meta);
+      const [usedPath, saved] = await showfileSave(show, undefined);
+      savedEngineRevision = engineRevision;
       set({ meta: toMeta(saved), path: usedPath, dirty: false });
       void get().refreshRecent();
     } finally {

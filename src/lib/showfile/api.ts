@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RecentShowEntry, ShowFile } from "./generated";
+import type { RecentShowEntry, RestoredSession, ShowFile } from "./generated";
 
 export function showfileNew(): Promise<ShowFile> {
   return invoke("showfile_new");
@@ -25,4 +25,10 @@ export function showfileRecent(): Promise<RecentShowEntry[]> {
   return invoke("showfile_recent");
 }
 
-export type { RecentShowEntry, ShowFile } from "./generated";
+/** The last session to reopen on launch (newest autosave or last show file),
+ * or null when there's nothing to restore. */
+export function showfileRestoreSession(): Promise<RestoredSession | null> {
+  return invoke("showfile_restore_session");
+}
+
+export type { RecentShowEntry, RestoredSession, ShowFile } from "./generated";

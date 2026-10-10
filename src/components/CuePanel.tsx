@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { Trash2, Unlink } from "lucide-react";
 import * as engineApi from "../lib/engine";
 import type { ChaseDirection, CuelistDto, CuelistKind, Preset, PresetFamily } from "../lib/engine";
 import { usePatchStore } from "../store/usePatchStore";
+import { useAllFixtures } from "../store/useFixtureLibraryStore";
 import type { ChannelType } from "../lib/fixtures/types";
 import { Button } from "./ui/button";
 import { Input, Select } from "./ui/input";
@@ -181,6 +182,23 @@ function CueSheet({
   const [linkAttribute, setLinkAttribute] = useState<ChannelType>("dimmer");
   const [linkFamily, setLinkFamily] = useState<PresetFamily>("colour");
   const [linkPresets, setLinkPresets] = useState<Preset[]>([]);
+  const [linkStatus, setLinkStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const [expandedCue, setExpandedCue] = useState<number | null>(null);
+  const [allPresets, setAllPresets] = useState<Preset[]>([]);
+  const patched = usePatchStore((s) => s.fixtures);
+  const allFixtures = useAllFixtures();
+
+  // Re-fetch on every cuelist refresh so a just-linked preset has a name.
+  useEffect(() => {
+    void engineApi.listPresets().then(setAllPresets).catch(() => undefined);
+  }, [cuelist]);
+
+  /** Fixture number owning a (universe, 1-based channel), for display. */
+  const fixtureAt = (universe: number, channel: number) =>
+    patched.find((f) => {
+      const size = allFixtures.find((d) => d.id === f.fixtureId)?.modes[f.modeIndex]?.channels.length ?? 0;
+      return f.universe === universe && channel >= f.address && channel < f.address + size;
+    })?.fixtureNumber;
 
   useEffect(() => {
     void engineApi.listPresets(linkFamily).then(setLinkPresets).catch(() => undefined);
@@ -219,9 +237,10 @@ function CueSheet({
           <Input
             type="number"
             step={0.1}
+            min={0}
             className="w-20"
             value={number}
-            onChange={(e) => setNumber(Number(e.target.value))}
+            onChange={(e) => setNumber(Math.max(0, Number(e.target.value)))}
           />
         </div>
         <div>
@@ -233,8 +252,9 @@ function CueSheet({
           <Input
             type="number"
             className="w-24"
+            min={0}
             value={fadeInMs}
-            onChange={(e) => setFadeInMs(Number(e.target.value))}
+            onChange={(e) => setFadeInMs(Math.max(0, Number(e.target.value)))}
           />
         </div>
         <div>
@@ -242,8 +262,9 @@ function CueSheet({
           <Input
             type="number"
             className="w-24"
+            min={0}
             value={fadeOutMs}
-            onChange={(e) => setFadeOutMs(Number(e.target.value))}
+            onChange={(e) => setFadeOutMs(Math.max(0, Number(e.target.value)))}
           />
         </div>
         <Button size="sm" disabled={picked.length === 0 || !name.trim()} onClick={record}>
@@ -264,24 +285,80 @@ function CueSheet({
             </tr>
           </thead>
           <tbody>
-            {cuelist.cues.map((cue) => (
-              <tr key={cue.number} className="border-b border-border/50">
-                <td className="px-2 py-1">{cue.number}</td>
-                <td className="px-2 py-1">{cue.name}</td>
-                <td className="px-2 py-1">{cue.fadeInMs}ms</td>
-                <td className="px-2 py-1">{cue.fadeOutMs}ms</td>
-                <td className="px-2 py-1">{cue.values.length}</td>
-                <td className="px-2 py-1 text-right">
-                  <Button
-                    size="iconSm"
-                    variant="ghost"
-                    onClick={() => void engineApi.deleteCue(cuelist.id, cue.number).then(refresh)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </td>
-              </tr>
-            ))}
+            {cuelist.cues.map((cue) => {
+              const links = cue.values.flatMap((v) =>
+                v.value.kind === "preset" ? [{ ...v, presetId: v.value.presetId, attribute: v.value.attribute }] : [],
+              );
+              const expanded = expandedCue === cue.number;
+              return (
+                <Fragment key={cue.number}>
+                  <tr className="border-b border-border/50">
+                    <td className="px-2 py-1">{cue.number}</td>
+                    <td className="px-2 py-1">{cue.name}</td>
+                    <td className="px-2 py-1">{cue.fadeInMs}ms</td>
+                    <td className="px-2 py-1">{cue.fadeOutMs}ms</td>
+                    <td className="px-2 py-1">
+                      {cue.values.length}
+                      {links.length > 0 && (
+                        <button
+                          className="ml-1 text-primary hover:underline"
+                          onClick={() => setExpandedCue(expanded ? null : cue.number)}
+                          title={expanded ? "Hide linked presets" : "Show linked presets"}
+                        >
+                          ({links.length} linked {expanded ? "▾" : "▸"})
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      <Button
+                        size="iconSm"
+                        variant="ghost"
+                        onClick={() => void engineApi.deleteCue(cuelist.id, cue.number).then(refresh)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr className="border-b border-border/50 bg-muted/30">
+                      <td colSpan={6} className="px-4 py-2">
+                        <ul className="flex flex-col gap-0.5">
+                          {links.map((l) => {
+                            const preset = allPresets.find((p) => p.id === l.presetId);
+                            const fixture = fixtureAt(l.universe, l.channel);
+                            return (
+                              <li key={`${l.universe}.${l.channel}`} className="flex items-center gap-2">
+                                {preset?.color && (
+                                  <span className="h-3 w-3 shrink-0 rounded-sm border border-border" style={{ backgroundColor: preset.color }} />
+                                )}
+                                <span>
+                                  {fixture !== undefined ? `Fixture ${fixture}` : `U${l.universe}.${l.channel}`} · {l.attribute} →{" "}
+                                  <span className="font-medium">{preset ? preset.name : `missing preset #${l.presetId}`}</span>
+                                  {preset && <span className="text-muted-foreground"> ({preset.family})</span>}
+                                </span>
+                                <Button
+                                  size="iconSm"
+                                  variant="ghost"
+                                  title="Unlink (keep the preset's current value as a fixed value)"
+                                  onClick={() =>
+                                    engineApi
+                                      .unlinkCuePreset(cuelist.id, cue.number, l.universe, l.channel)
+                                      .then(refresh)
+                                      .catch((err) => setLinkStatus({ ok: false, text: String(err) }))
+                                  }
+                                >
+                                  <Unlink />
+                                </Button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
             {cuelist.cues.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-2 py-3 text-center text-muted-foreground">
@@ -315,8 +392,9 @@ function CueSheet({
           <Input
             type="number"
             className="w-20"
+            min={1}
             value={linkFixture ?? ""}
-            onChange={(e) => setLinkFixture(Number(e.target.value))}
+            onChange={(e) => setLinkFixture(e.target.value === "" ? null : Math.max(1, Math.round(Number(e.target.value))))}
           />
         </div>
         <div>
@@ -356,13 +434,26 @@ function CueSheet({
             const select = document.getElementById("preset-select") as HTMLSelectElement | null;
             const presetId = Number(select?.value);
             if (linkCue === null || linkFixture === null || !presetId) return;
-            void engineApi
+            const presetName = linkPresets.find((p) => p.id === presetId)?.name ?? `preset ${presetId}`;
+            // Surface the result: a failure (unknown fixture, no such attribute
+            // channel) used to be swallowed, and a success doesn't change the
+            // cue's value count, so either way the button looked dead.
+            engineApi
               .setCuePresetReference(cuelist.id, linkCue, linkFixture, linkAttribute, presetId)
-              .then(refresh);
+              .then(() => {
+                setLinkStatus({ ok: true, text: `Cue ${linkCue}: fixture ${linkFixture} ${linkAttribute} → ${presetName}` });
+                refresh();
+              })
+              .catch((err) => setLinkStatus({ ok: false, text: String(err) }));
           }}
         >
           Link
         </Button>
+        {linkStatus && (
+          <p className={cn("w-full text-xs", linkStatus.ok ? "text-muted-foreground" : "text-destructive")}>
+            {linkStatus.text}
+          </p>
+        )}
       </div>
     </div>
   );
