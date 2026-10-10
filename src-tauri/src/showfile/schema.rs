@@ -20,7 +20,7 @@ use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +32,18 @@ pub struct UniverseConfig {
     /// driver-tagged config supporting FTDI/Enttec Pro/Art-Net/sACN/none
     /// (see `migrate::upgrade_1_to_2`).
     pub driver: DriverConfig,
+}
+
+/// Where a fixture sits on the stage (v6), in metres: `x` left to right
+/// across the stage, `y` downstage (front of stage = 0) to upstage, `z`
+/// height above the floor. Shared by the 2D plot and the 3D visualizer.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct StagePosition {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -54,6 +66,11 @@ pub struct PatchedFixture {
     pub invert_pan: bool,
     pub invert_tilt: bool,
     pub swap_pan_tilt: bool,
+    /// v6: position on the stage plot / in the 3D view. Absent until the
+    /// fixture has been placed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stage: Option<StagePosition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

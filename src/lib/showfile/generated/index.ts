@@ -42,6 +42,7 @@ export * from "./SacnDestination";
 export * from "./ShowEngineData";
 export * from "./ShowFile";
 export * from "./ShowSettings";
+export * from "./StagePosition";
 export * from "./TempoStatus";
 export * from "./UniverseConfig";
 export * from "./UniverseStatus";

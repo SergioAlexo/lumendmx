@@ -48,6 +48,10 @@ pub fn migrate(raw: Value) -> Result<ShowFile, String> {
         value = upgrade_4_to_5(value);
         current_version = 5;
     }
+    if current_version == 5 {
+        value = upgrade_5_to_6(value);
+        current_version = 6;
+    }
 
     debug_assert_eq!(current_version, CURRENT_SCHEMA_VERSION);
 
@@ -162,6 +166,27 @@ fn upgrade_4_to_5(value: Value) -> Value {
     obj.entry("bpm").or_insert(Value::from(crate::engine::tempo::DEFAULT_BPM));
     obj.entry("pixelMaps").or_insert(Value::Array(Vec::new()));
     obj.insert("schemaVersion".to_string(), Value::from(5));
+    Value::Object(obj)
+}
+
+/// v5 -> v6: fixtures can carry a stage position (Phase 12). It is optional
+/// and unplaced fixtures simply omit it, so older files need no rewriting
+/// beyond the version bump; the step normalizes any stray `stage: null`.
+fn upgrade_5_to_6(value: Value) -> Value {
+    let mut obj = match value {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(Value::Array(patch)) = obj.get_mut("patch") {
+        for fixture in patch.iter_mut() {
+            if let Value::Object(f) = fixture {
+                if matches!(f.get("stage"), Some(Value::Null)) {
+                    f.remove("stage");
+                }
+            }
+        }
+    }
+    obj.insert("schemaVersion".to_string(), Value::from(6));
     Value::Object(obj)
 }
 
@@ -291,6 +316,28 @@ mod tests {
         assert!(migrated.cuelists.is_empty());
         assert_eq!(migrated.bpm, crate::engine::tempo::DEFAULT_BPM);
         assert!(migrated.pixel_maps.is_empty());
+    }
+
+    #[test]
+    fn v5_patch_has_no_stage_positions_and_v6_positions_round_trip() {
+        let mut v5 = serde_json::to_value(ShowFile::new_default("Old Show")).unwrap();
+        let obj = v5.as_object_mut().unwrap();
+        obj.insert("schemaVersion".to_string(), Value::from(5));
+        obj.insert(
+            "patch".to_string(),
+            serde_json::json!([
+                { "id": "f1", "fixtureId": "par", "modeIndex": 0, "address": 1, "name": "Par 1",
+                  "universe": 1, "fixtureNumber": 1, "invertPan": false, "invertTilt": false, "swapPanTilt": false }
+            ]),
+        );
+        let migrated = migrate(v5).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(migrated.patch[0].stage.is_none());
+
+        let mut placed = migrated.clone();
+        placed.patch[0].stage = Some(crate::showfile::schema::StagePosition { x: 3.5, y: 2.0, z: 4.0 });
+        let back = migrate(serde_json::to_value(&placed).unwrap()).unwrap();
+        assert_eq!(back, placed);
     }
 
     #[test]
