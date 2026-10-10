@@ -2,6 +2,7 @@
 import type { CuelistDto } from "./CuelistDto";
 import type { Group } from "./Group";
 import type { PixelMap } from "./PixelMap";
+import type { PlaybackSlot } from "./PlaybackSlot";
 import type { Preset } from "./Preset";
 
 /**
@@ -12,4 +13,8 @@ export type ShowEngineData = { groups: Array<Group>, presets: Array<Preset>, cue
 /**
  * The global tempo (Phase 7).
  */
-bpm: number, pixelMaps: Array<PixelMap>, };
+bpm: number, pixelMaps: Array<PixelMap>, 
+/**
+ * Playback bar assignments (schema v6+).
+ */
+playbacks: Array<PlaybackSlot>, releaseOnPageChange: boolean, };

@@ -5,7 +5,9 @@
 export * from "./ArtNetNode";
 export * from "./ChaseDirection";
 export * from "./CommandResult";
+export * from "./ConsoleStatus";
 export * from "./CueDto";
+export * from "./CueSettings";
 export * from "./CuelistDto";
 export * from "./CuelistKind";
 export * from "./CueValue";
@@ -32,6 +34,7 @@ export * from "./PixelCell";
 export * from "./PixelMap";
 export * from "./PixelMapStatus";
 export * from "./PixelMedia";
+export * from "./PlaybackSlot";
 export * from "./PlaybackStatus";
 export * from "./PositionShape";
 export * from "./Preset";

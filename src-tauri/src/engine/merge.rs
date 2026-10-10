@@ -4,46 +4,82 @@
 //! programmer always has the highest priority, so "programmer > playbacks"
 //! falls out of this naturally rather than needing a special case.
 
-use super::state::{EngineState, Layer, PROGRAMMER_PRIORITY};
+use super::state::{ChannelKey, EngineState, Layer, LOWLIGHT_SCALE, PROGRAMMER_PRIORITY};
 use crate::output::UNIVERSE_SIZE;
 
+/// What goes on the wire: layers merged, effects included, then the grand
+/// master (HTP channels only) and highlight/lowlight applied on top.
 pub fn merge_universe(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, true)
+    merge(state, universe, true, true)
 }
 
-/// The merge without any layer's effect output — what a relative effect's
-/// "underlying value" is for a channel its own layer doesn't set.
+/// The merge as the show itself looks, effects included but without the
+/// grand master or highlight — what recording a preset should capture.
+pub fn merge_universe_unmastered(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
+    merge(state, universe, true, false)
+}
+
+/// The merge without any layer's effect output (and no grand master or
+/// highlight) — what a relative effect's "underlying value" is for a channel
+/// its own layer doesn't set.
 pub fn merge_universe_static(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, false)
+    merge(state, universe, false, false)
 }
 
-fn merge(state: &EngineState, universe: u32, with_effects: bool) -> [u8; UNIVERSE_SIZE] {
-    let value_of = |layer: &Layer, key: &(u32, u16)| {
-        if with_effects {
-            layer.get(key)
-        } else {
-            layer.values.get(key).copied()
-        }
-    };
+/// One channel of `merge_universe_static`, as a float — where a programmer
+/// TIME fade starts from when the programmer has no value there yet.
+pub fn merge_channel_static(state: &EngineState, key: ChannelKey) -> f32 {
+    let layers = sorted_layers(state);
+    channel_value(state, &layers, key, false)
+}
+
+fn sorted_layers(state: &EngineState) -> Vec<(i64, &Layer)> {
     let mut layers: Vec<(i64, &Layer)> =
         state.playbacks.values().map(|(priority, layer)| (*priority, layer)).collect();
     layers.push((PROGRAMMER_PRIORITY, &state.programmer));
     layers.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
+    layers
+}
+
+fn channel_value(state: &EngineState, layers: &[(i64, &Layer)], key: ChannelKey, with_effects: bool) -> f32 {
+    let value_of = |layer: &Layer| {
+        if with_effects {
+            layer.get(&key)
+        } else {
+            layer.values.get(&key).copied()
+        }
+    };
+    if state.is_htp(key.0, key.1) {
+        layers
+            .iter()
+            .filter_map(|(_, layer)| value_of(layer).map(|v| v * layer.intensity_scale))
+            .fold(0.0f32, f32::max)
+    } else {
+        layers.iter().find_map(|(_, layer)| value_of(layer)).unwrap_or(0.0)
+    }
+}
+
+fn merge(state: &EngineState, universe: u32, with_effects: bool, output_stage: bool) -> [u8; UNIVERSE_SIZE] {
+    let layers = sorted_layers(state);
 
     let mut out = [0u8; UNIVERSE_SIZE];
     for (i, slot) in out.iter_mut().enumerate() {
         let channel = (i + 1) as u16;
         let key = (universe, channel);
-
-        if state.is_htp(universe, channel) {
-            let max = layers
-                .iter()
-                .filter_map(|(_, layer)| value_of(layer, &key).map(|v| v * layer.intensity_scale))
-                .fold(0.0f32, f32::max);
-            *slot = to_u8(max);
-        } else if let Some(value) = layers.iter().find_map(|(_, layer)| value_of(layer, &key)) {
-            *slot = to_u8(value);
+        let mut value = channel_value(state, &layers, key, with_effects);
+        if output_stage {
+            if let Some(highlight) = &state.highlight {
+                if let Some(&lit) = highlight.lit.get(&key) {
+                    value = lit;
+                } else if highlight.dimmed.contains(&key) {
+                    value *= LOWLIGHT_SCALE;
+                }
+            }
+            if state.is_htp(universe, channel) {
+                value *= state.grand_master;
+            }
         }
+        *slot = to_u8(value);
     }
     out
 }
@@ -130,6 +166,44 @@ mod tests {
 
         assert_eq!(merge_universe(&state, 1)[4], 180);
         assert_eq!(merge_universe_static(&state, 1)[4], 100);
+    }
+
+    #[test]
+    fn grand_master_scales_htp_channels_only_and_not_the_static_view() {
+        let mut state = EngineState::new();
+        state.htp_channels.entry(1).or_default().insert(1);
+        state.programmer.values.insert((1, 1), 200.0);
+        state.programmer.values.insert((1, 2), 200.0);
+        state.grand_master = 0.5;
+
+        let out = merge_universe(&state, 1);
+        assert_eq!(out[0], 100);
+        assert_eq!(out[1], 200); // colour is not mastered
+        assert_eq!(merge_universe_unmastered(&state, 1)[0], 200);
+        assert_eq!(merge_universe_static(&state, 1)[0], 200);
+        assert_eq!(merge_channel_static(&state, (1, 1)), 200.0);
+    }
+
+    #[test]
+    fn highlight_overrides_selected_and_dims_others_without_touching_layers() {
+        use crate::engine::state::Highlight;
+        let mut state = EngineState::new();
+        state.htp_channels.entry(1).or_default().extend([1, 11]);
+        state.programmer.values.insert((1, 1), 40.0); // selected fixture, dim
+        state.programmer.values.insert((1, 11), 200.0); // other fixture
+        state.highlight = Some(Highlight {
+            lit: [((1, 1), 255.0), ((1, 2), 255.0)].into_iter().collect(),
+            dimmed: [(1, 11)].into_iter().collect(),
+        });
+
+        let out = merge_universe(&state, 1);
+        assert_eq!(out[0], 255);
+        assert_eq!(out[1], 255); // open white on a channel nothing set
+        assert_eq!(out[10], 50); // 200 * 0.25
+        // The underlying data is untouched, so turning highlight off restores it.
+        assert_eq!(state.programmer.values[&(1, 1)], 40.0);
+        state.highlight = None;
+        assert_eq!(merge_universe(&state, 1)[0], 40);
     }
 
     #[test]

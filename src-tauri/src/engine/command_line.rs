@@ -1,9 +1,8 @@
 //! The Onyx-style command line: `1 THRU 8 @ 50`, `GROUP 2 @ 0`, `RECORD CUE
 //! 1.5`, etc. `GROUP` resolves against real groups (Phase 5, see
 //! `engine::groups`) as of this module's `resolve`; cue commands (`RECORD
-//! CUE`/`UPDATE`/`DELETE CUE`/`COPY`/`MOVE`) still parse correctly (and are
-//! unit-tested here) but execute as a clear "not available yet" error, since
-//! cuelists are Phase 6.
+//! CUE`/`UPDATE`/`DELETE CUE`/`COPY CUE a @ b`/`MOVE CUE a @ b`) act on the
+//! current cuelist.
 //!
 //! Grammar (this project's own interpretation of the examples in
 //! BUILD_PLAN.md — there's no full Onyx manual to work from):
@@ -14,7 +13,10 @@
 //!               | "CLEAR" | "RELEASE" | "ALL" | "NEXT" | "PREV"
 //!               | "TIME" number
 //!               | "RECORD CUE" number | "UPDATE" | "DELETE CUE" number
-//!               | "COPY" | "MOVE"
+//!               | "COPY CUE" number ("@" | "AT") number
+//!               | "MOVE CUE" number ("@" | "AT") number
+//!               | "BLIND" ("ON" | "OFF")? | "HIGHLIGHT" ("ON" | "OFF")?   -- HIGHLT, HLT also accepted
+//!               | "COPY" | "MOVE"   -- parse only; they need CUE a @ b
 //! selection    := term (("+" | "-") term)*
 //! term         := fixture_number | fixture_number "THRU" fixture_number | "GROUP" fixture_number
 //! intensity    := "FULL" | number   -- number is a 0-100 percent
@@ -105,6 +107,14 @@ pub enum Command {
     DeleteCue(f32),
     Copy,
     Move,
+    /// `COPY CUE from @ to`.
+    CopyCue(f32, f32),
+    /// `MOVE CUE from @ to`: renumbers.
+    MoveCue(f32, f32),
+    /// Blind mode on/off (`None` toggles).
+    Blind(Option<bool>),
+    /// Highlight on/off (`None` toggles).
+    Highlight(Option<bool>),
 }
 
 pub fn parse(input: &str) -> Result<Command, String> {
@@ -129,8 +139,25 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "NEXT" => exact(1, Command::Next),
         "PREV" => exact(1, Command::Prev),
         "UPDATE" => exact(1, Command::UpdateCue),
-        "COPY" => exact(1, Command::Copy),
-        "MOVE" => exact(1, Command::Move),
+        "COPY" | "MOVE" if tokens.len() == 1 => {
+            exact(1, if upper[0] == "COPY" { Command::Copy } else { Command::Move })
+        }
+        "COPY" | "MOVE" => {
+            let verb = upper[0].as_str();
+            let usage = format!("Expected {verb} CUE <from> @ <to>");
+            require(upper.get(1), "CUE", &usage)?;
+            let from = parse_number(tokens.get(2), &usage)?;
+            if !matches!(upper.get(3).map(String::as_str), Some("@") | Some("AT")) {
+                return Err(usage);
+            }
+            let to = parse_number(tokens.get(4), &usage)?;
+            if tokens.len() != 5 {
+                return Err(usage);
+            }
+            Ok(if verb == "COPY" { Command::CopyCue(from, to) } else { Command::MoveCue(from, to) })
+        }
+        "BLIND" => Ok(Command::Blind(parse_on_off(&upper, "BLIND")?)),
+        "HIGHLIGHT" | "HIGHLT" | "HLT" => Ok(Command::Highlight(parse_on_off(&upper, "HIGHLIGHT")?)),
         "TIME" => {
             let n = parse_number(tokens.get(1), "TIME expects a number")?;
             exact(2, Command::SetTime(n))
@@ -171,6 +198,15 @@ fn require(actual: Option<&String>, expected: &str, message: &str) -> Result<(),
         Ok(())
     } else {
         Err(message.to_string())
+    }
+}
+
+fn parse_on_off(upper: &[String], name: &str) -> Result<Option<bool>, String> {
+    match upper.get(1).map(String::as_str) {
+        None => Ok(None),
+        Some("ON") if upper.len() == 2 => Ok(Some(true)),
+        Some("OFF") if upper.len() == 2 => Ok(Some(false)),
+        _ => Err(format!("Expected {name}, {name} ON or {name} OFF")),
     }
 }
 
@@ -332,6 +368,33 @@ mod tests {
         assert_eq!(parse("NEXT").unwrap(), Command::Next);
         assert_eq!(parse("PREV").unwrap(), Command::Prev);
         assert_eq!(parse("ALL").unwrap(), Command::SelectAll);
+    }
+
+    #[test]
+    fn parses_copy_and_move_cue() {
+        assert_eq!(parse("COPY CUE 1 @ 5").unwrap(), Command::CopyCue(1.0, 5.0));
+        assert_eq!(parse("copy cue 1.5 at 7.5").unwrap(), Command::CopyCue(1.5, 7.5));
+        assert_eq!(parse("MOVE CUE 2 @ 3").unwrap(), Command::MoveCue(2.0, 3.0));
+        assert_eq!(parse("MOVE CUE 2 AT 3").unwrap(), Command::MoveCue(2.0, 3.0));
+        // Missing or malformed parts.
+        assert!(parse("COPY CUE").is_err());
+        assert!(parse("COPY CUE 1").is_err());
+        assert!(parse("COPY CUE 1 @").is_err());
+        assert!(parse("COPY 1 @ 5").is_err());
+        assert!(parse("MOVE CUE 2 @ 3 4").is_err());
+        assert!(parse("MOVE CUE x @ 3").is_err());
+    }
+
+    #[test]
+    fn parses_blind_and_highlight() {
+        assert_eq!(parse("BLIND").unwrap(), Command::Blind(None));
+        assert_eq!(parse("blind on").unwrap(), Command::Blind(Some(true)));
+        assert_eq!(parse("BLIND OFF").unwrap(), Command::Blind(Some(false)));
+        assert_eq!(parse("HIGHLIGHT").unwrap(), Command::Highlight(None));
+        assert_eq!(parse("HIGHLT").unwrap(), Command::Highlight(None));
+        assert_eq!(parse("HLT OFF").unwrap(), Command::Highlight(Some(false)));
+        assert!(parse("BLIND MAYBE").is_err());
+        assert!(parse("HIGHLIGHT ON NOW").is_err());
     }
 
     #[test]

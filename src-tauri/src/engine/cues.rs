@@ -37,10 +37,27 @@ pub struct Cue {
     pub fade_in_ms: f64,
     pub fade_out_ms: f64,
     pub delay_in_ms: f64,
-    /// Move-in-black: this cue's moving-fixture attributes (pan/tilt/etc.)
-    /// should snap while dark rather than move live. Stored for the UI/a
-    /// future engine consumer; the merge/playback path doesn't act on it yet
-    /// since there's no "blackout while moving" timing model built.
+    /// Delay before intensities that are *going down* start to fade.
+    pub delay_out_ms: f64,
+    /// Fade / delay for every non-intensity attribute (colour, pan/tilt, ...).
+    /// `None` follows the intensity-in timing (`fade_in_ms` / `delay_in_ms`),
+    /// which is how every cue behaved before per-attribute timing existed.
+    pub attr_fade_ms: Option<f64>,
+    pub attr_delay_ms: Option<f64>,
+    /// Auto-follow: GO the next cue this long after *this cue started*.
+    pub follow_ms: Option<f64>,
+    /// Auto-follow with a wait: GO the next cue this long after *this cue's
+    /// fade finished* (delay + fade). `Some(0)` is "follow on completion".
+    pub wait_ms: Option<f64>,
+    /// Link: after this cue, GO this cue number instead of the next one.
+    pub link_to: Option<f64>,
+    /// With a link: take it this many times, then carry on to the next cue
+    /// in order. `None` loops forever.
+    pub loop_count: Option<u32>,
+    /// Move-in-black: while the cue *before* this one is live and a fixture is
+    /// dark in it, this cue's non-intensity attributes for that fixture are
+    /// pre-positioned (see `PlaybackRuntime`'s marks), so the move is already
+    /// done when this cue fires.
     pub mark: bool,
     /// Effects that run while this cue is live (Phase 7). Unlike `values`,
     /// effects don't track: a cue runs only its own. Every recorded cue
@@ -58,6 +75,13 @@ impl Cue {
             fade_in_ms: 0.0,
             fade_out_ms: 0.0,
             delay_in_ms: 0.0,
+            delay_out_ms: 0.0,
+            attr_fade_ms: None,
+            attr_delay_ms: None,
+            follow_ms: None,
+            wait_ms: None,
+            link_to: None,
+            loop_count: None,
             mark: false,
             effects: Vec::new(),
         }
@@ -125,6 +149,26 @@ impl Cuelist {
 
     pub fn remove_cue(&mut self, number: f64) {
         self.cues.retain(|c| (c.number - number).abs() > f64::EPSILON);
+    }
+
+    /// Copies cue `from` to number `to` (replacing any cue already there).
+    pub fn copy_cue(&mut self, from: f64, to: f64) -> Result<(), String> {
+        let idx = self.index_of(from).ok_or_else(|| format!("No cue {from}"))?;
+        if (from - to).abs() < f64::EPSILON {
+            return Err("Source and target cue are the same".to_string());
+        }
+        let mut cue = self.cues[idx].clone();
+        cue.number = to;
+        cue.name = if cue.name == format!("Cue {from}") { format!("Cue {to}") } else { cue.name };
+        self.upsert_cue(cue);
+        Ok(())
+    }
+
+    /// Renumbers cue `from` to `to` (replacing any cue already there).
+    pub fn move_cue(&mut self, from: f64, to: f64) -> Result<(), String> {
+        self.copy_cue(from, to)?;
+        self.remove_cue(from);
+        Ok(())
     }
 
     pub fn index_of(&self, number: f64) -> Option<usize> {
@@ -302,6 +346,26 @@ mod tests {
         list.remove_cue(1.0);
         assert_eq!(list.cues.len(), 1);
         assert_eq!(list.index_of(1.0), None);
+    }
+
+    #[test]
+    fn copy_and_move_cue() {
+        let mut list = Cuelist::new(1, "List".to_string(), CuelistKind::Standard, true);
+        list.upsert_cue(literal_cue(1.0, &[((1, 1), 10.0)]));
+        list.upsert_cue(literal_cue(3.0, &[((1, 1), 30.0)]));
+
+        list.copy_cue(1.0, 5.0).unwrap();
+        assert_eq!(list.cues.iter().map(|c| c.number).collect::<Vec<_>>(), vec![1.0, 3.0, 5.0]);
+        assert_eq!(list.cues[2].name, "Cue 5"); // default name follows the number
+
+        // Copying onto an existing cue replaces it.
+        list.copy_cue(1.0, 3.0).unwrap();
+        assert_eq!(resolve_cue_value(&list.cues[1].values[&(1, 1)], &PresetStore::new()), 10.0);
+
+        list.move_cue(5.0, 2.0).unwrap();
+        assert_eq!(list.cues.iter().map(|c| c.number).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+        assert!(list.copy_cue(9.0, 1.0).is_err());
+        assert!(list.copy_cue(1.0, 1.0).is_err());
     }
 
     #[test]
