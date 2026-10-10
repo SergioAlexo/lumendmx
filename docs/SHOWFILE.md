@@ -46,7 +46,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `5`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `6`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -102,6 +102,15 @@ Playbacks are runtime state and aren't saved.
   aren't saved, like the rest of the programmer.
 - Running pixel maps and programmer effects are runtime state and aren't
   saved.
+
+## Stage positions (v6+)
+
+Each `patch[]` entry may carry `stage: { x, y, z }` (metres): `x` left to
+right across the stage, `y` from the front of the stage (0) upstage, `z` the
+height above the floor. It is optional and omitted until a fixture is placed
+on the 2D stage plot or 3D view, so v5 files load unchanged
+(`upgrade_5_to_6` only bumps the version). Positions live in `usePatchStore`
+with the rest of the patch and are edited by dragging in the plot.
 
 ## Restoring the last session
 

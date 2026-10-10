@@ -157,3 +157,26 @@ UI too, not just the rig.
 - [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
       displayed BPM lands within about ±1 and the beat light sits on the
       beat.
+
+## Phase 12 — Visualisation
+
+- [ ] **3D view in the desktop app.** Open the 3D tab in the built app (the
+      Tauri webview, not the browser preview): it should render the stage and
+      orbit smoothly. If it shows "The 3D view could not start", note the
+      platform and webview version (WebGL availability).
+- [ ] **Beams track the rig.** With the real rig patched, set colours and
+      intensity from the command line and playbacks: the plot dots and 3D
+      beams should match what the fixtures do. Check a moving head's pan and
+      tilt direction against the real fixture; if it is mirrored, toggle the
+      patch's invert pan/tilt.
+- [ ] **Frame rate.** With your full patch, the 3D tab should hold a steady
+      frame rate on the show laptop while a few effects run.
+- [ ] **Output sheet sources.** Run a cue, then take a fixture in the
+      programmer: its cells should change from the cuelist colour to the
+      programmer colour, and tracked values (not recorded in the current
+      cue) should show dimmer. Start an effect to see the effect colour.
+- [ ] **Touch dragging.** On a touch screen, drag fixtures in the Stage plot
+      with a finger and confirm it doesn't scroll the page.
+- [ ] **Positions persist.** Place fixtures, save, reopen: positions come back
+      in both the plot and 3D.
+

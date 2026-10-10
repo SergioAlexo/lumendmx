@@ -17,7 +17,7 @@ use super::cues::{resolve_cue_value, Cue, CueStore, CueValue, Cuelist, CuelistKi
 use super::effects::{self, EffectClock, EffectDef, EffectInstance, ResolvedEffect};
 use super::groups::{Group, GroupStore};
 use super::legacy_playback::{LegacyAsset, RunningPlayback};
-use super::merge::{merge_universe, merge_universe_static};
+use super::merge::{channel_sources, merge_universe, merge_universe_static, TrackedChannels};
 use super::pixelmap::{self, PixelMap, PixelMapRuntime, PixelMapStore};
 use super::playback::{FaderMode, PlaybackRuntime};
 use super::presets::{Preset, PresetFamily, PresetStore};
@@ -440,6 +440,38 @@ impl EngineManager {
     pub fn get_universe_data(&self, universe: u32) -> [u8; UNIVERSE_SIZE] {
         let state = self.state.lock().unwrap();
         merge_universe(&state, universe)
+    }
+
+    /// Per-channel winning source for one universe (see `merge::ChannelSource`
+    /// codes). A polled, read-only query for the Output/Live sheet; takes the
+    /// locks briefly like any command and is never called from the tick.
+    pub fn get_universe_sources(&self, universe: u32) -> Vec<u8> {
+        let tracked = self.tracked_channels();
+        let state = self.state.lock().unwrap();
+        channel_sources(&state, universe, &tracked).iter().map(|s| *s as u8).collect()
+    }
+
+    /// Channels each cue playback holds from an earlier cue (tracking) rather
+    /// than its current cue. Lock order matches the tick (cues, then
+    /// cue_playbacks); both are released before `state` is taken.
+    fn tracked_channels(&self) -> TrackedChannels {
+        let cues = self.cues.lock().unwrap();
+        let playbacks = self.cue_playbacks.lock().unwrap();
+        let mut out = TrackedChannels::new();
+        for pb in playbacks.iter() {
+            let (Some(index), Some(cuelist)) = (pb.current_index, cues.get(pb.cuelist_id)) else { continue };
+            if !cuelist.tracking {
+                continue;
+            }
+            let Some(current) = cuelist.cues.get(index) else { continue };
+            let tracked: HashSet<ChannelKey> = cuelist.cues[..index]
+                .iter()
+                .flat_map(|c| c.values.keys().copied())
+                .filter(|key| !current.values.contains_key(key))
+                .collect();
+            out.insert(format!("cue-playback-{}", pb.id), tracked);
+        }
+        out
     }
 
     pub fn trigger_asset(&self, id: String, universe: u32, asset: LegacyAsset) {
@@ -1573,6 +1605,31 @@ mod tests {
         engine.update_effect_preset(preset, off).unwrap();
         engine.step(10.0);
         assert_eq!(reds(&engine)[0], 0);
+    }
+
+    #[test]
+    fn sources_report_tracked_values_programmer_overrides_and_defaults() {
+        let engine = EngineManager::new();
+        engine.set_patch_index(vec![patched_fixture(1, 1, 1), patched_fixture(2, 1, 2), patched_fixture(3, 1, 3)]);
+        let list = engine.create_cuelist("List".to_string(), CuelistKind::Standard, true);
+        engine.execute_command("1 @ 50");
+        engine.record_cue(list, 1.0, "One".to_string(), &[1].into(), 0.0, 0.0).unwrap();
+        engine.execute_command("RELEASE");
+        engine.execute_command("2 @ 50");
+        engine.record_cue(list, 2.0, "Two".to_string(), &[2].into(), 0.0, 0.0).unwrap();
+        engine.execute_command("RELEASE");
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.step(10.0);
+
+        engine.execute_command("3 @ 100");
+        let sources = engine.get_universe_sources(1);
+        assert_eq!(sources.len(), UNIVERSE_SIZE);
+        assert_eq!(sources[0], 3, "fixture 1 is tracked from cue 1");
+        assert_eq!(sources[1], 2, "fixture 2 is recorded in cue 2");
+        assert_eq!(sources[2], 1, "fixture 3 is in the programmer");
+        assert_eq!(sources[3], 0);
     }
 
     #[test]
