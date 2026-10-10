@@ -33,11 +33,29 @@ pub struct Layer {
     /// playback's intensity-master fader. Applied after effects, so a
     /// dimmer effect is faded by the fader too.
     pub intensity_scale: f32,
+    /// Programmer TIME: values still fading toward their target. The tick
+    /// writes the in-between value into `values` every frame.
+    pub fades: HashMap<ChannelKey, ValueFade>,
+}
+
+/// A programmer value fading from `from` to `to` over `duration_ms`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueFade {
+    pub from: f32,
+    pub to: f32,
+    pub elapsed_ms: f64,
+    pub duration_ms: f64,
 }
 
 impl Default for Layer {
     fn default() -> Self {
-        Self { values: HashMap::new(), effects: Vec::new(), fx_values: HashMap::new(), intensity_scale: 1.0 }
+        Self {
+            values: HashMap::new(),
+            effects: Vec::new(),
+            fx_values: HashMap::new(),
+            intensity_scale: 1.0,
+            fades: HashMap::new(),
+        }
     }
 }
 
@@ -57,8 +75,50 @@ impl Layer {
         self.values.clear();
         self.effects.clear();
         self.fx_values.clear();
+        self.fades.clear();
+    }
+
+    /// Sets `key` to `value`. With `fade_ms > 0` the value instead fades in
+    /// from its current value (`current`, used when the layer has none yet).
+    pub fn set_value(&mut self, key: ChannelKey, value: f32, fade_ms: f64, current: f32) {
+        if fade_ms > 0.0 {
+            let from = self.values.get(&key).copied().unwrap_or(current);
+            self.values.insert(key, from);
+            self.fades.insert(key, ValueFade { from, to: value, elapsed_ms: 0.0, duration_ms: fade_ms });
+        } else {
+            self.fades.remove(&key);
+            self.values.insert(key, value);
+        }
+    }
+
+    /// Advances programmer-TIME fades by `dt_ms`.
+    pub fn advance_fades(&mut self, dt_ms: f64) {
+        if self.fades.is_empty() {
+            return;
+        }
+        let values = &mut self.values;
+        self.fades.retain(|key, fade| {
+            fade.elapsed_ms += dt_ms;
+            let t = (fade.elapsed_ms / fade.duration_ms).clamp(0.0, 1.0) as f32;
+            values.insert(*key, fade.from + (fade.to - fade.from) * t);
+            t < 1.0
+        });
     }
 }
+
+/// Non-destructive highlight: shown on top of the merged output, never
+/// written into the programmer or any playback (so it can't be recorded).
+#[derive(Debug, Clone, Default)]
+pub struct Highlight {
+    /// Channels forced to a value on the selected fixtures (intensity and
+    /// white/RGB at full: "full / open white").
+    pub lit: HashMap<ChannelKey, f32>,
+    /// Intensity channels of every other fixture, dimmed ("lowlight").
+    pub dimmed: HashSet<ChannelKey>,
+}
+
+/// How much of its level a lowlighted fixture keeps.
+pub const LOWLIGHT_SCALE: f32 = 0.25;
 
 #[derive(Debug, Clone)]
 pub struct LayerEffect {
@@ -74,6 +134,13 @@ pub struct EngineState {
     pub playbacks: HashMap<String, (i64, Layer)>,
     pub htp_channels: HashMap<u32, HashSet<u16>>,
     next_playback_priority: i64,
+    /// Blind mode: programmer edits go to `blind` (which never outputs)
+    /// instead of `programmer`.
+    pub blind_mode: bool,
+    pub blind: Layer,
+    pub highlight: Option<Highlight>,
+    /// 0.0-1.0, multiplies every HTP (intensity) channel of the final output.
+    pub grand_master: f32,
 }
 
 impl Default for EngineState {
@@ -89,6 +156,20 @@ impl EngineState {
             playbacks: HashMap::new(),
             htp_channels: HashMap::new(),
             next_playback_priority: 0,
+            blind_mode: false,
+            blind: Layer::default(),
+            highlight: None,
+            grand_master: 1.0,
+        }
+    }
+
+    /// The layer manual programmer edits land in: the live programmer, or
+    /// the blind one while blind mode is on.
+    pub fn edit_layer(&mut self) -> &mut Layer {
+        if self.blind_mode {
+            &mut self.blind
+        } else {
+            &mut self.programmer
         }
     }
 

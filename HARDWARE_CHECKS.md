@@ -180,3 +180,36 @@ UI too, not just the rig.
 - [ ] **Positions persist.** Place fixtures, save, reopen: positions come back
       in both the plot and 3D.
 
+## Playback and programmer completion
+
+Needs the desktop app (`npm run tauri dev`) and, where noted, a rig.
+
+- [ ] Playback bar: page through 1 to 40 with the arrows. Assign a cuelist to
+      a column on page 2, go back to page 1 and confirm it keeps running
+      (release on page change off), then turn the option on and confirm
+      leaving page 2 releases it.
+- [ ] Touch: every playback button and fader is comfortable to hit on a
+      touchscreen (44px minimum), the fader tracks a finger drag, and Flash
+      releases when the finger lifts or slides off.
+- [ ] Main playback: select a column, then GO / BACK / PAUSE act on it;
+      RELEASE ALL clears every page.
+- [ ] Grand master: with real fixtures at mixed levels, pulling GM down
+      dims dimmers proportionally and leaves colour/position alone; recording
+      a cue at GM 50% stores the unmastered values.
+- [ ] Rate master: a BPM-synced effect and a chase visibly speed up at 200%,
+      slow at 50% and freeze at 0%. A pixel map slows with it.
+- [ ] Rate fader mode on a playback with follows: 0% stops the cue timers,
+      100% halves every fade.
+- [ ] Delay in/out, follow, wait, link and loop on a real cuelist: watch the
+      timing against a stopwatch and confirm no flicker at the cue changes.
+- [ ] Mark (move-in-black) with moving heads: the next cue's pan/tilt/colour
+      is reached while the head is dark in the previous cue, with no visible
+      move when the cue fires. Check a head with a slow pan/tilt.
+- [ ] Programmer TIME: `TIME 3` then `1 THRU 4 @ 100` fades the pars in over
+      3 seconds on the output.
+- [ ] Blind: edits while blind change nothing on stage; `RECORD CUE` from blind
+      then GO shows exactly the blind edits.
+- [ ] Highlight: selected fixtures go full white and the rest dim; changing the
+      selection moves the highlight; turning it off restores the look.
+- [ ] Keyboard: every Alt shortcut on the keypad works on macOS and Windows
+      (Alt+letter can be eaten by the OS or the webview menu on some layouts).

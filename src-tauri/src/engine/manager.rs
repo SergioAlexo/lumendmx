@@ -17,11 +17,14 @@ use super::cues::{resolve_cue_value, Cue, CueStore, CueValue, Cuelist, CuelistKi
 use super::effects::{self, EffectClock, EffectDef, EffectInstance, ResolvedEffect};
 use super::groups::{Group, GroupStore};
 use super::legacy_playback::{LegacyAsset, RunningPlayback};
-use super::merge::{channel_sources, merge_universe, merge_universe_static, TrackedChannels};
+use super::merge::{
+    channel_sources, merge_channel_static, merge_universe, merge_universe_static, merge_universe_unmastered,
+    TrackedChannels,
+};
 use super::pixelmap::{self, PixelMap, PixelMapRuntime, PixelMapStore};
-use super::playback::{FaderMode, PlaybackRuntime};
+use super::playback::{FaderMode, PlayInfo, PlaybackRuntime};
 use super::presets::{Preset, PresetFamily, PresetStore};
-use super::state::{ChannelKey, EngineState, Layer, LayerEffect};
+use super::state::{ChannelKey, EngineState, Highlight, Layer, LayerEffect};
 use super::tempo::{Tempo, TempoStatus};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
@@ -32,6 +35,11 @@ const DISPLAY_HZ: f64 = 20.0;
 /// programmer's `i64::MAX`), so it wins LTP over any standard/chase playback
 /// or legacy-asset layer regardless of trigger order.
 pub const OVERRIDE_PRIORITY_BASE: i64 = 1_000_000_000;
+/// Playback pages, and playback columns on each.
+pub const PAGE_COUNT: u32 = 40;
+pub const PLAYBACKS_PER_PAGE: u32 = 10;
+/// Highest rate-master speed (the fader's 100% is 1x, so this is its top).
+const MAX_RATE_MASTER: f32 = 2.0;
 /// Default fade time for `playback_release` when the caller doesn't specify one.
 const DEFAULT_RELEASE_FADE_MS: f64 = 500.0;
 
@@ -77,6 +85,8 @@ struct ProgrammerContext {
     /// takes no number, per the command line's grammar) knows which cue to
     /// re-capture.
     last_cue_number: Option<f64>,
+    /// Highlight follows the selection while it is on.
+    highlight: bool,
 }
 
 #[derive(Clone, Serialize, TS)]
@@ -94,6 +104,45 @@ pub struct CommandResult {
     pub ok: bool,
     pub message: String,
     pub selection: Vec<u32>,
+}
+
+/// Console-wide state the playback bar and programmer keys display.
+#[derive(Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct ConsoleStatus {
+    /// 0-100.
+    pub grand_master: f32,
+    /// 0-200; 100 is normal speed.
+    pub rate_master: f32,
+    pub page: u32,
+    pub page_count: u32,
+    pub playbacks_per_page: u32,
+    pub release_on_page_change: bool,
+    pub blind: bool,
+    pub highlight: bool,
+    /// The TIME the programmer applies, in seconds.
+    pub time_s: f32,
+    pub selection: Vec<u32>,
+}
+
+/// Editable cue settings (the cue sheet's columns).
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct CueSettings {
+    pub name: String,
+    pub fade_in_ms: f64,
+    pub fade_out_ms: f64,
+    pub delay_in_ms: f64,
+    pub delay_out_ms: f64,
+    pub attr_fade_ms: Option<f64>,
+    pub attr_delay_ms: Option<f64>,
+    pub follow_ms: Option<f64>,
+    pub wait_ms: Option<f64>,
+    pub link_to: Option<f64>,
+    pub loop_count: Option<u32>,
+    pub mark: bool,
 }
 
 /// `Cue.values` is keyed by `(u32, u16)`, which can't cross the Tauri
@@ -122,6 +171,22 @@ pub struct CueDto {
     /// Phase 7; absent in files saved before effects existed.
     #[serde(default)]
     pub effects: Vec<EffectInstance>,
+    /// Cue timing, follows and links; absent in files saved before they
+    /// were acted on (all default to "off").
+    #[serde(default)]
+    pub delay_out_ms: f64,
+    #[serde(default)]
+    pub attr_fade_ms: Option<f64>,
+    #[serde(default)]
+    pub attr_delay_ms: Option<f64>,
+    #[serde(default)]
+    pub follow_ms: Option<f64>,
+    #[serde(default)]
+    pub wait_ms: Option<f64>,
+    #[serde(default)]
+    pub link_to: Option<f64>,
+    #[serde(default)]
+    pub loop_count: Option<u32>,
 }
 
 impl From<&Cue> for CueDto {
@@ -141,6 +206,13 @@ impl From<&Cue> for CueDto {
             delay_in_ms: cue.delay_in_ms,
             mark: cue.mark,
             effects: cue.effects.clone(),
+            delay_out_ms: cue.delay_out_ms,
+            attr_fade_ms: cue.attr_fade_ms,
+            attr_delay_ms: cue.attr_delay_ms,
+            follow_ms: cue.follow_ms,
+            wait_ms: cue.wait_ms,
+            link_to: cue.link_to,
+            loop_count: cue.loop_count,
         }
     }
 }
@@ -167,6 +239,13 @@ impl From<CuelistDto> for Cuelist {
             cue.delay_in_ms = cue_dto.delay_in_ms;
             cue.mark = cue_dto.mark;
             cue.effects = cue_dto.effects;
+            cue.delay_out_ms = cue_dto.delay_out_ms;
+            cue.attr_fade_ms = cue_dto.attr_fade_ms;
+            cue.attr_delay_ms = cue_dto.attr_delay_ms;
+            cue.follow_ms = cue_dto.follow_ms;
+            cue.wait_ms = cue_dto.wait_ms;
+            cue.link_to = cue_dto.link_to;
+            cue.loop_count = cue_dto.loop_count;
             list.upsert_cue(cue); // keeps cues sorted even if the file isn't
         }
         list
@@ -195,6 +274,23 @@ pub struct PlaybackStatus {
     pub fader: f32,
     pub fader_mode: FaderMode,
     pub paused: bool,
+    pub page: u32,
+    pub column: u32,
+    /// A cue is live (the playback has been GO'd and not released).
+    pub active: bool,
+    pub cue_count: u32,
+}
+
+/// Where a playback lives on the playback bar; saved in the show file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct PlaybackSlot {
+    pub page: u32,
+    pub column: u32,
+    pub cuelist_id: u32,
+    pub fader: f32,
+    pub fader_mode: FaderMode,
 }
 
 /// The engine-owned part of a show: what `.lumen` files store in their
@@ -209,6 +305,11 @@ pub struct ShowEngineData {
     /// The global tempo (Phase 7).
     pub bpm: f32,
     pub pixel_maps: Vec<PixelMap>,
+    /// Playback bar assignments (schema v7+).
+    #[serde(default)]
+    pub playbacks: Vec<PlaybackSlot>,
+    #[serde(default)]
+    pub release_on_page_change: bool,
 }
 
 #[derive(Clone, Serialize, TS)]
@@ -232,15 +333,21 @@ struct TickShared {
     tempo: Arc<Mutex<Tempo>>,
     pixel_maps: Arc<Mutex<PixelMapStore>>,
     map_runtimes: Arc<Mutex<Vec<PixelMapRuntime>>>,
+    play_info: Arc<Mutex<Arc<PlayInfo>>>,
+    /// The rate master as `f32` bits (1.0 = normal speed).
+    rate_master: Arc<AtomicU32>,
 }
 
 impl TickShared {
     /// Advances time by `dt_ms` and re-renders every layer (playbacks, pixel
     /// maps, effects). Output is the caller's job: merge and send.
     fn advance(&self, dt_ms: f64) {
+        let rate_master = f32::from_bits(self.rate_master.load(Ordering::Relaxed));
+        let info = self.play_info.lock().unwrap().clone();
         let clock = {
             let mut tempo = self.tempo.lock().unwrap();
-            tempo.advance(dt_ms);
+            // The rate master scales the clock effects and pixel maps read.
+            tempo.advance(dt_ms * rate_master as f64);
             EffectClock { seconds: tempo.seconds(), beats: tempo.beat() }
         };
 
@@ -249,6 +356,7 @@ impl TickShared {
             let patch = self.patch_index.lock().unwrap();
             let mut state = self.state.lock().unwrap();
             let mut playbacks = self.playbacks.lock().unwrap();
+            state.programmer.advance_fades(dt_ms);
             playbacks.retain_mut(|playback| {
                 let entry = state
                     .playbacks
@@ -274,6 +382,8 @@ impl TickShared {
                     state.playbacks.remove(&key);
                     continue;
                 };
+                pb.info = info.clone();
+                pb.rate_master = rate_master;
                 pb.tick(dt_ms, cuelist, &presets);
                 let entry = state.playbacks.entry(key).or_insert_with(|| (pb.priority, Default::default()));
                 entry.0 = pb.priority;
@@ -320,6 +430,10 @@ pub struct EngineManager {
     map_runtimes: Arc<Mutex<Vec<PixelMapRuntime>>>,
     /// Ids for effect instances, unique across the programmer and every cue.
     next_effect_id: AtomicU32,
+    play_info: Arc<Mutex<Arc<PlayInfo>>>,
+    rate_master: Arc<AtomicU32>,
+    current_page: AtomicU32,
+    release_on_page_change: AtomicBool,
     /// Bumped by every change to groups/presets/cuelists, so the frontend
     /// can tell the show has unsaved engine-side edits (see `ShowEngineData`).
     data_revision: AtomicU64,
@@ -342,6 +456,10 @@ impl EngineManager {
             pixel_maps: Arc::new(Mutex::new(PixelMapStore::new())),
             map_runtimes: Arc::new(Mutex::new(Vec::new())),
             next_effect_id: AtomicU32::new(1),
+            play_info: Arc::new(Mutex::new(Arc::new(PlayInfo::default()))),
+            rate_master: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            current_page: AtomicU32::new(0),
+            release_on_page_change: AtomicBool::new(false),
             data_revision: AtomicU64::new(0),
         }
     }
@@ -357,6 +475,8 @@ impl EngineManager {
             tempo: self.tempo.clone(),
             pixel_maps: self.pixel_maps.clone(),
             map_runtimes: self.map_runtimes.clone(),
+            play_info: self.play_info.clone(),
+            rate_master: self.rate_master.clone(),
         }
     }
 
@@ -420,20 +540,51 @@ impl EngineManager {
     }
 
     pub fn set_htp_channels(&self, universe: u32, channels: Vec<u16>) {
-        let mut state = self.state.lock().unwrap();
-        state.htp_channels.insert(universe, channels.into_iter().collect());
+        {
+            let mut state = self.state.lock().unwrap();
+            state.htp_channels.insert(universe, channels.into_iter().collect());
+        }
+        self.rebuild_play_info();
     }
 
     pub fn set_patch_index(&self, entries: Vec<PatchIndexEntry>) {
         *self.patch_index.lock().unwrap() = entries;
+        self.rebuild_play_info();
+        self.refresh_highlight();
+    }
+
+    /// Recomputes what playbacks know about the patch (which channels are
+    /// intensity, which fixture an attribute belongs to).
+    fn rebuild_play_info(&self) {
+        let info = {
+            let patch = self.patch_index.lock().unwrap();
+            let state = self.state.lock().unwrap();
+            let mut intensity_of = HashMap::new();
+            for entry in patch.iter() {
+                let Some(intensity) = entry.intensity_channel else { continue };
+                let attrs = entry.attribute_channels.values().chain(entry.cells.iter().flat_map(|c| c.values()));
+                for &channel in attrs {
+                    if channel != intensity {
+                        intensity_of.insert((entry.universe, channel), (entry.universe, intensity));
+                    }
+                }
+            }
+            PlayInfo { htp: state.htp_channels.clone(), intensity_of }
+        };
+        *self.play_info.lock().unwrap() = Arc::new(info);
+    }
+
+    fn current_play_info(&self) -> Arc<PlayInfo> {
+        self.play_info.lock().unwrap().clone()
     }
 
     /// Immediate (unfaded) set into the programmer layer — what slider drags,
     /// color-preset buttons, and the Live AI console use.
     pub fn set_channels(&self, universe: u32, values: &HashMap<u16, u8>) {
         let mut state = self.state.lock().unwrap();
+        let layer = state.edit_layer();
         for (&channel, &value) in values {
-            state.programmer.values.insert((universe, channel), value as f32);
+            layer.set_value((universe, channel), value as f32, 0.0, 0.0);
         }
     }
 
@@ -522,6 +673,7 @@ impl EngineManager {
                 Err(e) => (false, e),
             },
             Command::SetIntensity(expr, value) => {
+                let fade_ms = (ctx.pending_time_s as f64) * 1000.0;
                 let target = match expr {
                     // "1 THRU 8 @ 50" both selects and sets intensity, like a
                     // real console's command line.
@@ -536,11 +688,11 @@ impl EngineManager {
                     },
                     None => ctx.selection.clone(),
                 };
-                self.apply_intensity(&target, value.as_u8())
+                self.apply_intensity(&target, value.as_u8(), fade_ms)
             }
             Command::Clear => {
                 if ctx.selection.is_empty() {
-                    self.state.lock().unwrap().programmer.clear();
+                    self.state.lock().unwrap().edit_layer().clear();
                     (true, "Cleared programmer values".to_string())
                 } else {
                     ctx.selection.clear();
@@ -549,7 +701,7 @@ impl EngineManager {
             }
             Command::Release => {
                 ctx.selection.clear();
-                self.state.lock().unwrap().programmer.clear();
+                self.state.lock().unwrap().edit_layer().clear();
                 (true, "Released".to_string())
             }
             Command::SelectAll => {
@@ -575,12 +727,12 @@ impl EngineManager {
             },
             Command::SetTime(seconds) => {
                 ctx.pending_time_s = seconds;
-                (true, format!("Fade time set to {seconds}s (applies to the next RECORD CUE/UPDATE)"))
+                (true, format!("TIME {seconds}s (programmer changes fade in over it; RECORD CUE/UPDATE store it)"))
             }
             Command::RecordCue(number) => match ctx.current_cuelist {
                 None => (false, "No current cuelist — select one in the Cuelists tab first".to_string()),
                 Some(cuelist_id) => {
-                    let number: f64 = number.into();
+                    let number = cue_number(number);
                     let fade_ms = (ctx.pending_time_s as f64) * 1000.0;
                     let selection = ctx.selection.clone();
                     match self.record_cue(cuelist_id, number, format!("Cue {number}"), &selection, fade_ms, fade_ms) {
@@ -613,34 +765,154 @@ impl EngineManager {
             },
             Command::DeleteCue(number) => match ctx.current_cuelist {
                 None => (false, "No current cuelist — select one in the Cuelists tab first".to_string()),
-                Some(cuelist_id) => match self.delete_cue(cuelist_id, number.into()) {
+                Some(cuelist_id) => match self.delete_cue(cuelist_id, cue_number(number)) {
                     Ok(()) => (true, format!("Deleted cue {number}")),
                     Err(e) => (false, e),
                 },
             },
-            // COPY/MOVE parse (and are unit-tested) but take no arguments in
-            // this project's grammar (see command_line.rs's module docs) --
-            // there's no target number to copy/move to. Rather than guess at
-            // syntax BUILD_PLAN doesn't specify, they stay unimplemented; see
-            // DECISIONS.md.
-            Command::Copy | Command::Move => {
-                (false, "COPY/MOVE need a target cue number the command line doesn't have syntax for yet".to_string())
+            Command::Copy | Command::Move => (false, "Use COPY CUE <from> @ <to> or MOVE CUE <from> @ <to>".to_string()),
+            Command::CopyCue(from, to) | Command::MoveCue(from, to) => match ctx.current_cuelist {
+                None => (false, "No current cuelist — select one in the Cuelists tab first".to_string()),
+                Some(cuelist_id) => {
+                    let moving = matches!(command, Command::MoveCue(..));
+                    let (from, to) = (cue_number(from), cue_number(to));
+                    match self.copy_or_move_cue(cuelist_id, from, to, moving) {
+                        Ok(()) => {
+                            ctx.last_cue_number = Some(to);
+                            (true, format!("{} cue {from} to {to}", if moving { "Moved" } else { "Copied" }))
+                        }
+                        Err(e) => (false, e),
+                    }
+                }
+            },
+            Command::Blind(on) => {
+                let on = on.unwrap_or_else(|| !self.is_blind());
+                self.set_blind(on);
+                (true, if on { "Blind: edits go to the blind programmer" } else { "Blind off" }.to_string())
+            }
+            Command::Highlight(on) => {
+                ctx.highlight = on.unwrap_or(!ctx.highlight);
+                (true, if ctx.highlight { "Highlight on" } else { "Highlight off" }.to_string())
             }
         };
+
+        // Highlight follows the selection, whatever command changed it.
+        let (selection, highlight) = (ctx.selection.clone(), ctx.highlight);
+        self.apply_highlight(&selection, highlight);
 
         CommandResult { ok, message, selection: selection_vec(&ctx) }
     }
 
-    fn apply_intensity(&self, fixture_numbers: &HashSet<u32>, value: u8) -> (bool, String) {
+    /// Turns blind mode on or off. The blind programmer keeps its contents
+    /// across toggles (CLEAR while blind empties it).
+    pub fn set_blind(&self, on: bool) {
+        self.state.lock().unwrap().blind_mode = on;
+    }
+
+    pub fn is_blind(&self) -> bool {
+        self.state.lock().unwrap().blind_mode
+    }
+
+    pub fn set_highlight(&self, on: bool) {
+        let selection = {
+            let mut ctx = self.programmer_ctx.lock().unwrap();
+            ctx.highlight = on;
+            ctx.selection.clone()
+        };
+        self.apply_highlight(&selection, on);
+    }
+
+    fn refresh_highlight(&self) {
+        let (selection, on) = {
+            let ctx = self.programmer_ctx.lock().unwrap();
+            (ctx.selection.clone(), ctx.highlight)
+        };
+        self.apply_highlight(&selection, on);
+    }
+
+    /// Highlight: the selected fixtures go to full intensity and open white,
+    /// every other fixture's intensity drops to a quarter. Shown on top of
+    /// the output only — nothing is written to the programmer, so it never
+    /// ends up in a recorded cue.
+    fn apply_highlight(&self, selection: &HashSet<u32>, enabled: bool) {
+        let patch = self.patch_index.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if !enabled || selection.is_empty() {
+            state.highlight = None;
+            return;
+        }
+        let mut highlight = Highlight::default();
+        for entry in patch.iter() {
+            if selection.contains(&entry.fixture_number) {
+                if let Some(channel) = entry.intensity_channel {
+                    highlight.lit.insert((entry.universe, channel), 255.0);
+                }
+                for cell in std::iter::once(&entry.attribute_channels).chain(entry.cells.iter()) {
+                    for (attr, value) in OPEN_WHITE {
+                        if let Some(&channel) = cell.get(attr) {
+                            highlight.lit.insert((entry.universe, channel), value);
+                        }
+                    }
+                }
+            } else if let Some(channel) = entry.intensity_channel {
+                highlight.dimmed.insert((entry.universe, channel));
+            }
+        }
+        state.highlight = Some(highlight);
+    }
+
+    /// The programmer's state for display.
+    pub fn console_status(&self) -> ConsoleStatus {
+        let (selection, highlight, time_s) = {
+            let ctx = self.programmer_ctx.lock().unwrap();
+            let mut selection: Vec<u32> = ctx.selection.iter().copied().collect();
+            selection.sort_unstable();
+            (selection, ctx.highlight, ctx.pending_time_s)
+        };
+        let (grand_master, blind) = {
+            let state = self.state.lock().unwrap();
+            (state.grand_master, state.blind_mode)
+        };
+        ConsoleStatus {
+            grand_master: grand_master * 100.0,
+            rate_master: f32::from_bits(self.rate_master.load(Ordering::Relaxed)) * 100.0,
+            page: self.current_page.load(Ordering::SeqCst),
+            page_count: PAGE_COUNT,
+            playbacks_per_page: PLAYBACKS_PER_PAGE,
+            release_on_page_change: self.release_on_page_change.load(Ordering::SeqCst),
+            blind,
+            highlight,
+            time_s,
+            selection,
+        }
+    }
+
+    /// Grand master, 0-100%: scales every intensity channel of the output.
+    pub fn set_grand_master(&self, percent: f32) {
+        self.state.lock().unwrap().grand_master = percent.clamp(0.0, 100.0) / 100.0;
+    }
+
+    /// Rate master, 0-200% (100% = normal): scales chase speed and the clock
+    /// effects and pixel maps run on.
+    pub fn set_rate_master(&self, percent: f32) {
+        let rate = (percent / 100.0).clamp(0.0, MAX_RATE_MASTER);
+        self.rate_master.store(rate.to_bits(), Ordering::Relaxed);
+    }
+
+    fn apply_intensity(&self, fixture_numbers: &HashSet<u32>, value: u8, fade_ms: f64) -> (bool, String) {
         let index = self.patch_index.lock().unwrap();
         let mut state = self.state.lock().unwrap();
+        // Blind edits never fade: nothing is visible to fade.
+        let fade_ms = if state.blind_mode { 0.0 } else { fade_ms };
         let mut set_count = 0;
         let mut skipped = 0;
         for &number in fixture_numbers {
             match index.iter().find(|e| e.fixture_number == number) {
                 Some(entry) => match entry.intensity_channel {
                     Some(channel) => {
-                        state.programmer.values.insert((entry.universe, channel), value as f32);
+                        let key = (entry.universe, channel);
+                        let current = if fade_ms > 0.0 { merge_channel_static(&state, key) } else { 0.0 };
+                        state.edit_layer().set_value(key, value as f32, fade_ms, current);
                         set_count += 1;
                     }
                     None => skipped += 1,
@@ -693,7 +965,7 @@ impl EngineManager {
             .copied()
             .collect();
         let value = (percent.clamp(0.0, 100.0) / 100.0 * 255.0).round() as u8;
-        Ok(self.apply_intensity(&members, value))
+        Ok(self.apply_intensity(&members, value, 0.0))
     }
 
     // --- Presets (Phase 5) ---
@@ -712,7 +984,7 @@ impl EngineManager {
         entries.sort_by_key(|e| e.fixture_number);
 
         for entry in entries {
-            let frame = frames.entry(entry.universe).or_insert_with(|| merge_universe(&state, entry.universe));
+            let frame = frames.entry(entry.universe).or_insert_with(|| merge_universe_unmastered(&state, entry.universe));
             for (attr, &channel) in &entry.attribute_channels {
                 values.entry(attr.clone()).or_insert(frame[(channel - 1) as usize] as f32);
             }
@@ -771,13 +1043,17 @@ impl EngineManager {
             self.start_effect(def, ordered, Some(id));
             return Ok(fixture_numbers.len());
         }
+        let fade_ms = (self.programmer_ctx.lock().unwrap().pending_time_s as f64) * 1000.0;
         let index = self.patch_index.lock().unwrap();
         let mut state = self.state.lock().unwrap();
+        let fade_ms = if state.blind_mode { 0.0 } else { fade_ms };
         let mut applied = 0;
         for entry in index.iter().filter(|e| fixture_numbers.contains(&e.fixture_number)) {
             for (attr, &value) in &values {
                 if let Some(&channel) = entry.attribute_channels.get(attr) {
-                    state.programmer.values.insert((entry.universe, channel), value);
+                    let key = (entry.universe, channel);
+                    let current = if fade_ms > 0.0 { merge_channel_static(&state, key) } else { 0.0 };
+                    state.edit_layer().set_value(key, value, fade_ms, current);
                     applied += 1;
                 }
             }
@@ -855,21 +1131,44 @@ impl EngineManager {
             index.iter().filter(|e| fixture_numbers.contains(&e.fixture_number)).collect();
         entries.sort_by_key(|e| e.fixture_number);
         for entry in entries {
-            // The static (effect-free) merge: a running effect is recorded
-            // as an effect below, not as whatever value it happened to be
-            // at this instant.
-            let frame = frames.entry(entry.universe).or_insert_with(|| merge_universe_static(&state, entry.universe));
             for &channel in entry.attribute_channels.values() {
-                cue.values.insert((entry.universe, channel), CueValue::Literal { value: frame[(channel - 1) as usize] as f32 });
+                let key = (entry.universe, channel);
+                if state.blind_mode {
+                    // Recording from the blind programmer stores only what
+                    // was edited in it; everything else tracks.
+                    if let Some(&value) = state.blind.values.get(&key) {
+                        cue.values.insert(key, CueValue::Literal { value });
+                    }
+                } else {
+                    // The static (effect-free) merge: a running effect is
+                    // recorded as an effect below, not as whatever value it
+                    // happened to be at this instant.
+                    let frame =
+                        frames.entry(entry.universe).or_insert_with(|| merge_universe_static(&state, entry.universe));
+                    cue.values.insert(key, CueValue::Literal { value: frame[(channel - 1) as usize] as f32 });
+                }
             }
         }
-        cue.effects = programmer_effects_for(&state.programmer, fixture_numbers);
+        cue.effects = programmer_effects_for(if state.blind_mode { &state.blind } else { &state.programmer }, fixture_numbers);
         drop(state);
         drop(index);
 
         self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
+        // Re-recording a cue replaces its values but keeps the timing
+        // details, follows and links it was given in the cue sheet.
+        if let Some(existing) = list.index_of(number).map(|i| &list.cues[i]) {
+            cue.delay_in_ms = existing.delay_in_ms;
+            cue.delay_out_ms = existing.delay_out_ms;
+            cue.attr_fade_ms = existing.attr_fade_ms;
+            cue.attr_delay_ms = existing.attr_delay_ms;
+            cue.follow_ms = existing.follow_ms;
+            cue.wait_ms = existing.wait_ms;
+            cue.link_to = existing.link_to;
+            cue.loop_count = existing.loop_count;
+            cue.mark = existing.mark;
+        }
         list.upsert_cue(cue);
         Ok(())
     }
@@ -880,6 +1179,41 @@ impl EngineManager {
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
         list.remove_cue(number);
         Ok(())
+    }
+
+    /// Replaces a cue's editable settings (the cue sheet's columns).
+    pub fn update_cue(&self, cuelist_id: u32, number: f64, settings: CueSettings) -> Result<(), String> {
+        self.mark_data_changed();
+        let mut cues = self.cues.lock().unwrap();
+        let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
+        let index = list.index_of(number).ok_or_else(|| format!("No cue {number}"))?;
+        let cue = &mut list.cues[index];
+        let non_negative = |ms: f64| ms.max(0.0);
+        cue.name = settings.name;
+        cue.fade_in_ms = non_negative(settings.fade_in_ms);
+        cue.fade_out_ms = non_negative(settings.fade_out_ms);
+        cue.delay_in_ms = non_negative(settings.delay_in_ms);
+        cue.delay_out_ms = non_negative(settings.delay_out_ms);
+        cue.attr_fade_ms = settings.attr_fade_ms.map(non_negative);
+        cue.attr_delay_ms = settings.attr_delay_ms.map(non_negative);
+        cue.follow_ms = settings.follow_ms.map(non_negative);
+        cue.wait_ms = settings.wait_ms.map(non_negative);
+        cue.link_to = settings.link_to;
+        cue.loop_count = settings.loop_count;
+        cue.mark = settings.mark;
+        Ok(())
+    }
+
+    /// `COPY CUE from @ to` / `MOVE CUE from @ to`.
+    pub fn copy_or_move_cue(&self, cuelist_id: u32, from: f64, to: f64, moving: bool) -> Result<(), String> {
+        self.mark_data_changed();
+        let mut cues = self.cues.lock().unwrap();
+        let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
+        if moving {
+            list.move_cue(from, to)
+        } else {
+            list.copy_cue(from, to)
+        }
     }
 
     /// Turns one channel of an existing cue into a live reference to preset
@@ -967,6 +1301,8 @@ impl EngineManager {
             cuelists: self.list_cuelists(),
             bpm: self.tempo.lock().unwrap().bpm(),
             pixel_maps: self.list_pixel_maps(),
+            playbacks: self.playback_slots(),
+            release_on_page_change: self.release_on_page_change.load(Ordering::SeqCst),
         }
     }
 
@@ -1001,6 +1337,16 @@ impl EngineManager {
         self.groups.lock().unwrap().replace_all(data.groups);
         self.presets.lock().unwrap().replace_all(data.presets);
         self.cues.lock().unwrap().replace_all(data.cuelists.into_iter().map(Cuelist::from).collect());
+        self.release_on_page_change.store(data.release_on_page_change, Ordering::SeqCst);
+        self.current_page.store(0, Ordering::SeqCst);
+        for slot in data.playbacks {
+            if let Ok(id) = self.assign_playback(slot.cuelist_id, slot.page, slot.column) {
+                let _ = self.with_playback_mut(id, |pb| {
+                    pb.fader = slot.fader.clamp(0.0, 1.0);
+                    pb.fader_mode = slot.fader_mode;
+                });
+            }
+        }
         self.mark_data_changed();
     }
 
@@ -1034,7 +1380,7 @@ impl EngineManager {
         let mut state = self.state.lock().unwrap();
         let attributes: HashSet<String> = def.attributes().into_iter().map(str::to_string).collect();
         let taken: HashSet<u32> = fixtures.iter().copied().collect();
-        let programmer = &mut state.programmer;
+        let programmer = state.edit_layer();
         for existing in programmer.effects.iter_mut() {
             if existing.instance.def.attributes().iter().any(|a| attributes.contains(*a)) {
                 existing.instance.fixtures.retain(|f| !taken.contains(f));
@@ -1050,7 +1396,7 @@ impl EngineManager {
     pub fn update_effect(&self, id: u32, def: EffectDef) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         let effect = state
-            .programmer
+            .edit_layer()
             .effects
             .iter_mut()
             .find(|e| e.instance.id == id)
@@ -1061,14 +1407,14 @@ impl EngineManager {
     }
 
     pub fn stop_effect(&self, id: u32) {
-        self.state.lock().unwrap().programmer.effects.retain(|e| e.instance.id != id);
+        self.state.lock().unwrap().edit_layer().effects.retain(|e| e.instance.id != id);
     }
 
     /// The programmer's running effects, with preset-linked ones showing
     /// the preset's current definition.
     pub fn list_effects(&self) -> Vec<EffectInstance> {
         let effects: Vec<EffectInstance> =
-            self.state.lock().unwrap().programmer.effects.iter().map(|e| e.instance.clone()).collect();
+            self.state.lock().unwrap().edit_layer().effects.iter().map(|e| e.instance.clone()).collect();
         let presets = self.presets.lock().unwrap();
         effects
             .into_iter()
@@ -1187,13 +1533,47 @@ impl EngineManager {
 
     // --- Playbacks (Phase 6) ---
 
+    /// Puts a new playback for `cuelist_id` in the first free column on the
+    /// current page (or, if that page is full, the first free column
+    /// anywhere).
     pub fn create_playback(&self, cuelist_id: u32) -> Result<u32, String> {
+        let page = self.current_page.load(Ordering::SeqCst);
+        let taken: HashSet<(u32, u32)> =
+            self.cue_playbacks.lock().unwrap().iter().map(|p| (p.page, p.column)).collect();
+        let slot = (0..PAGE_COUNT)
+            .map(|offset| (page + offset) % PAGE_COUNT)
+            .flat_map(|p| (0..PLAYBACKS_PER_PAGE).map(move |c| (p, c)))
+            .find(|slot| !taken.contains(slot))
+            .ok_or("Every playback slot is in use")?;
+        self.assign_playback(cuelist_id, slot.0, slot.1)
+    }
+
+    /// Assigns a new playback for `cuelist_id` to `page`/`column`,
+    /// replacing whatever was there.
+    pub fn assign_playback(&self, cuelist_id: u32, page: u32, column: u32) -> Result<u32, String> {
+        if page >= PAGE_COUNT || column >= PLAYBACKS_PER_PAGE {
+            return Err(format!("No playback slot at page {} column {}", page + 1, column + 1));
+        }
         let kind = self.cues.lock().unwrap().get(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?.kind;
+        let displaced: Vec<u32> = self
+            .cue_playbacks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.page == page && p.column == column)
+            .map(|p| p.id)
+            .collect();
+        for id in displaced {
+            self.delete_playback(id);
+        }
         let base_priority = self.state.lock().unwrap().next_priority();
         let priority = if kind == CuelistKind::Override { OVERRIDE_PRIORITY_BASE + base_priority } else { base_priority };
 
         let id = self.next_playback_id.fetch_add(1, Ordering::SeqCst);
         let mut runtime = PlaybackRuntime::new(id, cuelist_id, priority);
+        runtime.page = page;
+        runtime.column = column;
+        runtime.info = self.current_play_info();
         if kind == CuelistKind::Submaster {
             // A submaster has no GO stepping -- it always renders cue 0
             // (tracked), scaled by its fader.
@@ -1206,17 +1586,20 @@ impl EngineManager {
             }
         }
         self.cue_playbacks.lock().unwrap().push(runtime);
+        self.mark_data_changed();
         Ok(id)
     }
 
     pub fn delete_playback(&self, id: u32) {
+        self.mark_data_changed();
         self.cue_playbacks.lock().unwrap().retain(|p| p.id != id);
         self.state.lock().unwrap().playbacks.remove(&format!("cue-playback-{id}"));
     }
 
     pub fn list_playbacks(&self) -> Vec<PlaybackStatus> {
         let cues = self.cues.lock().unwrap();
-        self.cue_playbacks
+        let mut statuses: Vec<PlaybackStatus> = self
+            .cue_playbacks
             .lock()
             .unwrap()
             .iter()
@@ -1230,8 +1613,68 @@ impl EngineManager {
                 fader: pb.fader,
                 fader_mode: pb.fader_mode,
                 paused: pb.paused,
+                page: pb.page,
+                column: pb.column,
+                active: pb.current_index.is_some(),
+                cue_count: cues.get(pb.cuelist_id).map_or(0, |list| list.cues.len() as u32),
             })
-            .collect()
+            .collect();
+        statuses.sort_by_key(|s| (s.page, s.column));
+        statuses
+    }
+
+    /// The playback assignments as saved in a show file.
+    fn playback_slots(&self) -> Vec<PlaybackSlot> {
+        let mut slots: Vec<PlaybackSlot> = self
+            .cue_playbacks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|pb| PlaybackSlot {
+                page: pb.page,
+                column: pb.column,
+                cuelist_id: pb.cuelist_id,
+                fader: pb.fader,
+                fader_mode: pb.fader_mode,
+            })
+            .collect();
+        slots.sort_by_key(|s| (s.page, s.column));
+        slots
+    }
+
+    /// Switches the playback bar to `page`. With "release on page change"
+    /// on, everything running on the page being left is released.
+    pub fn set_page(&self, page: u32) {
+        let page = page.min(PAGE_COUNT - 1);
+        let old = self.current_page.swap(page, Ordering::SeqCst);
+        if old != page && self.release_on_page_change.load(Ordering::SeqCst) {
+            for pb in self.cue_playbacks.lock().unwrap().iter_mut().filter(|p| p.page == old) {
+                pb.release(DEFAULT_RELEASE_FADE_MS);
+            }
+        }
+    }
+
+    pub fn set_release_on_page_change(&self, on: bool) {
+        self.mark_data_changed();
+        self.release_on_page_change.store(on, Ordering::SeqCst);
+    }
+
+    /// Releases every playback.
+    pub fn playback_release_all(&self) {
+        for pb in self.cue_playbacks.lock().unwrap().iter_mut() {
+            pb.release(DEFAULT_RELEASE_FADE_MS);
+        }
+    }
+
+    /// Jumps playback `id` to the cue at `index`.
+    pub fn playback_go_to(&self, id: u32, index: usize) -> Result<(), String> {
+        self.with_playback(id, |pb, list, presets| {
+            if index >= list.cues.len() {
+                return Err(format!("No cue at position {index}"));
+            }
+            pb.go_to(list, presets, index);
+            Ok(())
+        })?
     }
 
     /// The first playback slot attached to `cuelist_id`, if any — what the
@@ -1247,7 +1690,15 @@ impl EngineManager {
         let cues = self.cues.lock().unwrap();
         let list = cues.get(pb.cuelist_id).ok_or_else(|| format!("Cuelist {} is missing", pb.cuelist_id))?;
         let presets = self.presets.lock().unwrap();
+        pb.info = self.current_play_info();
+        pb.rate_master = f32::from_bits(self.rate_master.load(Ordering::Relaxed));
         Ok(f(pb, list, &presets))
+    }
+
+    fn with_playback_mut<R>(&self, id: u32, f: impl FnOnce(&mut PlaybackRuntime) -> R) -> Result<R, String> {
+        let mut playbacks = self.cue_playbacks.lock().unwrap();
+        let pb = playbacks.iter_mut().find(|p| p.id == id).ok_or_else(|| format!("No playback {id}"))?;
+        Ok(f(pb))
     }
 
     pub fn playback_go(&self, id: u32) -> Result<(), String> {
@@ -1279,9 +1730,30 @@ impl EngineManager {
     pub fn playback_set_fader_mode(&self, id: u32, mode: FaderMode) -> Result<(), String> {
         let mut playbacks = self.cue_playbacks.lock().unwrap();
         let pb = playbacks.iter_mut().find(|p| p.id == id).ok_or_else(|| format!("No playback {id}"))?;
+        if mode == FaderMode::Rate && pb.fader_mode != FaderMode::Rate {
+            pb.fader = 0.5; // normal speed
+        }
         pb.fader_mode = mode;
         Ok(())
     }
+}
+
+/// What "open white" sets on a fixture's colour channels.
+const OPEN_WHITE: [(&str, f32); 7] = [
+    ("red", 255.0),
+    ("green", 255.0),
+    ("blue", 255.0),
+    ("white", 255.0),
+    ("cyan", 0.0),
+    ("magenta", 0.0),
+    ("yellow", 0.0),
+];
+
+/// A command-line cue number as the `f64` the cue sheet uses: going through
+/// the shortest decimal form keeps `1.2` as 1.2 instead of widening an
+/// `f32`'s binary approximation.
+fn cue_number(n: f32) -> f64 {
+    n.to_string().parse().unwrap_or(n as f64)
 }
 
 fn pixel_map_layer_key(id: u32) -> String {
@@ -1656,5 +2128,382 @@ mod tests {
         engine.stop_pixel_map(id);
         engine.step(10.0);
         assert_eq!(engine.get_universe_data(1)[0], 0);
+    }
+
+    fn dimmers(engine: &EngineManager) -> Vec<u8> {
+        let frame = engine.get_universe_data(1);
+        [1usize, 11, 21, 31].iter().map(|&ch| frame[ch - 1]).collect()
+    }
+
+    fn engine_with_pars() -> EngineManager {
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        engine.set_htp_channels(1, vec![1, 11, 21, 31]);
+        engine
+    }
+
+    fn cue_settings(cue: &CueDto) -> CueSettings {
+        CueSettings {
+            name: cue.name.clone(),
+            fade_in_ms: cue.fade_in_ms,
+            fade_out_ms: cue.fade_out_ms,
+            delay_in_ms: cue.delay_in_ms,
+            delay_out_ms: cue.delay_out_ms,
+            attr_fade_ms: cue.attr_fade_ms,
+            attr_delay_ms: cue.attr_delay_ms,
+            follow_ms: cue.follow_ms,
+            wait_ms: cue.wait_ms,
+            link_to: cue.link_to,
+            loop_count: cue.loop_count,
+            mark: cue.mark,
+        }
+    }
+
+    #[test]
+    fn programmer_time_fades_changes_in_over_n_seconds() {
+        let engine = engine_with_pars();
+        assert!(engine.execute_command("TIME 2").ok);
+        assert!(engine.execute_command("1 @ 100").ok);
+        engine.step(10.0);
+        assert!(dimmers(&engine)[0] < 5, "starts from where it was");
+        engine.step(990.0); // 1s of 2s
+        let half = dimmers(&engine)[0];
+        assert!((125..=131).contains(&half), "halfway: {half}");
+        engine.step(1000.0);
+        assert_eq!(dimmers(&engine)[0], 255);
+        engine.step(1000.0);
+        assert_eq!(dimmers(&engine)[0], 255, "and stays there");
+
+        // TIME 0 makes edits immediate again, and cancels a fade in flight.
+        engine.execute_command("TIME 5");
+        engine.execute_command("@ 0");
+        engine.step(100.0);
+        engine.execute_command("TIME 0");
+        engine.execute_command("@ 50");
+        engine.step(1.0);
+        assert_eq!(dimmers(&engine)[0], 128);
+    }
+
+    #[test]
+    fn a_programmer_fade_down_cannot_dim_a_dimmer_a_playback_holds_up() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.execute_command("1 @ 100");
+        engine.record_cue(list, 1.0, "Cue 1".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.execute_command("CLEAR");
+        engine.execute_command("CLEAR");
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[0], 255);
+
+        engine.execute_command("TIME 1");
+        engine.execute_command("1 @ 0");
+        engine.step(10.0);
+        // The programmer's LTP... dimmer is HTP, so the playback holds it up;
+        // the fade must at least not have jumped the programmer past its start.
+        engine.step(1000.0);
+        assert_eq!(dimmers(&engine)[0], 255, "HTP: the playback still holds the dimmer");
+    }
+
+    #[test]
+    fn blind_edits_do_not_reach_the_output_and_can_be_recorded() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        engine.set_current_cuelist(Some(list));
+
+        assert!(engine.execute_command("BLIND ON").ok);
+        assert!(engine.execute_command("1 @ 100").ok);
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[0], 0, "blind edits stay off the output");
+
+        let record = engine.execute_command("RECORD CUE 1");
+        assert!(record.ok, "{}", record.message);
+        let cue = &engine.list_cuelists()[0].cues[0];
+        assert_eq!(cue.values.len(), 1, "only what was edited blind is recorded");
+        assert!(matches!(cue.values[0].value, CueValue::Literal { value } if value == 255.0));
+
+        // Leaving blind: the live programmer was never touched.
+        engine.execute_command("BLIND OFF");
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[0], 0);
+
+        // And live edits don't land in the blind programmer.
+        engine.execute_command("2 @ 50");
+        engine.execute_command("BLIND ON");
+        engine.execute_command("CLEAR"); // empties the blind programmer only
+        engine.execute_command("BLIND OFF");
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[1], 128);
+    }
+
+    #[test]
+    fn highlight_lights_the_selection_and_dims_the_rest_without_changing_data() {
+        let engine = engine_with_pars();
+        engine.execute_command("1 THRU 4 @ 80");
+        engine.step(10.0);
+        let before = dimmers(&engine);
+
+        engine.execute_command("2");
+        assert!(engine.execute_command("HIGHLIGHT").ok);
+        engine.step(10.0);
+        let frame = engine.get_universe_data(1);
+        assert_eq!(frame[10], 255, "selected fixture at full");
+        assert_eq!(frame[11], 255, "and open white");
+        assert_eq!(frame[12], 255);
+        assert_eq!(frame[0], (before[0] as f32 * 0.25).round() as u8, "others dimmed");
+
+        // Follows the selection.
+        engine.execute_command("3");
+        assert_eq!(engine.get_universe_data(1)[20], 255);
+        assert_eq!(engine.get_universe_data(1)[10], (before[1] as f32 * 0.25).round() as u8);
+
+        // Non-destructive: not in the programmer, so it isn't recorded.
+        let fixtures: HashSet<u32> = [3].into();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        engine.record_cue(list, 1.0, "Cue 1".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        let recorded = &engine.list_cuelists()[0].cues[0];
+        assert!(recorded.values.iter().all(|v| !matches!(v.value, CueValue::Literal { value } if value == 255.0 && v.channel != 21)));
+        let dimmer = recorded.values.iter().find(|v| v.channel == 21).unwrap();
+        assert!(matches!(dimmer.value, CueValue::Literal { value } if value == before[2] as f32));
+
+        engine.execute_command("HIGHLIGHT OFF");
+        assert_eq!(dimmers(&engine), before);
+    }
+
+    #[test]
+    fn grand_master_scales_intensity_output_but_not_what_gets_recorded() {
+        let engine = engine_with_pars();
+        engine.execute_command("1 @ 100");
+        engine.set_grand_master(50.0);
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[0], 128);
+        assert_eq!(engine.console_status().grand_master, 50.0);
+
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.record_cue(list, 1.0, "Cue 1".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        let recorded = engine.list_cuelists()[0].cues[0].values.iter().find(|v| v.channel == 1).unwrap().value.clone();
+        assert!(matches!(recorded, CueValue::Literal { value } if value == 255.0), "{recorded:?}");
+
+        engine.set_grand_master(0.0);
+        assert_eq!(dimmers(&engine)[0], 0);
+        engine.set_grand_master(100.0);
+        assert_eq!(dimmers(&engine)[0], 255);
+    }
+
+    #[test]
+    fn rate_master_scales_effect_speed_and_chase_speed() {
+        use crate::engine::effects::{EffectDef, Waveform};
+        let engine = engine_with_pars();
+        engine.set_bpm(120.0);
+        engine.start_effect(EffectDef::new_attribute("red", Waveform::Sine), vec![1], None);
+        engine.set_rate_master(200.0);
+        engine.step(500.0); // 1000ms of tempo time = 2 beats
+        assert!((engine.tempo_status().beat - 2.0).abs() < 1e-6, "{}", engine.tempo_status().beat);
+        engine.set_rate_master(50.0);
+        engine.step(500.0);
+        assert!((engine.tempo_status().beat - 2.5).abs() < 1e-6);
+        engine.set_rate_master(0.0);
+        engine.step(500.0);
+        assert!((engine.tempo_status().beat - 2.5).abs() < 1e-6, "0% stops the clock");
+
+        // A chase's steps follow it too.
+        let chase = engine.create_cuelist(
+            "Chase".to_string(),
+            CuelistKind::Chase { bpm: 120.0, direction: crate::engine::cues::ChaseDirection::Forward },
+            true,
+        );
+        let fixtures: HashSet<u32> = [1, 2].into();
+        engine.record_cue(chase, 1.0, "A".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.record_cue(chase, 2.0, "B".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        let pb = engine.create_playback(chase).unwrap();
+        engine.set_rate_master(200.0);
+        engine.step(1.0); // starts on cue 1
+        engine.step(250.0); // one beat at 2x
+        assert_eq!(engine.list_playbacks().iter().find(|p| p.id == pb).unwrap().current_cue_number, Some(2.0));
+    }
+
+    #[test]
+    fn delays_follows_and_links_run_in_the_engine_tick() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.execute_command("1 @ 100");
+        engine.record_cue(list, 1.0, "On".to_string(), &fixtures, 100.0, 100.0).unwrap();
+        engine.execute_command("1 @ 0");
+        engine.record_cue(list, 2.0, "Off".to_string(), &fixtures, 100.0, 100.0).unwrap();
+        engine.execute_command("CLEAR");
+        engine.execute_command("CLEAR");
+
+        // Cue 1: 300ms delay in, auto-follow 500ms after it starts.
+        let c1 = engine.list_cuelists()[0].cues[0].clone();
+        let mut settings = cue_settings(&c1);
+        settings.delay_in_ms = 300.0;
+        settings.follow_ms = Some(500.0);
+        engine.update_cue(list, 1.0, settings).unwrap();
+        // Cue 2: fades out after a 100ms delay, then links back to cue 1.
+        let c2 = engine.list_cuelists()[0].cues[1].clone();
+        let mut settings = cue_settings(&c2);
+        settings.delay_out_ms = 100.0;
+        settings.wait_ms = Some(0.0);
+        settings.link_to = Some(1.0);
+        settings.loop_count = Some(1);
+        engine.update_cue(list, 2.0, settings).unwrap();
+
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.step(250.0);
+        assert_eq!(dimmers(&engine)[0], 0, "still in the delay");
+        engine.step(100.0); // 350ms: 50ms into the 100ms fade
+        assert!((120..=135).contains(&dimmers(&engine)[0]), "{}", dimmers(&engine)[0]);
+        engine.step(100.0);
+        assert_eq!(dimmers(&engine)[0], 255);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+        engine.step(100.0); // 550ms: follow (500ms) has fired -> cue 2
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(2.0));
+        engine.step(200.0); // cue 2 delay out 100ms + 100ms fade = done
+        assert_eq!(dimmers(&engine)[0], 0);
+        // Cue 2 waits 0 after its fade, then its link (once) goes back to cue 1.
+        engine.step(10.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+    }
+
+    #[test]
+    fn re_recording_a_cue_keeps_its_cue_sheet_settings() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.record_cue(list, 1.0, "A".to_string(), &fixtures, 100.0, 100.0).unwrap();
+        let mut settings = cue_settings(&engine.list_cuelists()[0].cues[0]);
+        settings.follow_ms = Some(1234.0);
+        settings.mark = true;
+        engine.update_cue(list, 1.0, settings).unwrap();
+
+        engine.record_cue(list, 1.0, "A".to_string(), &fixtures, 200.0, 200.0).unwrap();
+        let cue = &engine.list_cuelists()[0].cues[0];
+        assert_eq!(cue.fade_in_ms, 200.0);
+        assert_eq!(cue.follow_ms, Some(1234.0));
+        assert!(cue.mark);
+    }
+
+    #[test]
+    fn copy_and_move_cue_from_the_command_line() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        engine.set_current_cuelist(Some(list));
+        engine.execute_command("1 @ 100");
+        assert!(engine.execute_command("RECORD CUE 1").ok);
+
+        let copy = engine.execute_command("COPY CUE 1 @ 5");
+        assert!(copy.ok, "{}", copy.message);
+        let numbers = |e: &EngineManager| e.list_cuelists()[0].cues.iter().map(|c| c.number).collect::<Vec<_>>();
+        assert_eq!(numbers(&engine), vec![1.0, 5.0]);
+
+        let mv = engine.execute_command("MOVE CUE 5 @ 2.5");
+        assert!(mv.ok, "{}", mv.message);
+        assert_eq!(numbers(&engine), vec![1.0, 2.5]);
+
+        assert!(!engine.execute_command("COPY CUE 9 @ 10").ok, "no such cue");
+        assert!(!engine.execute_command("COPY CUE 1").ok, "needs a target");
+        assert!(!engine.execute_command("COPY").ok);
+    }
+
+    #[test]
+    fn pages_release_on_page_change_and_save_with_the_show() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.execute_command("1 @ 100");
+        engine.record_cue(list, 1.0, "A".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.execute_command("CLEAR");
+        engine.execute_command("CLEAR");
+
+        let pb = engine.assign_playback(list, 0, 3).unwrap();
+        let other = engine.assign_playback(list, 2, 0).unwrap();
+        assert!(engine.assign_playback(list, PAGE_COUNT, 0).is_err());
+        assert!(engine.assign_playback(list, 0, PLAYBACKS_PER_PAGE).is_err());
+        engine.playback_go(pb).unwrap();
+        engine.playback_go(other).unwrap();
+
+        // Without the option, a page change leaves playbacks running.
+        engine.set_page(1);
+        engine.set_page(0);
+        engine.step(10.0);
+        assert_eq!(dimmers(&engine)[0], 255);
+
+        engine.set_release_on_page_change(true);
+        engine.set_page(1); // leaves page 0: its playbacks release
+        engine.step(DEFAULT_RELEASE_FADE_MS + 10.0);
+        let statuses = engine.list_playbacks();
+        assert!(!statuses.iter().find(|s| s.id == pb).unwrap().active);
+        assert!(statuses.iter().find(|s| s.id == other).unwrap().active, "other pages keep running");
+
+        // Assigning over an occupied slot replaces it.
+        let replaced = engine.assign_playback(list, 0, 3).unwrap();
+        assert_ne!(replaced, pb);
+        assert_eq!(engine.list_playbacks().iter().filter(|s| s.page == 0 && s.column == 3).count(), 1);
+
+        // Saved with the show and restored.
+        let saved = engine.export_show_data();
+        assert_eq!(saved.playbacks.len(), 2);
+        assert!(saved.release_on_page_change);
+        let fresh = EngineManager::new();
+        fresh.load_show_data(saved.clone());
+        assert_eq!(fresh.export_show_data(), saved);
+        assert_eq!(fresh.console_status().page, 0);
+        assert_eq!(fresh.list_playbacks().len(), 2);
+    }
+
+    #[test]
+    fn release_all_and_go_to() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.execute_command("1 @ 100");
+        engine.record_cue(list, 1.0, "A".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.execute_command("1 @ 20");
+        engine.record_cue(list, 2.0, "B".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.execute_command("CLEAR");
+        engine.execute_command("CLEAR");
+        let a = engine.create_playback(list).unwrap();
+        let b = engine.create_playback(list).unwrap();
+
+        engine.playback_go_to(a, 1).unwrap();
+        engine.playback_go(b).unwrap();
+        engine.step(10.0);
+        assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(2.0));
+        assert!(engine.playback_go_to(a, 9).is_err());
+
+        engine.playback_release_all();
+        engine.step(DEFAULT_RELEASE_FADE_MS + 10.0);
+        assert!(engine.list_playbacks().iter().all(|p| !p.active));
+        assert_eq!(dimmers(&engine)[0], 0);
+    }
+
+    #[test]
+    fn a_marked_cue_moves_attributes_in_the_dark_through_the_engine() {
+        let engine = engine_with_pars();
+        let list = engine.create_cuelist("L".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        // Cue 1: dark, red 0. Cue 2: lit, red 255 -- marked.
+        engine.execute_command("1 @ 0");
+        engine.record_cue(list, 1.0, "Dark".to_string(), &fixtures, 10.0, 10.0).unwrap();
+        engine.execute_command("1 @ 100");
+        engine.set_channels(1, &[(2u16, 255u8)].into_iter().collect());
+        engine.record_cue(list, 2.0, "Lit".to_string(), &fixtures, 1000.0, 1000.0).unwrap();
+        engine.execute_command("CLEAR");
+        engine.execute_command("CLEAR");
+        let c2 = engine.list_cuelists()[0].cues[1].clone();
+        let mut settings = cue_settings(&c2);
+        settings.mark = true;
+        engine.update_cue(list, 2.0, settings).unwrap();
+
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.step(50.0);
+        assert_eq!(reds(&engine)[0], 255, "red moved while the fixture was dark");
+        assert_eq!(dimmers(&engine)[0], 0);
     }
 }

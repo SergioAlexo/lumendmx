@@ -6,4 +6,9 @@ export type CueDto = { number: number, name: string, values: Array<CueValueEntry
 /**
  * Phase 7; absent in files saved before effects existed.
  */
-effects: Array<EffectInstance>, };
+effects: Array<EffectInstance>, 
+/**
+ * Cue timing, follows and links; absent in files saved before they
+ * were acted on (all default to "off").
+ */
+delayOutMs: number, attrFadeMs: number | null, attrDelayMs: number | null, followMs: number | null, waitMs: number | null, linkTo: number | null, loopCount: number | null, };

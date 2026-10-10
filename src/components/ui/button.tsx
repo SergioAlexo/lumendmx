@@ -22,6 +22,9 @@ const buttonVariants = cva(
         lg: "h-10 rounded-md px-8",
         icon: "h-9 w-9",
         iconSm: "h-7 w-7",
+        // Playback controls: the 44px minimum touch target.
+        touch: "h-11 min-w-11 px-3 text-xs",
+        touchLg: "h-14 min-w-14 px-5 text-base font-semibold",
       },
     },
     defaultVariants: {

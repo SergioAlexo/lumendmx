@@ -414,3 +414,87 @@ One line (or a short paragraph) per call made without stopping to ask, per
 - **Gobo and colour-wheel images are not rendered.** Colour wheels tint the
   beam when the definition gives a slot colour; gobo patterns are skipped.
 
+## Playback and programmer completion
+
+This finishes the items Phase 3 and Phase 6 left partial. It supersedes the
+Phase 3 and Phase 6 notes above that say pages, rate master, delay/follow/
+link/mark, per-attribute timing, TIME, blind, highlight and `COPY`/`MOVE`
+are not built.
+
+- **Cue timing is per channel, decided by what the channel is.** Intensity
+  (HTP) channels use the cue's in-timing when rising and out-timing when
+  falling; all other attributes use an optional attribute fade/delay, which
+  falls back to the in-timing. "Intensity versus other attributes" was the
+  minimum asked for; finer per-attribute timing (a different time for pan
+  than for colour) would add columns without changing the engine model.
+  A cue's `fade_out_ms` used to be recorded but ignored; it now applies to
+  falling intensity. Cues recorded by the command line set in and out to the
+  same `TIME`, so they behave as before.
+- **Follow and wait are two fields, not one.** `follow` counts from the
+  cue's start, `wait` from the end of its fade (what many consoles call
+  auto-follow versus wait). A cue may set either; whichever is due first
+  fires. A manual GO still works at any time and restarts the timers.
+- **Links with a loop count.** `link_to` redirects the next GO (manual or
+  automatic) to a cue number; `loop_count = n` takes the link n times and
+  then continues in order, `None` loops forever. "Jump to cue N" without a
+  loop count is just a link.
+- **Mark is applied in the engine, only on dark fixtures.** It needs to know
+  which channel is a fixture's intensity, so the manager derives a `PlayInfo`
+  from the patch index and HTP set. The pre-position happens once the
+  previous cue's fade is complete, and only for the sequentially next cue
+  (not for a link target). A fixture with no dimmer channel is never marked,
+  because "dark" can't be known.
+- **Playback pages are 40 pages of 10 columns**, saved in the show file
+  (schema v7). A playback sits on exactly one page/column. Playbacks on
+  other pages keep running when you change page unless "release on page
+  change" is on, which releases only the page being left. Shown columns are
+  empty slots with an "Assign" menu, and the 44px minimum touch size applies
+  to every playback button.
+- **Main playback = the selected column.** Clicking a column's name selects
+  it; the large GO / BACK / PAUSE act on it, and RELEASE ALL releases every
+  playback on every page. There is no separate main-playback fader: each
+  column already has its own.
+- **The rate master is 0-200% of normal speed, not a BPM.** It scales the
+  tempo clock the tick integrates (so BPM and Hz effects and pixel maps
+  follow) and a chase's step timer. It deliberately doesn't touch crossfade
+  times. The rate *fader mode* is per playback: 0-100% maps to 0-2x with 50%
+  normal, and scales that playback's own fades, delays, follows and chase
+  steps. Switching a playback to rate mode sets its fader to 50%.
+- **The grand master multiplies HTP channels of the final output** (so it
+  also dims the programmer and effects) and is excluded from anything that is
+  recorded. It is not saved in the show, like blackout: it is a performance
+  control, and a show that opens at 0% would look broken.
+- **Programmer TIME applies to command-line intensity edits and preset
+  applies**, fading from the programmer's current value or, if it has none,
+  from what the channel outputs now. Slider drags don't fade (a drag is
+  already a continuous move). TIME stays set until changed (`TIME 0`), as
+  it already did for RECORD, rather than being consumed by the next edit.
+  Blind edits never fade.
+- **Blind is a second programmer layer that nothing merges.** Recording
+  while blind stores only the channels edited in it (a "record what you see"
+  would record the live output, defeating the point). Toggling blind keeps
+  the blind layer; CLEAR empties the layer being edited.
+- **Highlight is an output-stage overlay.** Selected fixtures get full
+  intensity and open white (RGBW up, CMY down); other fixtures' intensity is
+  dimmed to 25% (lowlight is part of highlight here, not a second key). It
+  never enters a layer, so it can't be recorded. It does not move pan/tilt
+  or open a shutter, because only generic channel names are known.
+- **`COPY CUE a @ b` and `MOVE CUE a @ b`** (with `AT` as an alternative to
+  `@`). A bare `COPY`/`MOVE` still parses so the earlier grammar tests hold,
+  and answers with a usage hint. Both replace a cue already at `b`. Cue
+  numbers typed on the command line go through their shortest decimal form,
+  so `1.2` is the same cue number as 1.2 entered in the cue sheet.
+- **Keyboard shortcuts use Alt plus a letter**, shown in each key's
+  tooltip, because plain letters would collide with typing into any field.
+  Digits, `+`, `-`, `.` outside a text field type into the command line.
+  Escape in the command line clears the text, then runs CLEAR. A global
+  Escape is not bound, so it can't clear the programmer while closing a
+  dialog.
+- **Show file v7.** Adds `playbacks` and `releaseOnPageChange`; cue timing
+  fields are optional and need no rewriting (`upgrade_6_to_7` adds the two
+  top-level keys). Built as v6 and renumbered on merge, after the stage
+  positions (v6).
+- **Not done:** an attribute encoder bar, per-attribute timing finer than
+  "intensity versus the rest", move-in-black for link targets, a main
+  playback fader, saving the masters in the show, and a push event for
+  playback status (still polled).

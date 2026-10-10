@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   CommandResult,
+  ConsoleStatus,
+  CueSettings,
   CuelistDto,
   CuelistKind,
   EffectDef,
@@ -256,6 +258,58 @@ export function playbackSetFaderMode(id: number, mode: FaderMode): Promise<void>
   return invoke("engine_playback_set_fader_mode", { id, mode });
 }
 
+/** Puts a new playback for a cuelist on a page (0-based) and column (0-based),
+ * replacing whatever was there. */
+export function assignPlayback(cuelistId: number, page: number, column: number): Promise<number> {
+  return invoke("engine_assign_playback", { cuelistId, page, column });
+}
+
+/** Jumps a playback to the cue at `index` (its position in the cuelist). */
+export function playbackGoTo(id: number, index: number): Promise<void> {
+  return invoke("engine_playback_go_to", { id, index });
+}
+
+export function playbackReleaseAll(): Promise<void> {
+  return invoke("engine_playback_release_all");
+}
+
+export function setPage(page: number): Promise<void> {
+  return invoke("engine_set_page", { page });
+}
+
+export function setReleaseOnPageChange(on: boolean): Promise<void> {
+  return invoke("engine_set_release_on_page_change", { on });
+}
+
+/** Replaces a cue's editable settings (the cue sheet's columns). */
+export function updateCue(cuelistId: number, number: number, settings: CueSettings): Promise<void> {
+  return invoke("engine_update_cue", { cuelistId, number, settings });
+}
+
+// --- Console: masters, blind, highlight ---
+
+export function consoleStatus(): Promise<ConsoleStatus> {
+  return invoke("engine_console_status");
+}
+
+/** 0-100%. Scales every intensity channel of the output. */
+export function setGrandMaster(percent: number): Promise<void> {
+  return invoke("engine_set_grand_master", { percent });
+}
+
+/** 0-200% (100 = normal). Scales chase speed, effects and pixel maps. */
+export function setRateMaster(percent: number): Promise<void> {
+  return invoke("engine_set_rate_master", { percent });
+}
+
+export function setBlind(on: boolean): Promise<void> {
+  return invoke("engine_set_blind", { on });
+}
+
+export function setHighlight(on: boolean): Promise<void> {
+  return invoke("engine_set_highlight", { on });
+}
+
 // --- Tempo (Phase 7) ---
 
 export function tempoStatus(): Promise<TempoStatus> {
@@ -350,6 +404,9 @@ export function pixelMapPreview(id: number): Promise<number[]> {
 
 export type {
   CommandResult,
+  ConsoleStatus,
+  CueSettings,
+  PlaybackSlot,
   CuelistDto,
   CuelistKind,
   CueDto,

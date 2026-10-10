@@ -9,7 +9,7 @@ use super::effects::{EffectDef, EffectInstance};
 use super::groups::Group;
 use super::legacy_playback::{LegacyAsset, LegacyStep};
 use super::manager::{
-    CommandResult, CuelistDto, EngineManager, PatchIndexEntry, PixelMapStatus, PlaybackStatus, ShowEngineData,
+    CommandResult, ConsoleStatus, CueSettings, CuelistDto, EngineManager, PatchIndexEntry, PixelMapStatus, PlaybackStatus, ShowEngineData,
 };
 use super::pixelmap::PixelMap;
 use super::playback::FaderMode;
@@ -309,6 +309,68 @@ pub fn engine_playback_set_fader(engine: State<EngineManager>, id: u32, percent:
 #[tauri::command]
 pub fn engine_playback_set_fader_mode(engine: State<EngineManager>, id: u32, mode: FaderMode) -> Result<(), String> {
     engine.playback_set_fader_mode(id, mode)
+}
+
+#[tauri::command]
+pub fn engine_assign_playback(engine: State<EngineManager>, cuelist_id: u32, page: u32, column: u32) -> Result<u32, String> {
+    engine.assign_playback(cuelist_id, page, column)
+}
+
+#[tauri::command]
+pub fn engine_playback_go_to(engine: State<EngineManager>, id: u32, index: usize) -> Result<(), String> {
+    engine.playback_go_to(id, index)
+}
+
+#[tauri::command]
+pub fn engine_playback_release_all(engine: State<EngineManager>) {
+    engine.playback_release_all();
+}
+
+#[tauri::command]
+pub fn engine_set_page(engine: State<EngineManager>, page: u32) {
+    engine.set_page(page);
+}
+
+#[tauri::command]
+pub fn engine_set_release_on_page_change(engine: State<EngineManager>, on: bool) {
+    engine.set_release_on_page_change(on);
+}
+
+#[tauri::command]
+pub fn engine_update_cue(
+    engine: State<EngineManager>,
+    cuelist_id: u32,
+    number: f64,
+    settings: CueSettings,
+) -> Result<(), String> {
+    engine.update_cue(cuelist_id, number, settings)
+}
+
+// --- Console: masters, blind, highlight ---
+
+#[tauri::command]
+pub fn engine_console_status(engine: State<EngineManager>) -> ConsoleStatus {
+    engine.console_status()
+}
+
+#[tauri::command]
+pub fn engine_set_grand_master(engine: State<EngineManager>, percent: f32) {
+    engine.set_grand_master(percent);
+}
+
+#[tauri::command]
+pub fn engine_set_rate_master(engine: State<EngineManager>, percent: f32) {
+    engine.set_rate_master(percent);
+}
+
+#[tauri::command]
+pub fn engine_set_blind(engine: State<EngineManager>, on: bool) {
+    engine.set_blind(on);
+}
+
+#[tauri::command]
+pub fn engine_set_highlight(engine: State<EngineManager>, on: bool) {
+    engine.set_highlight(on);
 }
 
 // --- Tempo (Phase 7) ---

@@ -46,7 +46,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `6`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `7`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -87,7 +87,8 @@ the file's `groups`/`presets`/`cuelists` fields travel through the engine:
   (`engine_show_data_revision`); the frontend polls it and marks the show
   unsaved when it differs from the revision at the last save/load.
 
-Playbacks are runtime state and aren't saved.
+Running playback state (which cue is live, pause) is runtime state and
+isn't saved; where playbacks sit on the playback bar is (see v7 below).
 
 ## Tempo, effects and pixel maps (v5+)
 
@@ -111,6 +112,20 @@ height above the floor. It is optional and omitted until a fixture is placed
 on the 2D stage plot or 3D view, so v5 files load unchanged
 (`upgrade_5_to_6` only bumps the version). Positions live in `usePatchStore`
 with the rest of the patch and are edited by dragging in the plot.
+
+## Playback pages (v7+)
+
+- `playbacks`: one entry per assigned playback slot: `page` (0-based),
+  `column` (0-based, 0-9), `cuelistId`, `fader` (0-1) and `faderMode`
+  (`intensityMaster`, `crossfade` or `rate`). Engine-owned like the above:
+  it travels through `engine_export_show_data`/`engine_load_show_data`, and
+  loading recreates each playback in its slot (a slot whose cuelist no
+  longer exists is skipped).
+- `releaseOnPageChange`: whether leaving a page releases its playbacks.
+- Cues gained optional fields (`delayOutMs`, `attrFadeMs`, `attrDelayMs`,
+  `followMs`, `waitMs`, `linkTo`, `loopCount`); a v5 cue without them loads
+  with no delay out, attribute timing following the in-timing, and no
+  follow or link. `upgrade_5_to_6` adds the two top-level fields.
 
 ## Restoring the last session
 
