@@ -106,14 +106,38 @@ Playbacks are runtime state and aren't saved.
 ## Restoring the last session
 
 On launch, `showfile_restore_session` picks whichever was touched last: the
-newest autosave (unsaved work — reattached to its show file's path if that
+newest autosave (unsaved work: reattached to its show file's path if that
 show was saved before, and marked dirty) or the most recently opened/saved
 show file. With neither, the app starts a new show.
 
+Hardening (Phase 13):
+
+- **Unclean-shutdown marker.** A `session.lock` file in the app data dir is
+  written at launch and removed on a clean exit (and just before an updater
+  relaunch). If it is still there at the next launch, the previous run
+  crashed or was killed: an autosave that ties with the last save is then
+  preferred, and the UI shows a "did not shut down cleanly" banner.
+- **Unreadable autosaves are skipped.** The newest autosave that parses
+  wins; a file cut short by a power failure falls through to the one before.
+- **Atomic writes.** Show files, autosaves, the recent list and
+  `preferences.json` are written to a temp file and renamed into place, so
+  a failure mid-write leaves the old file intact.
+- **Webview reload is not a restart.** If the webview reloads while the app
+  keeps running, the frontend re-syncs from the live session held in Rust
+  rather than restoring from disk (see docs/ENGINE.md, Reliability).
+
 ## Autosave
 
-Every 60 seconds, if the show has unsaved changes, the frontend assembles a
-full `ShowFile` snapshot and calls `showfile_autosave`, which writes it to
+Every `autosaveIntervalS` seconds (preference, default 60), if the show has
+unsaved changes, the frontend assembles a full `ShowFile` snapshot and calls
+`showfile_autosave`, which writes it to
 `<app data dir>/autosave/<show id>/autosave-<timestamp>.lumen` and prunes
 anything past the 10 most recent. This never touches the user's own save file,
 so a bad autosave can't corrupt work that was already saved on purpose.
+
+## Machine preferences are not in the show
+
+UI scale, touch mode, window placement, default output rates and similar
+settings describe the computer, not the show, and live in
+`<app data dir>/preferences.json`. Phase 13 did not change the show file's
+on-disk shape; the schema version is unchanged.

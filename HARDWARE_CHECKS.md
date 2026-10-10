@@ -157,3 +157,50 @@ UI too, not just the rig.
 - [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
       displayed BPM lands within about ±1 and the beat light sits on the
       beat.
+
+## Phase 13 — Reliability and preferences
+
+Needs the built desktop app; the browser preview can't reach Rust.
+
+- [ ] **Show mode blocks edits but not playback.** Turn show mode on, then
+      try to delete a cue, record a group, remove a universe, open another
+      show and type `RECORD CUE 9` in the command line: all should be
+      refused with a message in Messages. GO, faders, blackout and running
+      effects must still work.
+- [ ] **Output survives a webview reload.** With an FTDI universe running a
+      cue, open the webview devtools (right-click, Inspect) and reload with
+      Ctrl+R. Lights must not flicker or change, and the show, cuelists and
+      show-mode state must come back without a prompt.
+- [ ] **Crash recovery.** Make an unsaved change, wait for an autosave, kill
+      the process (Task Manager, End task). Relaunch: the banner "did not
+      shut down cleanly" appears and the change is back, marked unsaved.
+      Then quit normally and relaunch: no banner.
+- [ ] **Corrupt autosave.** Truncate the newest file in
+      `%APPDATA%/com.pashchenkos.lumendmx/autosave/<id>/` and relaunch: the
+      previous autosave should be restored and the skip logged.
+- [ ] **Watchdog on a pulled interface.** Unplug the FTDI widget while
+      running: the universe dot in the top bar goes red and Messages shows
+      the error; replug and reconnect. (A genuinely stalled tick is hard to
+      provoke; the unit tests cover the detection.)
+- [ ] **FTDI flicker test, again.** Run the 4 pars on the FTDI widget for
+      ten minutes with Preferences and Messages open and the display rate at
+      60 Hz: no new flicker compared with before this phase.
+- [ ] **Preferences.** Set interface scale 1.25 and touch mode, relaunch:
+      both persist. New cue form starts with the default fades. A GO
+      debounce of 300 ms ignores a double-click on GO.
+- [ ] **Multi-monitor.** With two displays, use Window placement to move the
+      app to the second display, quit, relaunch: it reopens there. Unplug
+      that display, relaunch: it opens on the primary display.
+- [ ] **Logs and diagnostics.** After some use, `logs/lumendmx.<date>.log`
+      exists in the app data folder. Messages > Export diagnostics saves a
+      zip that opens and contains system.txt, messages.txt, show.lumen and
+      logs/.
+- [ ] **Performance on the target laptop.** Load a show with about 500
+      fixtures over 64 universes and 50 running effects and watch CPU in
+      Task Manager: the plan's target is 25% or less and the UI at 50 fps
+      or better. The engine benchmark says the tick itself is well under
+      1 ms; this checks the whole app including the webview.
+- [ ] **Updater and show mode.** With a newer release published, turn show
+      mode on and press Install: nothing restarts, the banner says it is
+      waiting. Turn show mode off: it installs and relaunches, shows the
+      "Updated from vX to vY" banner, and `backups/pre-update-*` exists.
