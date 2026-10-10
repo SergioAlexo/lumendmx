@@ -30,6 +30,11 @@ export const useUniverseChannelsStore = create<UniverseChannelsState>((set) => (
   },
 }));
 
-export function getUniverseChannel(universe: number, channel: number): number {
-  return useUniverseChannelsStore.getState().channels[universe]?.[channel - 1] ?? 0;
+/** Returns a reader for live channel values (1-based `channel`). Subscribes
+ * the calling component to engine frames so controlled sliders re-render as
+ * values arrive — a plain `getState()` read would leave them stuck, snapping
+ * back to the last rendered value after every drag. */
+export function useUniverseChannelReader(): (universe: number, channel: number) => number {
+  const channels = useUniverseChannelsStore((s) => s.channels);
+  return (universe, channel) => channels[universe]?.[channel - 1] ?? 0;
 }

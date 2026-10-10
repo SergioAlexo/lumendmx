@@ -114,3 +114,15 @@ drive. Check these off by hand; each entry says which phase added it.
 - [ ] **Submaster fader behavior on a real fixture.** Confirm a Submaster
       playback's fader directly scales its recorded (tracked) look on real
       output, with no GO-stepping, as intended.
+
+## Phase 6 follow-up — Show persistence
+
+- [ ] **Groups/presets/cuelists survive Save → quit → Open.** In the built
+      app, record a group, a Colour preset, and a cuelist with a cue that
+      references that preset. Save, quit, relaunch, Open the file, and confirm
+      all three are back, and that updating the preset still changes the cue
+      (the link survived, it wasn't copied).
+- [ ] **Session restore on launch.** Make an unsaved change, wait for an
+      autosave (~60s), quit without saving, relaunch: the app should reopen
+      that work marked unsaved. Then Save, quit, relaunch: it should reopen
+      the saved file, not an older autosave.

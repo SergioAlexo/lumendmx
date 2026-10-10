@@ -27,6 +27,7 @@ function App() {
   const initMidi = useMidiStore((s) => s.init);
   const checkForAppUpdate = useAppUpdateStore((s) => s.checkNow);
   const initShow = useShowStore((s) => s.init);
+  const showLoadCount = useShowStore((s) => s.loadCount);
   const initUniverseStatuses = useUniverseStatusesStore((s) => s.init);
   const initUniverseChannels = useUniverseChannelsStore((s) => s.init);
   const [mainView, setMainView] = useState<MainView>("fixtures");
@@ -66,7 +67,9 @@ function App() {
               </Button>
             ))}
           </div>
-          <div className="flex-1 overflow-hidden">
+          {/* Keyed on show loads: panels fetch engine data (cuelists, presets,
+              groups) on mount, so remount them when a different show loads. */}
+          <div key={showLoadCount} className="flex-1 overflow-hidden">
             {mainView === "fixtures" ? (
               <FixturePatchPanel />
             ) : mainView === "cues" ? (

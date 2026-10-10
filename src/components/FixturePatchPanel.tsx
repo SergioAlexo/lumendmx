@@ -5,7 +5,7 @@ import { useDmxStore } from "../store/useDmxStore";
 import { usePatchStore, type PatchedFixture } from "../store/usePatchStore";
 import { useAllFixtures, useFixtureLibraryStore } from "../store/useFixtureLibraryStore";
 import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
-import { getUniverseChannel, useUniverseChannelsStore } from "../store/useUniverseChannelsStore";
+import { useUniverseChannelReader, useUniverseChannelsStore } from "../store/useUniverseChannelsStore";
 import type { ChannelType, FixtureDefinition, FixtureMode } from "../lib/fixtures/types";
 import { validateFixtureDefinition } from "../lib/fixtures/validate";
 import { importOfl } from "../lib/fixtures/importers/ofl";
@@ -15,6 +15,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select } from "./ui/input";
 import { cn } from "../lib/utils";
+import { ValueSlider } from "./ui/value-slider";
 
 const COLOR_PRESETS: Record<string, ChannelType[]> = {
   White: ["dimmer", "white"],
@@ -87,7 +88,8 @@ function useFixtureChannelValues(instance: PatchedFixture, mode: FixtureMode | u
   const values: Record<number, number> = {};
   if (!mode) return values;
   for (const ch of mode.channels) {
-    const idx = instance.address + ch.offset - 1;
+    // address and offset are both 1-based, so this is the 0-based frame index.
+    const idx = instance.address + ch.offset - 2;
     values[ch.offset] = idx >= 0 && channels && idx < channels.length ? channels[idx] : 0;
   }
   return values;
@@ -108,12 +110,20 @@ function swatchColor(mode: FixtureMode, values: Record<number, number>): string 
   let r = valueOf("red");
   let g = valueOf("green");
   let b = valueOf("blue");
-  const white = valueOf("white");
-  // Fold white into RGB so a fixture with only a White channel still shows as
-  // white on the tile instead of black.
-  r = Math.max(r, white);
-  g = Math.max(g, white);
-  b = Math.max(b, white);
+  // Fold the extra emitters into RGB (approximate hues; UV is shown as the
+  // violet it visibly glows) so e.g. an amber-only mix reads as amber instead
+  // of tripping the dimmer-only white fallback below.
+  const emitters: [ChannelType, [number, number, number]][] = [
+    ["white", [255, 255, 255]],
+    ["amber", [255, 150, 0]],
+    ["uv", [110, 0, 255]],
+  ];
+  for (const [type, [er, eg, eb]] of emitters) {
+    const level = valueOf(type) / 255;
+    r = Math.max(r, er * level);
+    g = Math.max(g, eg * level);
+    b = Math.max(b, eb * level);
+  }
 
   if (r === 0 && g === 0 && b === 0 && hasDimmer) {
     // No color channels at all (a dimmer-only fixture) -- show a plain warm glow
@@ -538,6 +548,7 @@ function FixtureDetailPanel({
   onRemove?: () => void;
   onRepatch: (id: string, changes: Partial<Pick<PatchedFixture, "address" | "universe" | "invertPan" | "invertTilt" | "swapPanTilt">>) => void;
 }) {
+  const getUniverseChannel = useUniverseChannelReader();
   const isGroup = resolved.length > 1;
   const channels = unionChannels(resolved);
   const single = !isGroup ? resolved[0] : null;
@@ -666,15 +677,13 @@ function FixtureDetailPanel({
             <span className="w-20 shrink-0 truncate text-xs text-muted-foreground" title={ch.notes}>
               {ch.label ?? ch.type}
             </span>
-            <input
-              type="range"
-              min={0}
+            <ValueSlider
+              className="flex-1"
               max={255}
               value={valueOf(ch.type)}
-              onChange={(e) => setValue(ch.type, Number(e.target.value))}
-              className="h-1.5 flex-1 accent-primary"
+              onChange={(v) => setValue(ch.type, v)}
+              title={ch.label ?? ch.type}
             />
-            <span className="w-8 shrink-0 text-right text-xs tabular-nums">{valueOf(ch.type)}</span>
           </div>
         ))}
       </div>

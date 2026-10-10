@@ -1,11 +1,11 @@
 # The `.lumen` show file
 
 A show file is a single JSON document (extension `.lumen`) holding everything
-needed to reopen a show: universes, patch, workspaces, settings, and (for now)
-the legacy Scene/Chase/FX asset library. Groups, presets, cuelists, effects,
-pixel maps, timelines and MIDI/OSC mappings will be added to this document by
-the phases that implement them (see `DECISIONS.md` for why they aren't in the
-schema yet).
+needed to reopen a show: universes, patch, workspaces, settings, groups,
+presets, cuelists, and (for now) the legacy Scene/Chase/FX asset library.
+Effects, pixel maps, timelines and MIDI/OSC mappings will be added to this
+document by the phases that implement them (see `DECISIONS.md` for why they
+aren't in the schema yet).
 
 ## Where it lives
 
@@ -19,7 +19,7 @@ schema yet).
 - **Migration:** `src-tauri/src/showfile/migrate.rs`.
 - **Disk I/O and dialogs:** `src-tauri/src/showfile/commands.rs` (Tauri
   commands `showfile_new`, `showfile_open`, `showfile_save`,
-  `showfile_autosave`, `showfile_recent`).
+  `showfile_autosave`, `showfile_recent`, `showfile_restore_session`).
 - **Frontend:** `src/lib/showfile/api.ts` (thin `invoke()` wrappers),
   `src/store/useShowStore.ts` (New/Open/Save/Save As, autosave timer, dirty
   tracking).
@@ -45,7 +45,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `1`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `4`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -68,6 +68,32 @@ of the old `LightAsset`/`DmxStep` shape (`src/lib/showfile/legacyAssets.ts` has
 the two-way mapping, with unit tests). They stay under that name until Phase
 5's preset families and Phase 6's cuelists give this data a real home; nothing
 in today's app deletes it.
+
+## Groups, presets and cuelists (v4+)
+
+These are owned by the Rust engine at runtime, not by a frontend store, so
+the file's `groups`/`presets`/`cuelists` fields travel through the engine:
+
+- **Save/autosave:** `useShowStore` calls `engine_export_show_data` and puts
+  the result into the `ShowFile` it sends to `showfile_save`/`showfile_autosave`.
+  Cuelists use the same flattened `CuelistDto` shape as the UI (cue values
+  keyed by `(universe, channel)` can't be JSON object keys).
+- **Open/New/restore:** `useShowStore` passes them to `engine_load_show_data`,
+  which replaces the engine's stores (ids are kept, so cue→preset links stay
+  valid, and new ids continue after the highest loaded one) and drops running
+  cue playbacks, which point at the outgoing cuelists.
+- **Dirty tracking:** every engine edit to this data bumps a revision
+  (`engine_show_data_revision`); the frontend polls it and marks the show
+  unsaved when it differs from the revision at the last save/load.
+
+Playbacks are runtime state and aren't saved.
+
+## Restoring the last session
+
+On launch, `showfile_restore_session` picks whichever was touched last: the
+newest autosave (unsaved work — reattached to its show file's path if that
+show was saved before, and marked dirty) or the most recently opened/saved
+show file. With neither, the app starts a new show.
 
 ## Autosave
 

@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { hexToRgb, hsvToRgb, rgbToHex, rgbToHsv, type Rgb } from "../lib/color";
 import { Input } from "./ui/input";
+import { ValueSlider } from "./ui/value-slider";
 
 const WHEEL_SIZE = 160;
 
@@ -62,32 +63,29 @@ export function ColorPicker({ value, onChange }: { value: Rgb; onChange: (rgb: R
         />
       </div>
 
-      <label className="flex w-full items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex w-full items-center gap-2 text-xs text-muted-foreground">
         Brightness
-        <input
-          type="range"
-          min={0}
+        <ValueSlider
+          className="flex-1"
           max={100}
-          value={hsv.v}
-          onChange={(e) => onChange(hsvToRgb({ ...hsv, v: Number(e.target.value) }))}
-          className="h-1.5 flex-1 accent-primary"
+          value={Math.round(hsv.v)}
+          onChange={(v) => onChange(hsvToRgb({ ...hsv, v }))}
+          title="Brightness"
         />
-      </label>
+      </div>
 
       <div className="flex w-full flex-col gap-1.5">
         {(["r", "g", "b"] as const).map((channel) => (
-          <label key={channel} className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div key={channel} className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="w-4 uppercase">{channel}</span>
-            <input
-              type="range"
-              min={0}
+            <ValueSlider
+              className="flex-1"
               max={255}
               value={value[channel]}
-              onChange={(e) => onChange({ ...value, [channel]: Number(e.target.value) })}
-              className="h-1.5 flex-1 accent-primary"
+              onChange={(v) => onChange({ ...value, [channel]: v })}
+              title={channel.toUpperCase()}
             />
-            <span className="w-8 text-right tabular-nums">{value[channel]}</span>
-          </label>
+          </div>
         ))}
       </div>
 

@@ -3,10 +3,14 @@ import { Pause, Play, Redo2, Square, Trash2, Undo2, Zap } from "lucide-react";
 import * as engineApi from "../lib/engine";
 import type { CuelistDto, PlaybackStatus } from "../lib/engine";
 import { Button } from "./ui/button";
+import { ValueSlider } from "./ui/value-slider";
 import { Select } from "./ui/input";
 import { cn } from "../lib/utils";
 
 const POLL_MS = 250;
+/** Cuelists are created/edited in another tab and there's no change event,
+ * so re-fetch them too — less often, since each fetch carries every cue. */
+const CUELIST_POLL_MS = 2000;
 
 function Slot({
   status,
@@ -86,13 +90,10 @@ function Slot({
           <Zap />
         </Button>
       </div>
-      <input
-        type="range"
-        min={0}
+      <ValueSlider
         max={100}
         value={Math.round(status.fader * 100)}
-        className="h-1.5 accent-primary"
-        onChange={(e) => void engineApi.playbackSetFader(status.id, Number(e.target.value)).then(onChanged)}
+        onChange={(v) => void engineApi.playbackSetFader(status.id, v).then(onChanged)}
         title="Fader"
       />
     </div>
@@ -126,7 +127,11 @@ export function PlaybackBar() {
     refresh();
     refreshCuelists();
     const id = setInterval(refresh, POLL_MS);
-    return () => clearInterval(id);
+    const cuelistId = setInterval(refreshCuelists, CUELIST_POLL_MS);
+    return () => {
+      clearInterval(id);
+      clearInterval(cuelistId);
+    };
   }, []);
 
   const addPlayback = () => {
@@ -140,6 +145,7 @@ export function PlaybackBar() {
         <Select
           className="w-40"
           value={newCuelistId ?? ""}
+          onFocus={refreshCuelists}
           onChange={(e) => setNewCuelistId(e.target.value ? Number(e.target.value) : null)}
         >
           <option value="">Add playback…</option>

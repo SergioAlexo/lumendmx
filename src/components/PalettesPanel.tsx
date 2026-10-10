@@ -4,12 +4,14 @@ import * as engineApi from "../lib/engine";
 import type { Group, Preset, PresetFamily } from "../lib/engine";
 import { useAllFixtures } from "../store/useFixtureLibraryStore";
 import { usePatchStore } from "../store/usePatchStore";
-import { getUniverseChannel } from "../store/useUniverseChannelsStore";
+import { useUniverseChannelReader } from "../store/useUniverseChannelsStore";
 import type { ChannelType } from "../lib/fixtures/types";
 import { rgbToHex } from "../lib/color";
 import { ColorPicker } from "./ColorPicker";
 import { PanTiltPad } from "./PanTiltPad";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { ValueSlider } from "./ui/value-slider";
 import { cn } from "../lib/utils";
 
 const FAMILIES: PresetFamily[] = ["intensity", "colour", "position", "beam", "beamFx", "framing", "effect"];
@@ -32,6 +34,7 @@ const FAMILY_LABELS: Record<PresetFamily, string> = {
 function useAttributeIO(fixtureNumbers: number[]) {
   const fixtures = usePatchStore((s) => s.fixtures);
   const allFixtures = useAllFixtures();
+  const getUniverseChannel = useUniverseChannelReader();
   const instances = fixtures.filter((f) => fixtureNumbers.includes(f.fixtureNumber));
 
   const getValue = (type: ChannelType): number => {
@@ -61,26 +64,52 @@ function useAttributeIO(fixtureNumbers: number[]) {
   return { getValue, setValues };
 }
 
+/** The engine doesn't report a group master's level back, so the slider
+ * keeps its own (starts at 100, the engine's default). */
+function GroupMaster({ groupId }: { groupId: number }) {
+  const [level, setLevel] = useState(100);
+  return (
+    <ValueSlider
+      className="w-36"
+      max={100}
+      value={level}
+      onChange={(v) => {
+        setLevel(v);
+        void engineApi.applyGroupMaster(groupId, v);
+      }}
+      title="Group master"
+    />
+  );
+}
+
 function GroupsSection({ picked, onSelectGroup }: { picked: Set<number>; onSelectGroup: (s: Set<number>) => void }) {
   const [groups, setGroups] = useState<Group[]>([]);
+  // Inline name field rather than window.prompt(): macOS's WKWebView has no
+  // prompt() UI under Tauri, so it returns null and the record silently no-ops.
+  const [name, setName] = useState("");
   const refresh = () => void engineApi.listGroups().then(setGroups).catch(() => undefined);
   useEffect(() => {
     refresh();
   }, []);
 
   const record = () => {
-    const name = window.prompt("Group name?");
-    if (!name) return;
-    void engineApi.recordGroup(name, [...picked]).then(refresh);
+    if (!name.trim() || picked.size === 0) return;
+    void engineApi.recordGroup(name.trim(), [...picked]).then(() => {
+      setName("");
+      refresh();
+    });
   };
 
   return (
     <div className="rounded-md border border-border p-3">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase text-muted-foreground">Groups</h3>
-        <Button size="sm" disabled={picked.size === 0} onClick={record}>
-          Record group from selection
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Input className="h-8 w-40 text-xs" placeholder="Group name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Button size="sm" className="shrink-0" disabled={picked.size === 0 || !name.trim()} onClick={record}>
+            Record group from selection
+          </Button>
+        </div>
       </div>
       <div className="flex flex-col gap-2">
         {groups.map((g) => (
@@ -92,15 +121,7 @@ function GroupsSection({ picked, onSelectGroup }: { picked: Set<number>; onSelec
             >
               {g.name} ({g.fixtureNumbers.length})
             </button>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              defaultValue={100}
-              className="h-1.5 w-24 accent-primary"
-              onChange={(e) => void engineApi.applyGroupMaster(g.id, Number(e.target.value))}
-              title="Group master"
-            />
+            <GroupMaster groupId={g.id} />
             <Button size="iconSm" variant="ghost" onClick={() => void engineApi.deleteGroup(g.id).then(refresh)}>
               <Trash2 />
             </Button>
@@ -115,6 +136,7 @@ function GroupsSection({ picked, onSelectGroup }: { picked: Set<number>; onSelec
 function PresetsSection({ picked }: { picked: number[] }) {
   const [family, setFamily] = useState<PresetFamily>("colour");
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [name, setName] = useState("");
   const io = useAttributeIO(picked);
   const refresh = (f: PresetFamily) => void engineApi.listPresets(f).then(setPresets).catch(() => undefined);
 
@@ -124,10 +146,12 @@ function PresetsSection({ picked }: { picked: number[] }) {
   }, [family]);
 
   const record = () => {
-    const name = window.prompt(`${FAMILY_LABELS[family]} preset name?`);
-    if (!name || picked.length === 0) return;
+    if (!name.trim() || picked.length === 0) return;
     const color = family === "colour" ? rgbToHex({ r: io.getValue("red"), g: io.getValue("green"), b: io.getValue("blue") }) : undefined;
-    void engineApi.recordPreset(family, name, picked, color).then(() => refresh(family));
+    void engineApi.recordPreset(family, name.trim(), picked, color).then(() => {
+      setName("");
+      refresh(family);
+    });
   };
 
   const rgb = { r: io.getValue("red"), g: io.getValue("green"), b: io.getValue("blue") };
@@ -143,9 +167,17 @@ function PresetsSection({ picked }: { picked: number[] }) {
           </Button>
         ))}
         <div className="flex-1" />
-        <Button size="sm" disabled={picked.length === 0} onClick={record}>
-          Record from selection
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Input
+            className="h-8 w-40 text-xs"
+            placeholder={`${FAMILY_LABELS[family]} preset name`}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <Button size="sm" className="shrink-0" disabled={picked.length === 0 || !name.trim()} onClick={record}>
+            Record from selection
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(90px,1fr))] gap-2">

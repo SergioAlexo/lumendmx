@@ -3,7 +3,7 @@
 //! command line resolves against, and the 44Hz tick thread.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use super::command_line::{self, Command};
-use super::cues::{Cue, CueStore, CueValue, Cuelist, CuelistKind};
+use super::cues::{resolve_cue_value, Cue, CueStore, CueValue, Cuelist, CuelistKind};
 use super::groups::{Group, GroupStore};
 use super::legacy_playback::{LegacyAsset, RunningPlayback};
 use super::merge::merge_universe;
@@ -90,7 +90,7 @@ pub struct CommandResult {
 /// `Cue.values` is keyed by `(u32, u16)`, which can't cross the Tauri
 /// boundary as-is (JSON object keys must be strings) — these DTOs flatten it
 /// into a plain list. See `cues.rs`'s module docs.
-#[derive(Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct CueValueEntry {
@@ -99,7 +99,7 @@ pub struct CueValueEntry {
     pub value: CueValue,
 }
 
-#[derive(Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct CueDto {
@@ -132,7 +132,7 @@ impl From<&Cue> for CueDto {
     }
 }
 
-#[derive(Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct CuelistDto {
@@ -141,6 +141,22 @@ pub struct CuelistDto {
     pub kind: CuelistKind,
     pub tracking: bool,
     pub cues: Vec<CueDto>,
+}
+
+impl From<CuelistDto> for Cuelist {
+    fn from(dto: CuelistDto) -> Self {
+        let mut list = Cuelist::new(dto.id, dto.name, dto.kind, dto.tracking);
+        for cue_dto in dto.cues {
+            let mut cue = Cue::new(cue_dto.number, cue_dto.name);
+            cue.values = cue_dto.values.into_iter().map(|e| ((e.universe, e.channel), e.value)).collect();
+            cue.fade_in_ms = cue_dto.fade_in_ms;
+            cue.fade_out_ms = cue_dto.fade_out_ms;
+            cue.delay_in_ms = cue_dto.delay_in_ms;
+            cue.mark = cue_dto.mark;
+            list.upsert_cue(cue); // keeps cues sorted even if the file isn't
+        }
+        list
+    }
 }
 
 impl From<&Cuelist> for CuelistDto {
@@ -167,6 +183,17 @@ pub struct PlaybackStatus {
     pub paused: bool,
 }
 
+/// The engine-owned part of a show: what `.lumen` files store in their
+/// `groups`/`presets`/`cuelists` fields (schema v4+).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct ShowEngineData {
+    pub groups: Vec<Group>,
+    pub presets: Vec<Preset>,
+    pub cuelists: Vec<CuelistDto>,
+}
+
 pub struct EngineManager {
     state: Arc<Mutex<EngineState>>,
     playbacks: Arc<Mutex<Vec<RunningPlayback>>>,
@@ -178,6 +205,9 @@ pub struct EngineManager {
     cue_playbacks: Arc<Mutex<Vec<PlaybackRuntime>>>,
     next_playback_id: AtomicU32,
     tick_started: AtomicBool,
+    /// Bumped by every change to groups/presets/cuelists, so the frontend
+    /// can tell the show has unsaved engine-side edits (see `ShowEngineData`).
+    data_revision: AtomicU64,
 }
 
 impl EngineManager {
@@ -193,6 +223,7 @@ impl EngineManager {
             cue_playbacks: Arc::new(Mutex::new(Vec::new())),
             next_playback_id: AtomicU32::new(0),
             tick_started: AtomicBool::new(false),
+            data_revision: AtomicU64::new(0),
         }
     }
 
@@ -494,6 +525,7 @@ impl EngineManager {
     // --- Groups (Phase 5) ---
 
     pub fn record_group(&self, name: String, fixture_numbers: Vec<u32>) -> u32 {
+        self.mark_data_changed();
         self.groups.lock().unwrap().record(name, fixture_numbers)
     }
 
@@ -502,10 +534,12 @@ impl EngineManager {
     }
 
     pub fn rename_group(&self, id: u32, name: String) -> Result<(), String> {
+        self.mark_data_changed();
         self.groups.lock().unwrap().rename(id, name)
     }
 
     pub fn delete_group(&self, id: u32) {
+        self.mark_data_changed();
         self.groups.lock().unwrap().delete(id);
     }
 
@@ -560,19 +594,23 @@ impl EngineManager {
         color: Option<String>,
     ) -> u32 {
         let values = self.capture_attribute_values(fixture_numbers);
+        self.mark_data_changed();
         self.presets.lock().unwrap().record(family, name, values, color)
     }
 
     pub fn update_preset(&self, id: u32, fixture_numbers: &HashSet<u32>, color: Option<String>) -> Result<(), String> {
         let values = self.capture_attribute_values(fixture_numbers);
+        self.mark_data_changed();
         self.presets.lock().unwrap().update(id, values, color)
     }
 
     pub fn rename_preset(&self, id: u32, name: String) -> Result<(), String> {
+        self.mark_data_changed();
         self.presets.lock().unwrap().rename(id, name)
     }
 
     pub fn delete_preset(&self, id: u32) {
+        self.mark_data_changed();
         self.presets.lock().unwrap().delete(id);
     }
 
@@ -607,6 +645,7 @@ impl EngineManager {
     // --- Cuelists and cues (Phase 6) ---
 
     pub fn create_cuelist(&self, name: String, kind: CuelistKind, tracking: bool) -> u32 {
+        self.mark_data_changed();
         self.cues.lock().unwrap().create(name, kind, tracking)
     }
 
@@ -615,6 +654,7 @@ impl EngineManager {
     }
 
     pub fn delete_cuelist(&self, id: u32) {
+        self.mark_data_changed();
         self.cues.lock().unwrap().delete(id);
         // Any playback still pointing at it stops contributing next tick
         // (its `cues.get(cuelist_id)` lookup will miss and its layer is
@@ -624,6 +664,7 @@ impl EngineManager {
     }
 
     pub fn rename_cuelist(&self, id: u32, name: String) -> Result<(), String> {
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(id).ok_or_else(|| format!("No cuelist {id}"))?;
         list.name = name;
@@ -631,6 +672,7 @@ impl EngineManager {
     }
 
     pub fn set_cuelist_tracking(&self, id: u32, tracking: bool) -> Result<(), String> {
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(id).ok_or_else(|| format!("No cuelist {id}"))?;
         list.tracking = tracking;
@@ -678,6 +720,7 @@ impl EngineManager {
         drop(state);
         drop(index);
 
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
         list.upsert_cue(cue);
@@ -685,6 +728,7 @@ impl EngineManager {
     }
 
     pub fn delete_cue(&self, cuelist_id: u32, number: f64) -> Result<(), String> {
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
         list.remove_cue(number);
@@ -716,6 +760,7 @@ impl EngineManager {
             (entry.universe, channel)
         };
 
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
         let index = list.index_of(cue_number).ok_or_else(|| format!("No cue {cue_number}"))?;
@@ -723,7 +768,28 @@ impl EngineManager {
         Ok(())
     }
 
+    /// Undoes `set_cue_preset_reference` for one channel: the value becomes a
+    /// literal equal to what the preset currently gives it, so the cue's look
+    /// is unchanged but no longer follows later edits to that preset.
+    pub fn unlink_cue_preset(&self, cuelist_id: u32, cue_number: f64, universe: u32, channel: u16) -> Result<(), String> {
+        self.mark_data_changed();
+        let mut cues = self.cues.lock().unwrap();
+        let presets = self.presets.lock().unwrap();
+        let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
+        let index = list.index_of(cue_number).ok_or_else(|| format!("No cue {cue_number}"))?;
+        let value = list.cues[index]
+            .values
+            .get_mut(&(universe, channel))
+            .ok_or_else(|| format!("Cue {cue_number} has no value for {universe}.{channel}"))?;
+        if !matches!(value, CueValue::Preset { .. }) {
+            return Err(format!("Cue {cue_number}'s {universe}.{channel} isn't linked to a preset"));
+        }
+        *value = CueValue::Literal { value: resolve_cue_value(value, &presets) };
+        Ok(())
+    }
+
     pub fn set_chase_tempo(&self, cuelist_id: u32, bpm: f32) -> Result<(), String> {
+        self.mark_data_changed();
         let mut cues = self.cues.lock().unwrap();
         let list = cues.get_mut(cuelist_id).ok_or_else(|| format!("No cuelist {cuelist_id}"))?;
         match &mut list.kind {
@@ -733,6 +799,48 @@ impl EngineManager {
             }
             _ => Err("Not a chase cuelist".to_string()),
         }
+    }
+
+    // --- Show data (saved in .lumen files) ---
+
+    fn mark_data_changed(&self) {
+        self.data_revision.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Changes whenever groups/presets/cuelists change; compare against the
+    /// value at the last save/load to know whether there's unsaved work.
+    pub fn show_data_revision(&self) -> u64 {
+        self.data_revision.load(Ordering::SeqCst)
+    }
+
+    pub fn export_show_data(&self) -> ShowEngineData {
+        ShowEngineData {
+            groups: self.list_groups(),
+            presets: self.list_presets(None),
+            cuelists: self.list_cuelists(),
+        }
+    }
+
+    /// Replaces all groups/presets/cuelists with a show's (open/new/restore).
+    /// Running cue playbacks and the command line's current cuelist point at
+    /// the outgoing cuelists' ids, so they're dropped first.
+    pub fn load_show_data(&self, data: ShowEngineData) {
+        let playback_ids: Vec<u32> = self.cue_playbacks.lock().unwrap().drain(..).map(|p| p.id).collect();
+        {
+            let mut state = self.state.lock().unwrap();
+            for id in playback_ids {
+                state.playbacks.remove(&format!("cue-playback-{id}"));
+            }
+        }
+        {
+            let mut ctx = self.programmer_ctx.lock().unwrap();
+            ctx.current_cuelist = None;
+            ctx.last_cue_number = None;
+        }
+        self.groups.lock().unwrap().replace_all(data.groups);
+        self.presets.lock().unwrap().replace_all(data.presets);
+        self.cues.lock().unwrap().replace_all(data.cuelists.into_iter().map(Cuelist::from).collect());
+        self.mark_data_changed();
     }
 
     // --- Playbacks (Phase 6) ---
@@ -877,6 +985,37 @@ mod tests {
         assert_eq!(cue.number, 1.0);
         assert_eq!(cue.values[0].channel, 1);
         assert!(matches!(cue.values[0].value, CueValue::Literal { value } if value == 255.0));
+    }
+
+    #[test]
+    fn unlink_cue_preset_freezes_the_presets_current_value() {
+        let engine = EngineManager::new();
+        engine.set_patch_index(vec![patched_fixture(1, 1, 1)]);
+        let fixtures: HashSet<u32> = [1].into();
+        let cuelist_id = engine.create_cuelist("List".to_string(), CuelistKind::Standard, true);
+        engine.set_current_cuelist(Some(cuelist_id));
+
+        engine.execute_command("1 @ 50");
+        let preset_id = engine.record_preset(PresetFamily::Intensity, "Half".to_string(), &fixtures, None);
+        assert!(engine.execute_command("RECORD CUE 1").ok);
+        engine.set_cue_preset_reference(cuelist_id, 1.0, 1, "dimmer".to_string(), preset_id).unwrap();
+
+        engine.unlink_cue_preset(cuelist_id, 1.0, 1, 1).unwrap();
+        let half = match engine.list_cuelists()[0].cues[0].values[0].value {
+            CueValue::Literal { value } => value,
+            ref other => panic!("expected a literal after unlink, got {other:?}"),
+        };
+
+        // Changing the preset afterwards must not touch the unlinked cue.
+        engine.execute_command("1 @ 100");
+        engine.update_preset(preset_id, &fixtures, None).unwrap();
+        assert!(matches!(
+            engine.list_cuelists()[0].cues[0].values[0].value,
+            CueValue::Literal { value } if value == half
+        ));
+
+        // A value that isn't linked can't be unlinked.
+        assert!(engine.unlink_cue_preset(cuelist_id, 1.0, 1, 1).is_err());
     }
 
     #[test]

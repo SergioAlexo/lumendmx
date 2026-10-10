@@ -11,6 +11,7 @@ import type {
   PlaybackStatus,
   Preset,
   PresetFamily,
+  ShowEngineData,
 } from "./showfile/generated";
 import type { LightAsset } from "./types";
 
@@ -180,6 +181,28 @@ export function setCuePresetReference(
   return invoke("engine_set_cue_preset_reference", { cuelistId, cueNumber, fixtureNumber, attribute, presetId });
 }
 
+/** Turns a linked cue value back into a literal (the preset's current value). */
+export function unlinkCuePreset(cuelistId: number, cueNumber: number, universe: number, channel: number): Promise<void> {
+  return invoke("engine_unlink_cue_preset", { cuelistId, cueNumber, universe, channel });
+}
+
+/** The engine's groups/presets/cuelists, for writing into a show file. */
+export function exportShowData(): Promise<ShowEngineData> {
+  return invoke("engine_export_show_data");
+}
+
+/** Replaces the engine's groups/presets/cuelists with a show's (and drops
+ * running cue playbacks, which point at the outgoing cuelists). */
+export function loadShowData(data: ShowEngineData): Promise<void> {
+  return invoke("engine_load_show_data", { data });
+}
+
+/** Changes on every group/preset/cuelist edit; compare with the value at the
+ * last save/load to detect unsaved engine-side changes. */
+export function showDataRevision(): Promise<number> {
+  return invoke("engine_show_data_revision");
+}
+
 export function setChaseTempo(cuelistId: number, bpm: number): Promise<void> {
   return invoke("engine_set_chase_tempo", { cuelistId, bpm });
 }
@@ -237,4 +260,5 @@ export type {
   PlaybackStatus,
   Preset,
   PresetFamily,
+  ShowEngineData,
 } from "./showfile/generated";

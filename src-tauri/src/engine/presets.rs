@@ -29,7 +29,7 @@ pub enum PresetFamily {
     Effect,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct Preset {
@@ -84,6 +84,14 @@ impl PresetStore {
 
     pub fn get(&self, id: u32) -> Option<&Preset> {
         self.presets.get(&id)
+    }
+
+    /// Replaces every preset (loading a show). New ids continue after the
+    /// highest loaded one, so cue links (which reference presets by id)
+    /// keep pointing at the right preset.
+    pub fn replace_all(&mut self, presets: Vec<Preset>) {
+        self.next_id = presets.iter().map(|p| p.id).max().unwrap_or(0);
+        self.presets = presets.into_iter().map(|p| (p.id, p)).collect();
     }
 
     pub fn list(&self, family: Option<PresetFamily>) -> Vec<Preset> {

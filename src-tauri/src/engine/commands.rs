@@ -5,7 +5,7 @@ use tauri::State;
 use super::cues::CuelistKind;
 use super::groups::Group;
 use super::legacy_playback::{LegacyAsset, LegacyStep};
-use super::manager::{CommandResult, CuelistDto, EngineManager, PatchIndexEntry, PlaybackStatus};
+use super::manager::{CommandResult, CuelistDto, EngineManager, PatchIndexEntry, PlaybackStatus, ShowEngineData};
 use super::playback::FaderMode;
 use super::presets::{Preset, PresetFamily};
 
@@ -218,8 +218,36 @@ pub fn engine_set_cue_preset_reference(
 }
 
 #[tauri::command]
+pub fn engine_unlink_cue_preset(
+    engine: State<EngineManager>,
+    cuelist_id: u32,
+    cue_number: f64,
+    universe: u32,
+    channel: u16,
+) -> Result<(), String> {
+    engine.unlink_cue_preset(cuelist_id, cue_number, universe, channel)
+}
+
+#[tauri::command]
 pub fn engine_set_chase_tempo(engine: State<EngineManager>, cuelist_id: u32, bpm: f32) -> Result<(), String> {
     engine.set_chase_tempo(cuelist_id, bpm)
+}
+
+// --- Show data (groups/presets/cuelists saved in .lumen files) ---
+
+#[tauri::command]
+pub fn engine_export_show_data(engine: State<EngineManager>) -> ShowEngineData {
+    engine.export_show_data()
+}
+
+#[tauri::command]
+pub fn engine_load_show_data(engine: State<EngineManager>, data: ShowEngineData) {
+    engine.load_show_data(data);
+}
+
+#[tauri::command]
+pub fn engine_show_data_revision(engine: State<EngineManager>) -> u64 {
+    engine.show_data_revision()
 }
 
 // --- Playbacks (Phase 6) ---
