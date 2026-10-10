@@ -57,12 +57,14 @@ function Meter({ label, value }: { label: string; value: number }) {
 function TriggerRow({
   trigger,
   playbacks,
+  cuelistNames,
   effects,
   onChange,
   onDelete,
 }: {
   trigger: AudioTrigger;
   playbacks: PlaybackStatus[];
+  cuelistNames: Record<number, string>;
   effects: EffectInstance[];
   onChange: (t: AudioTrigger) => void;
   onDelete: () => void;
@@ -99,7 +101,8 @@ function TriggerRow({
         <optgroup label="Flash playback">
           {playbacks.map((p) => (
             <option key={`p${p.id}`} value={`p${p.id}`}>
-              Playback {p.id + 1}
+              {/* Where it sits on the playback bar, not its internal id. */}
+              Page {p.page + 1} · {p.column + 1} — {cuelistNames[p.cuelistId] ?? `Cuelist ${p.cuelistId}`}
             </option>
           ))}
         </optgroup>
@@ -146,11 +149,16 @@ export function TimingPanel() {
   const [midiInputs, setMidiInputs] = useState<MidiPortInfo[]>([]);
   const [triggers, setTriggers] = useState<AudioTrigger[]>([]);
   const [playbacks, setPlaybacks] = useState<PlaybackStatus[]>([]);
+  const [cuelistNames, setCuelistNames] = useState<Record<number, string>>({});
   const [effects, setEffects] = useState<EffectInstance[]>([]);
 
   const refreshTargets = useCallback(() => {
     void timing.listTriggers().then(setTriggers).catch(() => undefined);
     void engineApi.listPlaybacks().then(setPlaybacks).catch(() => undefined);
+    void engineApi
+      .listCuelists()
+      .then((lists) => setCuelistNames(Object.fromEntries(lists.map((c) => [c.id, c.name]))))
+      .catch(() => undefined);
     void engineApi.listEffects().then(setEffects).catch(() => undefined);
   }, []);
 
@@ -378,6 +386,7 @@ export function TimingPanel() {
             key={t.id}
             trigger={t}
             playbacks={playbacks}
+            cuelistNames={cuelistNames}
             effects={effects}
             onChange={saveTrigger}
             onDelete={() => void timing.deleteTrigger(t.id).then(refreshTargets)}
