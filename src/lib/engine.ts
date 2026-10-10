@@ -4,14 +4,19 @@ import type {
   CommandResult,
   CuelistDto,
   CuelistKind,
+  EffectDef,
+  EffectInstance,
   EngineFrame,
   FaderMode,
   Group,
   PatchIndexEntry,
+  PixelMap,
+  PixelMapStatus,
   PlaybackStatus,
   Preset,
   PresetFamily,
   ShowEngineData,
+  TempoStatus,
 } from "./showfile/generated";
 import type { LightAsset } from "./types";
 
@@ -245,6 +250,98 @@ export function playbackSetFaderMode(id: number, mode: FaderMode): Promise<void>
   return invoke("engine_playback_set_fader_mode", { id, mode });
 }
 
+// --- Tempo (Phase 7) ---
+
+export function tempoStatus(): Promise<TempoStatus> {
+  return invoke("engine_tempo_status");
+}
+
+export function setBpm(bpm: number): Promise<void> {
+  return invoke("engine_set_bpm", { bpm });
+}
+
+/** Passes the tap's own timestamp so IPC latency doesn't skew the interval. */
+export function tapTempo(): Promise<number> {
+  return invoke("engine_tap_tempo", { nowMs: performance.now() });
+}
+
+// --- Effects (Phase 7) ---
+
+/** Runs `def` on `fixtureNumbers` (order = fan order) in the programmer. */
+export function startEffect(def: EffectDef, fixtureNumbers: number[], presetId: number | null = null): Promise<number> {
+  return invoke("engine_start_effect", { def, fixtureNumbers, presetId });
+}
+
+export function updateEffect(id: number, def: EffectDef): Promise<void> {
+  return invoke("engine_update_effect", { id, def });
+}
+
+export function stopEffect(id: number): Promise<void> {
+  return invoke("engine_stop_effect", { id });
+}
+
+export function listEffects(): Promise<EffectInstance[]> {
+  return invoke("engine_list_effects");
+}
+
+export function recordEffectPreset(name: string, def: EffectDef): Promise<number> {
+  return invoke("engine_record_effect_preset", { name, def });
+}
+
+export function updateEffectPreset(id: number, def: EffectDef): Promise<void> {
+  return invoke("engine_update_effect_preset", { id, def });
+}
+
+// --- Pixel maps (Phase 7) ---
+
+export function createPixelMap(name: string, width: number, height: number): Promise<number> {
+  return invoke("engine_create_pixel_map", { name, width, height });
+}
+
+export function updatePixelMap(map: PixelMap): Promise<void> {
+  return invoke("engine_update_pixel_map", { map });
+}
+
+export function deletePixelMap(id: number): Promise<void> {
+  return invoke("engine_delete_pixel_map", { id });
+}
+
+export function listPixelMaps(): Promise<PixelMap[]> {
+  return invoke("engine_list_pixel_maps");
+}
+
+/** Imports an image/GIF file into the map (scaled to its size). */
+export async function importPixelMapMedia(id: number, file: File): Promise<void> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return invoke("engine_import_pixel_map_media", { id, data: btoa(binary) });
+}
+
+export function startPixelMap(id: number): Promise<void> {
+  return invoke("engine_start_pixel_map", { id });
+}
+
+export function stopPixelMap(id: number): Promise<void> {
+  return invoke("engine_stop_pixel_map", { id });
+}
+
+export function setPixelMapIntensity(id: number, percent: number): Promise<void> {
+  return invoke("engine_set_pixel_map_intensity", { id, percent });
+}
+
+export function runningPixelMaps(): Promise<PixelMapStatus[]> {
+  return invoke("engine_running_pixel_maps");
+}
+
+/** The map's current frame: width × height × 3 RGB bytes, row-major. */
+export function pixelMapPreview(id: number): Promise<number[]> {
+  return invoke("engine_pixel_map_preview", { id });
+}
+
 export type {
   CommandResult,
   CuelistDto,
@@ -253,7 +350,21 @@ export type {
   CueValue,
   CueValueEntry,
   ChaseDirection,
+  EffectDef,
+  EffectDirection,
+  EffectInstance,
+  EffectMode,
+  EffectRate,
+  EffectTarget,
   EngineFrame,
+  Generator,
+  MapDirection,
+  PixelCell,
+  PixelMap,
+  PixelMapStatus,
+  PositionShape,
+  TempoStatus,
+  Waveform,
   FaderMode,
   Group,
   PatchIndexEntry,

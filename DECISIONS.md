@@ -315,3 +315,67 @@ One line (or a short paragraph) per call made without stopping to ask, per
   the last opened/saved show** (`showfile_restore_session`). An autosave is
   reattached to its show's path (if it has one) and marked dirty, so recovered
   work is never silently treated as saved.
+
+## Phase 7 — Effects engine and pixel mapping
+
+- **A minimal global tempo was built here, not in Phase 8.** Phase 7's
+  done-when needs "BPM-synced", and the only BPM so far was per chase
+  cuelist. `engine::tempo` has a manual BPM, tap, and a beat clock. Phase 8
+  adds audio detection, Ableton Link and MIDI clock as more ways to set the
+  same BPM. Chase cuelists keep their own BPM for now; locking them to the
+  global tempo is a Phase 8 decision.
+- **The beat clock is integrated per tick, not computed from wall time.**
+  Changing the BPM then changes speed without making every synced effect
+  jump to a new phase. Hz-rate effects use the engine's elapsed seconds
+  directly, so changing an effect's Hz *does* jump its phase. That's
+  acceptable for a parameter you set while programming, not while running.
+- **Effects run inside the owning layer** (`Layer.fx_values` beat
+  `Layer.values`), not as a separate post-merge pass. That way an effect in
+  an Override cuelist wins like an Override, and a dimmer effect is HTP
+  like any dimmer, with no new merge rules to reason about.
+- **Effects don't track.** `RECORD CUE` captures a literal for every
+  channel of the selected fixtures, so a tracked effect could never be
+  stopped by a later cue. A cue runs only its own effects. Re-record an
+  effect into each cue that should have it; when it's the same programmer
+  effect (same id), GO between those cues doesn't interrupt it.
+- **A new effect on an attribute replaces the old one for those fixtures**
+  instead of stacking two effects on the same channel. That matches what a
+  programmer expects from re-applying an effect. Stacking still happens
+  across layers (a cue's effect plus a programmer effect).
+- **Editing a preset-linked running effect unlinks it.** It's no longer
+  playing the preset's definition, so following later preset edits would
+  overwrite the live edit. Use ↻ on the preset to push the edit into the
+  preset instead.
+- **Effect presets hold a whole effect definition** (`Preset.effect`)
+  rather than attribute values. The Palettes tab's Effect family no longer
+  offers "record from selection" (it would have recorded plain values);
+  recording happens in the Effects tab.
+- **Pan/tilt effects drive the coarse channel only.** The patch index
+  carries one channel per attribute, and fine channels aren't modelled
+  there yet. Fine-channel output is part of the 16-bit work for moving
+  heads.
+- **"Step" is four equal levels and "pulse" a smooth bump over `width`%.**
+  The plan names both without defining them; these are the common
+  meanings.
+- **The intensity-master fader moved from `PlaybackRuntime::render` to the
+  merge** (`Layer.intensity_scale`). Otherwise a dimmer effect on a cue
+  would ignore its playback's fader.
+- **Pixel-map media is decoded in Rust and scaled at import.** The `image`
+  crate (MIT/Apache) handles PNG/JPEG/GIF. Frames are stored at the map's
+  size as base64 RGB in the show file, so a show stays self-contained and
+  small, and a later map resize resamples (nearest-neighbour). Imports are
+  capped at 8 MB and 300 frames.
+- **Video onto the grid was skipped.** It needs ffmpeg or a platform
+  decoder, which is a large native dependency for a feature a GIF covers
+  for most DJ-set use. Recorded here per the "skip and note" rule.
+- **The scriptable generator (sandboxed JS) was skipped.** The plan marks
+  it optional, and doing it properly means embedding a JS engine (e.g.
+  `boa`) with time and memory limits in the engine thread. The eight
+  built-in generators cover the plan's list.
+- **Pixel maps aren't recordable into cues yet.** They run from the Pixel
+  maps tab as their own playback layers, with a master. Triggering a map
+  from a cue or a playback-bar slot belongs with the playback-bar pages
+  work (still open from Phase 6) or the Virtual Console (Phase 10).
+- **The fire generator steps at `height` steps per cycle** and catches up
+  at most four steps per tick, so after a long pause it doesn't spend a
+  tick simulating seconds of flames.

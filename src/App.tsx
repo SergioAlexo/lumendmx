@@ -11,6 +11,8 @@ import { CommandLine } from "./components/CommandLine";
 import { LiveAiConsole } from "./components/LiveAiConsole";
 import { SetupPanel } from "./components/SetupPanel";
 import { PalettesPanel } from "./components/PalettesPanel";
+import { EffectsPanel } from "./components/EffectsPanel";
+import { PixelMapPanel } from "./components/PixelMapPanel";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -20,7 +22,17 @@ import { useShowStore } from "./store/useShowStore";
 import { useUniverseStatusesStore } from "./store/useUniverseStatusesStore";
 import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
 
-type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "setup";
+type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "setup";
+
+const VIEW_LABELS: Record<MainView, string> = {
+  fixtures: "Fixtures",
+  cues: "Triggers",
+  cuelists: "Cuelists",
+  palettes: "Palettes",
+  effects: "Effects",
+  pixelmaps: "Pixel maps",
+  setup: "Setup",
+};
 
 function App() {
   const init = useDmxStore((s) => s.init);
@@ -47,7 +59,7 @@ function App() {
       <div className="flex flex-1 overflow-hidden">
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex gap-1 border-b border-border px-4 py-2">
-            {(["fixtures", "cues", "cuelists", "palettes", "setup"] as MainView[]).map((view) => (
+            {(Object.keys(VIEW_LABELS) as MainView[]).map((view) => (
               <Button
                 key={view}
                 size="sm"
@@ -55,15 +67,7 @@ function App() {
                 className={cn("uppercase", mainView !== view && "text-muted-foreground")}
                 onClick={() => setMainView(view)}
               >
-                {view === "fixtures"
-                  ? "Fixtures"
-                  : view === "cues"
-                    ? "Triggers"
-                    : view === "cuelists"
-                      ? "Cuelists"
-                      : view === "palettes"
-                        ? "Palettes"
-                        : "Setup"}
+                {VIEW_LABELS[view]}
               </Button>
             ))}
           </div>
@@ -78,6 +82,10 @@ function App() {
               <CuePanel />
             ) : mainView === "palettes" ? (
               <PalettesPanel />
+            ) : mainView === "effects" ? (
+              <EffectsPanel />
+            ) : mainView === "pixelmaps" ? (
+              <PixelMapPanel />
             ) : (
               <SetupPanel />
             )}

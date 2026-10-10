@@ -44,6 +44,10 @@ pub fn migrate(raw: Value) -> Result<ShowFile, String> {
         value = upgrade_3_to_4(value);
         current_version = 4;
     }
+    if current_version == 4 {
+        value = upgrade_4_to_5(value);
+        current_version = 5;
+    }
 
     debug_assert_eq!(current_version, CURRENT_SCHEMA_VERSION);
 
@@ -144,6 +148,20 @@ fn upgrade_3_to_4(value: Value) -> Value {
         obj.entry(key).or_insert(Value::Array(Vec::new()));
     }
     obj.insert("schemaVersion".to_string(), Value::from(4));
+    Value::Object(obj)
+}
+
+/// v4 -> v5: the global tempo and pixel maps (Phase 7). Cue effects and
+/// Effect preset definitions are new optional fields inside existing
+/// entries, which deserialize as "none" without any rewriting here.
+fn upgrade_4_to_5(value: Value) -> Value {
+    let mut obj = match value {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    };
+    obj.entry("bpm").or_insert(Value::from(crate::engine::tempo::DEFAULT_BPM));
+    obj.entry("pixelMaps").or_insert(Value::Array(Vec::new()));
+    obj.insert("schemaVersion".to_string(), Value::from(5));
     Value::Object(obj)
 }
 
@@ -258,10 +276,10 @@ mod tests {
     }
 
     #[test]
-    fn v3_gains_empty_groups_presets_and_cuelists() {
+    fn v3_gains_empty_engine_data_default_bpm_and_no_pixel_maps() {
         let mut v3 = serde_json::to_value(ShowFile::new_default("Old Show")).unwrap();
         let obj = v3.as_object_mut().unwrap();
-        for key in ["groups", "presets", "cuelists"] {
+        for key in ["groups", "presets", "cuelists", "bpm", "pixelMaps"] {
             obj.remove(key);
         }
         obj.insert("schemaVersion".to_string(), Value::from(3));
@@ -271,11 +289,14 @@ mod tests {
         assert!(migrated.groups.is_empty());
         assert!(migrated.presets.is_empty());
         assert!(migrated.cuelists.is_empty());
+        assert_eq!(migrated.bpm, crate::engine::tempo::DEFAULT_BPM);
+        assert!(migrated.pixel_maps.is_empty());
     }
 
     #[test]
     fn engine_data_survives_a_save_and_load() {
         use crate::engine::cues::CuelistKind;
+        use crate::engine::effects::{EffectDef, Waveform};
         use crate::engine::manager::{EngineManager, PatchIndexEntry};
         use crate::engine::presets::PresetFamily;
         use std::collections::HashSet;
@@ -286,8 +307,14 @@ mod tests {
             universe: 1,
             intensity_channel: Some(1),
             attribute_channels: [("dimmer".to_string(), 1)].into_iter().collect(),
+            cells: Vec::new(),
         }]);
         let fixtures: HashSet<u32> = [1].into();
+        let wave = EffectDef::new_attribute("dimmer", Waveform::Sine);
+        let fx_preset = engine.record_effect_preset("Wave".to_string(), wave.clone());
+        engine.start_effect(wave, vec![1], Some(fx_preset));
+        engine.set_bpm(128.0);
+        let map_id = engine.create_pixel_map("Matrix".to_string(), 10, 10);
         engine.record_group("Front".to_string(), vec![1]);
         engine.execute_command("1 @ 50");
         let preset_id = engine.record_preset(PresetFamily::Intensity, "Half".to_string(), &fixtures, None);
@@ -295,12 +322,16 @@ mod tests {
         engine.record_cue(cuelist_id, 1.0, "Look".to_string(), &fixtures, 500.0, 500.0).unwrap();
         engine.set_cue_preset_reference(cuelist_id, 1.0, 1, "dimmer".to_string(), preset_id).unwrap();
         let saved = engine.export_show_data();
+        assert_eq!(saved.cuelists[0].cues[0].effects.len(), 1, "programmer effect recorded into the cue");
+        assert_eq!(saved.pixel_maps[0].id, map_id);
 
         // Through the file format and back, as Save then Open would.
         let mut show = ShowFile::new_default("Show");
         show.groups = saved.groups.clone();
         show.presets = saved.presets.clone();
         show.cuelists = saved.cuelists.clone();
+        show.bpm = saved.bpm;
+        show.pixel_maps = saved.pixel_maps.clone();
         let reopened = migrate(serde_json::to_value(&show).unwrap()).unwrap();
 
         let fresh = EngineManager::new();
@@ -308,11 +339,17 @@ mod tests {
             groups: reopened.groups,
             presets: reopened.presets,
             cuelists: reopened.cuelists,
+            bpm: reopened.bpm,
+            pixel_maps: reopened.pixel_maps,
         });
         assert_eq!(fresh.export_show_data(), saved);
 
         // New ids continue after the loaded ones instead of colliding.
         assert!(fresh.record_group("Back".to_string(), vec![1]) > saved.groups[0].id);
+        assert_eq!(fresh.tempo_status().bpm, 128.0);
+        // A new effect's id can't collide with one recorded in a loaded cue.
+        let recorded_id = saved.cuelists[0].cues[0].effects[0].id;
+        assert!(fresh.start_effect(EffectDef::new_attribute("dimmer", Waveform::Square), vec![1], None) > recorded_id);
     }
 
     #[test]

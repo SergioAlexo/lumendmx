@@ -1,9 +1,10 @@
 //! The `.lumen` show-file schema.
 //!
 //! Only fields backed by real functionality today are modelled here
-//! (universes, patch, workspaces, settings, legacy assets, and since v4 the
-//! engine's groups/presets/cuelists). Effects, pixel maps, timelines and
-//! MIDI/OSC mappings are added to this schema — each with its own `schema_version` bump and migration step —
+//! (universes, patch, workspaces, settings, legacy assets, since v4 the
+//! engine's groups/presets/cuelists, and since v5 its tempo and pixel maps;
+//! effects live inside cues and Effect presets). Timelines and MIDI/OSC
+//! mappings are added to this schema — each with its own `schema_version` bump and migration step —
 //! by the phase that actually implements them (see `DECISIONS.md`). Designing
 //! their shape now, before any of that logic exists, would just mean
 //! redesigning it later.
@@ -13,12 +14,13 @@ use ts_rs::TS;
 
 use crate::engine::groups::Group;
 use crate::engine::manager::CuelistDto;
+use crate::engine::pixelmap::PixelMap;
 use crate::engine::presets::Preset;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +138,10 @@ pub struct ShowFile {
     pub groups: Vec<Group>,
     pub presets: Vec<Preset>,
     pub cuelists: Vec<CuelistDto>,
+    /// The global tempo (v5+).
+    pub bpm: f32,
+    /// Pixel maps (v5+), also engine-owned.
+    pub pixel_maps: Vec<PixelMap>,
 }
 
 impl ShowFile {
@@ -159,6 +165,8 @@ impl ShowFile {
             groups: Vec::new(),
             presets: Vec::new(),
             cuelists: Vec::new(),
+            bpm: crate::engine::tempo::DEFAULT_BPM,
+            pixel_maps: Vec::new(),
         }
     }
 }

@@ -126,3 +126,34 @@ drive. Check these off by hand; each entry says which phase added it.
       autosave (~60s), quit without saving, relaunch: the app should reopen
       that work marked unsaved. Then Save, quit, relaunch: it should reopen
       the saved file, not an older autosave.
+
+## Phase 7 — Effects and pixel maps
+
+None of the Phase 7 UI has been opened in the real desktop app yet. The
+browser dev preview can't reach the Rust engine, so these checks cover the
+UI too, not just the rig.
+
+- [ ] **Colour fan wave on the 4 pars (the phase's done-when).** Effects
+      tab: pick pars 1→4, Waveform → Sine on `red`, Fan 360, BPM sync
+      1 beat/cycle, Run. The red should roll across the pars in order and
+      speed up/slow down with the top bar's BPM and TAP. The engine side is
+      covered by `a_bpm_synced_colour_fan_wave_runs_across_the_four_pars`;
+      this checks it on real DMX at 44Hz with no visible stepping.
+- [ ] **Dimmer effect under a playback fader.** Record a cue with a dimmer
+      effect (run it, then RECORD CUE with those pars selected), CLEAR,
+      play it back from the playback bar, and pull the fader down: the
+      effect should fade with it.
+- [ ] **Effect preset follows into cues.** Record an Effect preset, apply
+      it to pars, record a cue, CLEAR, GO the cue, then change the preset
+      (Load → edit → ↻): the running cue should change.
+- [ ] **Rainbow on a 10×10 virtual matrix.** Pixel maps tab: create a
+      10×10 map without mapping anything, Rainbow, BPM sync. The grid
+      preview should scroll a full rainbow every 4 beats.
+- [ ] **Pixel map on the pars.** Create a 4×1 map, Fill rows, Run: the
+      pars should show the rainbow with their dimmers up. The master slider
+      should dim them.
+- [ ] **GIF import.** Import a small animated GIF into a map and confirm it
+      plays at its natural speed and saves and reopens with the show.
+- [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
+      displayed BPM lands within about ±1 and the beat light sits on the
+      beat.

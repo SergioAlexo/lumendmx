@@ -6,6 +6,7 @@ import { Button } from "./ui/button";
 import { Select } from "./ui/input";
 import { cn } from "../lib/utils";
 import { ShowMenu } from "./ShowMenu";
+import { TempoControl } from "./TempoControl";
 
 function statusColor(connected: boolean, hasDriver: boolean): string {
   if (!hasDriver) return "bg-muted-foreground/40";
@@ -100,6 +101,8 @@ export function TopBar() {
 
         <UniverseStatusDots />
       </div>
+
+      <TempoControl />
 
       <Button
         variant={blackout ? "destructive" : "outline"}

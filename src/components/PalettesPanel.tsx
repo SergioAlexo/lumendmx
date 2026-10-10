@@ -169,14 +169,18 @@ function PresetsSection({ picked }: { picked: number[] }) {
         <div className="flex-1" />
         <div className="flex shrink-0 items-center gap-1">
           <Input
-            className="h-8 w-40 text-xs"
+            className={cn("h-8 w-40 text-xs", family === "effect" && "hidden")}
             placeholder={`${FAMILY_LABELS[family]} preset name`}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
-          <Button size="sm" className="shrink-0" disabled={picked.length === 0 || !name.trim()} onClick={record}>
-            Record from selection
-          </Button>
+          {family === "effect" ? (
+            <span className="text-xs text-muted-foreground">Record effect presets in the Effects tab</span>
+          ) : (
+            <Button size="sm" className="shrink-0" disabled={picked.length === 0 || !name.trim()} onClick={record}>
+              Record from selection
+            </Button>
+          )}
         </div>
       </div>
 
@@ -195,7 +199,7 @@ function PresetsSection({ picked }: { picked: number[] }) {
             </span>
             <div className="flex justify-center gap-2 text-muted-foreground">
               <button
-                className="hover:text-foreground"
+                className={cn("hover:text-foreground", family === "effect" && "hidden")}
                 title="Update from selection"
                 onClick={() => void engineApi.updatePreset(p.id, picked).then(() => refresh(family))}
               >

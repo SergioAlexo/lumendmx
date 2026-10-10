@@ -2,9 +2,10 @@
 
 A show file is a single JSON document (extension `.lumen`) holding everything
 needed to reopen a show: universes, patch, workspaces, settings, groups,
-presets, cuelists, and (for now) the legacy Scene/Chase/FX asset library.
-Effects, pixel maps, timelines and MIDI/OSC mappings will be added to this
-document by the phases that implement them (see `DECISIONS.md` for why they
+presets, cuelists (with their cues' effects), the global tempo, pixel maps,
+and (for now) the legacy Scene/Chase/FX asset library. Timelines and
+MIDI/OSC mappings will be added to this document by the phases that
+implement them (see `DECISIONS.md` for why they
 aren't in the schema yet).
 
 ## Where it lives
@@ -45,7 +46,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `4`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `5`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -87,6 +88,20 @@ the file's `groups`/`presets`/`cuelists` fields travel through the engine:
   unsaved when it differs from the revision at the last save/load.
 
 Playbacks are runtime state and aren't saved.
+
+## Tempo, effects and pixel maps (v5+)
+
+- `bpm`: the global tempo. Engine-owned like the above; it travels through
+  `engine_export_show_data`/`engine_load_show_data` too.
+- `pixelMaps`: each map's grid size, cell → fixture/cell mapping, generator
+  and its settings. Imported image/GIF frames are stored already scaled to
+  the map, as base64 RGB (`media.frames[].rgb`).
+- Effects aren't a top-level list: a cue's effects are in `cues[].effects`,
+  an Effect preset's definition in `presets[].effect`. Both are optional
+  fields, so v4 files load without them. Effects running in the programmer
+  aren't saved, like the rest of the programmer.
+- Running pixel maps and programmer effects are runtime state and aren't
+  saved.
 
 ## Restoring the last session
 

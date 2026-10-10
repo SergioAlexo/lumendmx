@@ -10,17 +10,61 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::effects::EffectInstance;
+
 /// A DMX address: which universe, which of its 512 channels (1-512).
 pub type ChannelKey = (u32, u16);
 
 /// The programmer always outranks every playback layer.
 pub const PROGRAMMER_PRIORITY: i64 = i64::MAX;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Layer {
     /// 0.0-255.0 so fades can interpolate sub-integer without a separate
     /// float layer type; rounded to `u8` only when merged for output.
     pub values: HashMap<ChannelKey, f32>,
+    /// Effects running in this layer (Phase 7), each with its crossfade
+    /// weight. Set by whoever owns the layer; rendered into `fx_values`
+    /// every tick.
+    pub effects: Vec<LayerEffect>,
+    /// This tick's effect output. Wins over `values` for the same channel.
+    pub fx_values: HashMap<ChannelKey, f32>,
+    /// Multiplies this layer's HTP (intensity) channels at merge time — a
+    /// playback's intensity-master fader. Applied after effects, so a
+    /// dimmer effect is faded by the fader too.
+    pub intensity_scale: f32,
+}
+
+impl Default for Layer {
+    fn default() -> Self {
+        Self { values: HashMap::new(), effects: Vec::new(), fx_values: HashMap::new(), intensity_scale: 1.0 }
+    }
+}
+
+impl Layer {
+    /// This layer's value for `key`, effects included, before
+    /// `intensity_scale`.
+    pub fn get(&self, key: &ChannelKey) -> Option<f32> {
+        self.fx_values.get(key).or_else(|| self.values.get(key)).copied()
+    }
+
+    pub fn has_effects(&self) -> bool {
+        !self.effects.is_empty()
+    }
+
+    /// Clears values and effects (CLEAR/RELEASE on the programmer).
+    pub fn clear(&mut self) {
+        self.values.clear();
+        self.effects.clear();
+        self.fx_values.clear();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerEffect {
+    pub instance: EffectInstance,
+    /// 0.0-1.0 crossfade weight (see `effects::ResolvedEffect::scale`).
+    pub scale: f32,
 }
 
 pub struct EngineState {

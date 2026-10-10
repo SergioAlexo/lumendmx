@@ -19,4 +19,11 @@ intensityChannel: number | null,
  * has, mapped to its channel — what a preset's `apply` resolves
  * attribute values against for an arbitrary target fixture (Phase 5).
  */
-attributeChannels: { [key: string]: number }, };
+attributeChannels: { [key: string]: number }, 
+/**
+ * For a multi-cell fixture (an LED bar, a pixel batten): each cell's
+ * attribute → channel map, in cell order (cell 1 first). Empty for a
+ * single-cell fixture. What a pixel map's per-cell mapping resolves
+ * against (Phase 7).
+ */
+cells: Array<{ [key: string]: number }>, };
