@@ -80,27 +80,41 @@ pub fn channel_sources(state: &EngineState, universe: u32, tracked: &TrackedChan
 /// What goes on the wire: layers merged, effects included, then the grand
 /// master (HTP channels only) and highlight/lowlight applied on top.
 pub fn merge_universe(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, true, true)
+    merge(state, &[universe], true, true).pop().map_or([0u8; UNIVERSE_SIZE], |(_, frame)| frame)
+}
+
+/// Several universes' output frames in one pass over the layers — the
+/// per-tick path. Same result as `merge_universe` for each; returns
+/// `(universe, frame)` in the order given.
+pub fn merge_universes(state: &EngineState, universes: &[u32]) -> Vec<(u32, [u8; UNIVERSE_SIZE])> {
+    merge(state, universes, true, true)
 }
 
 /// The merge as the show itself looks, effects included but without the
 /// grand master or highlight — what recording a preset should capture.
 pub fn merge_universe_unmastered(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, true, false)
+    merge(state, &[universe], true, false).pop().map_or([0u8; UNIVERSE_SIZE], |(_, frame)| frame)
 }
 
 /// The merge without any layer's effect output (and no grand master or
 /// highlight) — what a relative effect's "underlying value" is for a channel
 /// its own layer doesn't set.
 pub fn merge_universe_static(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, false, false)
+    merge(state, &[universe], false, false).pop().map_or([0u8; UNIVERSE_SIZE], |(_, frame)| frame)
 }
 
 /// One channel of `merge_universe_static`, as a float — where a programmer
 /// TIME fade starts from when the programmer has no value there yet.
 pub fn merge_channel_static(state: &EngineState, key: ChannelKey) -> f32 {
     let layers = sorted_layers(state);
-    channel_value(state, &layers, key, false)
+    if state.is_htp(key.0, key.1) {
+        layers
+            .iter()
+            .filter_map(|(_, layer)| layer.values.get(&key).map(|v| v * layer.intensity_scale))
+            .fold(0.0f32, f32::max)
+    } else {
+        layers.iter().find_map(|(_, layer)| layer.values.get(&key).copied()).unwrap_or(0.0)
+    }
 }
 
 fn sorted_layers(state: &EngineState) -> Vec<(i64, &Layer)> {
@@ -111,47 +125,116 @@ fn sorted_layers(state: &EngineState) -> Vec<(i64, &Layer)> {
     layers
 }
 
-fn channel_value(state: &EngineState, layers: &[(i64, &Layer)], key: ChannelKey, with_effects: bool) -> f32 {
-    let value_of = |layer: &Layer| {
-        if with_effects {
-            layer.get(&key)
-        } else {
-            layer.values.get(&key).copied()
-        }
-    };
-    if state.is_htp(key.0, key.1) {
-        layers
-            .iter()
-            .filter_map(|(_, layer)| value_of(layer).map(|v| v * layer.intensity_scale))
-            .fold(0.0f32, f32::max)
-    } else {
-        layers.iter().find_map(|(_, layer)| value_of(layer)).unwrap_or(0.0)
-    }
+/// Per-universe scratch for one merge.
+struct Scratch<'a> {
+    htp: Option<&'a HashSet<u16>>,
+    /// Highest scaled value seen per HTP channel.
+    htp_max: [f32; UNIVERSE_SIZE],
+    /// LTP channel already won by a higher-priority layer.
+    filled: [bool; UNIVERSE_SIZE],
+    /// Merged values, kept as floats until the output stage.
+    values: [f32; UNIVERSE_SIZE],
 }
 
-fn merge(state: &EngineState, universe: u32, with_effects: bool, output_stage: bool) -> [u8; UNIVERSE_SIZE] {
+/// Walks each layer's (sparse) values once, highest priority first, instead
+/// of probing every layer for every one of the 512 channels: cost scales with
+/// how many channels are actually driven, not with universes × 512 × layers.
+/// `output_stage` applies highlight/lowlight and the grand master on top.
+fn merge(
+    state: &EngineState,
+    universes: &[u32],
+    with_effects: bool,
+    output_stage: bool,
+) -> Vec<(u32, [u8; UNIVERSE_SIZE])> {
     let layers = sorted_layers(state);
 
-    let mut out = [0u8; UNIVERSE_SIZE];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let channel = (i + 1) as u16;
-        let key = (universe, channel);
-        let mut value = channel_value(state, &layers, key, with_effects);
-        if output_stage {
-            if let Some(highlight) = &state.highlight {
-                if let Some(&lit) = highlight.lit.get(&key) {
-                    value = lit;
-                } else if highlight.dimmed.contains(&key) {
-                    value *= LOWLIGHT_SCALE;
+    let mut slots: HashMap<u32, usize> = HashMap::with_capacity(universes.len());
+    let mut scratch: Vec<Scratch> = Vec::with_capacity(universes.len());
+    for &universe in universes {
+        slots.entry(universe).or_insert_with(|| {
+            scratch.push(Scratch {
+                htp: state.htp_channels.get(&universe),
+                htp_max: [0.0; UNIVERSE_SIZE],
+                filled: [false; UNIVERSE_SIZE],
+                values: [0.0; UNIVERSE_SIZE],
+            });
+            scratch.len() - 1
+        });
+    }
+
+    for (_, layer) in &layers {
+        let mut apply = |key: &ChannelKey, value: f32| {
+            let (universe, channel) = *key;
+            if channel == 0 || channel as usize > UNIVERSE_SIZE {
+                return;
+            }
+            let Some(&slot) = slots.get(&universe) else { return };
+            let scratch = &mut scratch[slot];
+            let i = channel as usize - 1;
+            if scratch.htp.is_some_and(|set| set.contains(&channel)) {
+                let scaled = value * layer.intensity_scale;
+                if scaled > scratch.htp_max[i] {
+                    scratch.htp_max[i] = scaled;
+                }
+            } else if !scratch.filled[i] {
+                scratch.filled[i] = true;
+                scratch.values[i] = value;
+            }
+        };
+        if with_effects {
+            for (key, value) in &layer.fx_values {
+                apply(key, *value);
+            }
+            for (key, value) in &layer.values {
+                if !layer.fx_values.contains_key(key) {
+                    apply(key, *value);
                 }
             }
-            if state.is_htp(universe, channel) {
-                value *= state.grand_master;
+        } else {
+            for (key, value) in &layer.values {
+                apply(key, *value);
             }
         }
-        *slot = to_u8(value);
     }
-    out
+
+    universes
+        .iter()
+        .map(|&universe| {
+            let scratch = &mut scratch[slots[&universe]];
+            let mut values = scratch.values;
+            if let Some(set) = scratch.htp {
+                for &channel in set {
+                    if channel >= 1 && channel as usize <= UNIVERSE_SIZE {
+                        values[channel as usize - 1] = scratch.htp_max[channel as usize - 1];
+                    }
+                }
+            }
+            if output_stage {
+                if let Some(highlight) = &state.highlight {
+                    for (i, value) in values.iter_mut().enumerate() {
+                        let key = (universe, (i + 1) as u16);
+                        if let Some(&lit) = highlight.lit.get(&key) {
+                            *value = lit;
+                        } else if highlight.dimmed.contains(&key) {
+                            *value *= LOWLIGHT_SCALE;
+                        }
+                    }
+                }
+                if let Some(set) = scratch.htp {
+                    for &channel in set {
+                        if channel >= 1 && channel as usize <= UNIVERSE_SIZE {
+                            values[channel as usize - 1] *= state.grand_master;
+                        }
+                    }
+                }
+            }
+            let mut out = [0u8; UNIVERSE_SIZE];
+            for (slot, value) in out.iter_mut().zip(values) {
+                *slot = to_u8(value);
+            }
+            (universe, out)
+        })
+        .collect()
 }
 
 fn to_u8(value: f32) -> u8 {

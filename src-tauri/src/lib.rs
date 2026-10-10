@@ -1,6 +1,7 @@
 mod engine;
 mod io;
 mod output;
+mod reliability;
 mod showfile;
 mod timing;
 
@@ -8,7 +9,12 @@ use engine::manager::EngineManager;
 use output::input::DmxInputManager;
 use output::manager::OutputManager;
 use timing::manager::TimingManager;
-use tauri::Manager;
+use reliability::logging::{self, LogRing};
+use reliability::prefs::{self, PrefsStore};
+use reliability::session::{LiveSessionStore, SessionGuard};
+use reliability::watchdog::{self, WatchdogState};
+use std::sync::Arc;
+use tauri::{Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,18 +24,63 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Logging first, so everything after it is recorded.
+            let ring = Arc::new(LogRing::new());
+            ring.attach(app.handle().clone());
+            if let Ok(dir) = logging::log_dir(app.handle()) {
+                if let Some(guard) = logging::init(&dir, ring.clone()) {
+                    app.manage(guard);
+                }
+            }
+            app.manage(ring);
+            tracing::info!("LumenDMX {} starting", app.package_info().version);
+
+            let data_dir = app.path().app_data_dir()?;
+            let session = SessionGuard::begin(&data_dir);
+            if session.was_unclean() {
+                tracing::warn!("previous run did not shut down cleanly");
+            }
+            app.manage(session);
+            app.manage(LiveSessionStore::default());
+            app.manage(WatchdogState::new());
+
+            let prefs_store = PrefsStore::load(data_dir.join("preferences.json"));
             let manager = OutputManager::new(app.handle().clone());
             app.manage(manager);
             app.manage(DmxInputManager::new());
 
             let engine = EngineManager::new();
+            prefs::apply_to_engine(&engine, &prefs_store.get());
+            app.manage(engine.show_lock().clone());
+            watchdog::spawn(app.handle().clone(), engine.heartbeat());
             engine.start_tick(app.handle().clone());
             app.manage(TimingManager::new(engine.timing_handles()));
             app.manage(engine);
+            reliability::window::restore(app.handle(), &prefs_store);
+            app.manage(prefs_store);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            reliability::show_mode::show_mode_get,
+            reliability::show_mode::show_mode_set,
+            reliability::prefs::prefs_get,
+            reliability::prefs::prefs_set,
+            reliability::watchdog::health_report,
+            reliability::session::session_status,
+            reliability::session::session_clean_shutdown,
+            reliability::session::session_set_live,
+            reliability::session::session_get_live,
+            reliability::logging::log_recent,
+            reliability::logging::log_clear,
+            reliability::logging::log_write,
+            reliability::logging::log_dir_path,
+            reliability::diagnostics::diagnostics_export,
+            reliability::backup::update_prepare_backup,
+            reliability::backup::update_record_version,
+            reliability::window::window_monitors,
+            reliability::window::window_move_to_monitor,
+            reliability::window::window_set_fullscreen,
             output::commands::list_serial_ports,
             output::commands::output_configure_universe,
             output::commands::output_remove_universe,
@@ -140,6 +191,19 @@ pub fn run() {
             showfile::commands::showfile_recent,
             showfile::commands::showfile_restore_session,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    reliability::window::save(window.app_handle(), &window.state::<PrefsStore>());
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                tracing::info!("clean shutdown");
+                app.state::<SessionGuard>().end();
+            }
+        });
 }

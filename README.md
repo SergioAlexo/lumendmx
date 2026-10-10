@@ -50,4 +50,6 @@ Carried over from the PRD review, not yet addressed:
 - AI API keys are stored in `localStorage`, not the OS keychain.
 - Concurrently triggering two Scenes/Chases that touch the same channel will fight
   over it -- no channel-ownership/priority model yet.
-- OTA update rollback/skip-during-a-show flow is not implemented.
+- OTA rollback is a manual path: updates back up preferences and autosaves first and
+  never install during show mode, but the updater cannot keep the previous binary, so
+  going back means installing the older release (see docs/ENGINE.md, Reliability).

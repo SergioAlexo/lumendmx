@@ -548,3 +548,66 @@ are not built.
   fractional bit lengths and low levels; it does not handle reverse play or
   29.97 drop-frame labelling (30 fps is assumed).
 
+## Phase 13 — Setup, preferences, reliability
+
+- **Show mode is enforced in Rust, not just hidden in the UI.** A shared
+  `ShowLock` is checked by the editing command handlers (record, rename,
+  delete, load show data, new/open show, output configure/remove, and the
+  command-line verbs RECORD/DELETE/UPDATE/COPY/MOVE/STORE). The engine
+  commands that used to return `()` or a bare value now return
+  `Result`, so the frontend sees a rejection with a readable message.
+  Live operation is left alone on purpose: a locked show must still run.
+  It is session-only so a crash-and-relaunch never leaves an operator
+  locked out of a console they can't edit.
+- **Machine preferences live in `preferences.json`, not the show.** UI
+  scale, touch mode and window placement belong to the computer; two
+  people opening one show on different laptops shouldn't fight over them.
+  So the show file shape and schema version are unchanged.
+- **"Output rates" means the starting rate for new outputs.** Each output
+  already carries its own `rateHz` in the show; the preference only sets
+  what `output_driver_defaults` returns for a newly added one. The tick and
+  output threads are not retuned. The live display rate (UI frames) is a
+  real, adjustable preference.
+- **"GO behaviour" is a debounce plus resume-when-paused.** Both are
+  applied in `EngineManager::playback_go`, without touching `playback.rs`.
+  Other variants (GO quantised to the beat, etc.) wait for the timing
+  sources work.
+- **The watchdog observes and reports; it does not restart threads.** It
+  watches a tick heartbeat and the output runners' published frame rate.
+  The tick loop survives a panic in one tick via `catch_unwind`. Killing
+  and respawning a hung thread is not possible in safe Rust, and a
+  respawned tick over poisoned locks would be worse than a loud banner.
+- **A webview reload re-syncs from a live snapshot in Rust.** The engine
+  already survives a reload; the missing piece was the frontend-owned show,
+  which `init` used to reload from disk, overwriting the engine. The
+  frontend now mirrors that part to Rust (debounced 750 ms) and adopts it on
+  startup. A reload within that debounce window can lose the last edit,
+  which autosave and the persisted patch store cover.
+- **Merge rewritten to walk sparse layers once per tick.** The old shape
+  probed every layer for each of 512 channels, per universe, re-sorting
+  layers each time. The new one is covered by the same behavioural tests
+  plus an equivalence test, and by the 64 universe / 500 fixture / 50
+  effect benchmark (about 0.6 ms per tick in release). `Layer::get` and
+  `EngineState::is_htp` are kept (unused, `allow(dead_code)`) for other
+  callers.
+- **Logging uses `tracing` with daily rotation.** `tracing-appender` rotates
+  by time, not size; seven daily files bound disk use. Crates: `tracing`,
+  `tracing-subscriber`, `tracing-appender` (all MIT), and `zip` (MIT) for
+  the diagnostics export. The export doesn't include AI keys: they live in
+  the webview's localStorage, which it doesn't read.
+- **Updater: download and install are separate steps.** "Download only"
+  fetches the package; "Install" during show mode records a deferred
+  install and runs it when show mode turns off. Before installing, the
+  app copies preferences, the recent list and autosaves to
+  `backups/pre-update-*` (last three kept).
+- **Rollback is honest about what the plugin can do.**
+  `tauri-plugin-updater` keeps no previous binary and offers no "undo".
+  What exists: the data backup above; remembering the previous version and
+  linking to its release page; and "Check for older build", which calls
+  `check({ allowDowngrades: true })` so that if the release owner re-points
+  `latest.json` at an older build, clients accept it. A true one-click
+  rollback would need the previous installer URL served by the endpoint.
+- **No secondary output windows.** Tauri can move, size and fullscreen the
+  main window across monitors; spawning more windows at chosen positions is
+  unreliable on Wayland, and nothing needs one yet. Revisit with the 3D
+  visualiser.

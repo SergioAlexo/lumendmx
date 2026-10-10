@@ -87,15 +87,19 @@ pub fn engine_stop_asset(engine: State<EngineManager>, id: String) {
 }
 
 #[tauri::command]
-pub fn engine_execute_command(engine: State<EngineManager>, text: String) -> CommandResult {
-    engine.execute_command(&text)
+pub fn engine_execute_command(engine: State<EngineManager>, text: String) -> Result<CommandResult, String> {
+    if crate::reliability::show_mode::command_text_is_destructive(&text) {
+        engine.guard("run that command")?;
+    }
+    Ok(engine.execute_command(&text))
 }
 
 // --- Groups (Phase 5) ---
 
 #[tauri::command]
-pub fn engine_record_group(engine: State<EngineManager>, name: String, fixture_numbers: Vec<u32>) -> u32 {
-    engine.record_group(name, fixture_numbers)
+pub fn engine_record_group(engine: State<EngineManager>, name: String, fixture_numbers: Vec<u32>) -> Result<u32, String> {
+    engine.guard("record a group")?;
+    Ok(engine.record_group(name, fixture_numbers))
 }
 
 #[tauri::command]
@@ -105,12 +109,15 @@ pub fn engine_list_groups(engine: State<EngineManager>) -> Vec<Group> {
 
 #[tauri::command]
 pub fn engine_rename_group(engine: State<EngineManager>, id: u32, name: String) -> Result<(), String> {
+    engine.guard("rename a group")?;
     engine.rename_group(id, name)
 }
 
 #[tauri::command]
-pub fn engine_delete_group(engine: State<EngineManager>, id: u32) {
+pub fn engine_delete_group(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.guard("delete a group")?;
     engine.delete_group(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -128,8 +135,9 @@ pub fn engine_record_preset(
     name: String,
     fixture_numbers: Vec<u32>,
     color: Option<String>,
-) -> u32 {
-    engine.record_preset(family, name, &fixture_numbers.into_iter().collect::<HashSet<u32>>(), color)
+) -> Result<u32, String> {
+    engine.guard("record a preset")?;
+    Ok(engine.record_preset(family, name, &fixture_numbers.into_iter().collect::<HashSet<u32>>(), color))
 }
 
 #[tauri::command]
@@ -139,17 +147,21 @@ pub fn engine_update_preset(
     fixture_numbers: Vec<u32>,
     color: Option<String>,
 ) -> Result<(), String> {
+    engine.guard("update a preset")?;
     engine.update_preset(id, &fixture_numbers.into_iter().collect::<HashSet<u32>>(), color)
 }
 
 #[tauri::command]
 pub fn engine_rename_preset(engine: State<EngineManager>, id: u32, name: String) -> Result<(), String> {
+    engine.guard("rename a preset")?;
     engine.rename_preset(id, name)
 }
 
 #[tauri::command]
-pub fn engine_delete_preset(engine: State<EngineManager>, id: u32) {
+pub fn engine_delete_preset(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.guard("delete a preset")?;
     engine.delete_preset(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -165,8 +177,9 @@ pub fn engine_apply_preset(engine: State<EngineManager>, id: u32, fixture_number
 // --- Cuelists and cues (Phase 6) ---
 
 #[tauri::command]
-pub fn engine_create_cuelist(engine: State<EngineManager>, name: String, kind: CuelistKind, tracking: bool) -> u32 {
-    engine.create_cuelist(name, kind, tracking)
+pub fn engine_create_cuelist(engine: State<EngineManager>, name: String, kind: CuelistKind, tracking: bool) -> Result<u32, String> {
+    engine.guard("create a cuelist")?;
+    Ok(engine.create_cuelist(name, kind, tracking))
 }
 
 #[tauri::command]
@@ -175,17 +188,21 @@ pub fn engine_list_cuelists(engine: State<EngineManager>) -> Vec<CuelistDto> {
 }
 
 #[tauri::command]
-pub fn engine_delete_cuelist(engine: State<EngineManager>, id: u32) {
+pub fn engine_delete_cuelist(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.guard("delete a cuelist")?;
     engine.delete_cuelist(id);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn engine_rename_cuelist(engine: State<EngineManager>, id: u32, name: String) -> Result<(), String> {
+    engine.guard("rename a cuelist")?;
     engine.rename_cuelist(id, name)
 }
 
 #[tauri::command]
 pub fn engine_set_cuelist_tracking(engine: State<EngineManager>, id: u32, tracking: bool) -> Result<(), String> {
+    engine.guard("change cuelist tracking")?;
     engine.set_cuelist_tracking(id, tracking)
 }
 
@@ -204,6 +221,7 @@ pub fn engine_record_cue(
     fade_in_ms: f64,
     fade_out_ms: f64,
 ) -> Result<(), String> {
+    engine.guard("record a cue")?;
     engine.record_cue(
         cuelist_id,
         number,
@@ -216,6 +234,7 @@ pub fn engine_record_cue(
 
 #[tauri::command]
 pub fn engine_delete_cue(engine: State<EngineManager>, cuelist_id: u32, number: f64) -> Result<(), String> {
+    engine.guard("delete a cue")?;
     engine.delete_cue(cuelist_id, number)
 }
 
@@ -228,6 +247,7 @@ pub fn engine_set_cue_preset_reference(
     attribute: String,
     preset_id: u32,
 ) -> Result<(), String> {
+    engine.guard("link a cue to a preset")?;
     engine.set_cue_preset_reference(cuelist_id, cue_number, fixture_number, attribute, preset_id)
 }
 
@@ -239,11 +259,13 @@ pub fn engine_unlink_cue_preset(
     universe: u32,
     channel: u16,
 ) -> Result<(), String> {
+    engine.guard("unlink a cue preset")?;
     engine.unlink_cue_preset(cuelist_id, cue_number, universe, channel)
 }
 
 #[tauri::command]
 pub fn engine_set_chase_tempo(engine: State<EngineManager>, cuelist_id: u32, bpm: f32) -> Result<(), String> {
+    engine.guard("change a chase tempo")?;
     engine.set_chase_tempo(cuelist_id, bpm)
 }
 
@@ -255,8 +277,10 @@ pub fn engine_export_show_data(engine: State<EngineManager>) -> ShowEngineData {
 }
 
 #[tauri::command]
-pub fn engine_load_show_data(engine: State<EngineManager>, data: ShowEngineData) {
+pub fn engine_load_show_data(engine: State<EngineManager>, data: ShowEngineData) -> Result<(), String> {
+    engine.guard("load show data")?;
     engine.load_show_data(data);
+    Ok(())
 }
 
 #[tauri::command]
@@ -268,12 +292,15 @@ pub fn engine_show_data_revision(engine: State<EngineManager>) -> u64 {
 
 #[tauri::command]
 pub fn engine_create_playback(engine: State<EngineManager>, cuelist_id: u32) -> Result<u32, String> {
+    engine.guard("create a playback")?;
     engine.create_playback(cuelist_id)
 }
 
 #[tauri::command]
-pub fn engine_delete_playback(engine: State<EngineManager>, id: u32) {
+pub fn engine_delete_playback(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.guard("delete a playback")?;
     engine.delete_playback(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -430,30 +457,36 @@ pub fn engine_list_effects(engine: State<EngineManager>) -> Vec<EffectInstance> 
 }
 
 #[tauri::command]
-pub fn engine_record_effect_preset(engine: State<EngineManager>, name: String, def: EffectDef) -> u32 {
-    engine.record_effect_preset(name, def)
+pub fn engine_record_effect_preset(engine: State<EngineManager>, name: String, def: EffectDef) -> Result<u32, String> {
+    engine.guard("record an effect preset")?;
+    Ok(engine.record_effect_preset(name, def))
 }
 
 #[tauri::command]
 pub fn engine_update_effect_preset(engine: State<EngineManager>, id: u32, def: EffectDef) -> Result<(), String> {
+    engine.guard("update an effect preset")?;
     engine.update_effect_preset(id, def)
 }
 
 // --- Pixel maps (Phase 7) ---
 
 #[tauri::command]
-pub fn engine_create_pixel_map(engine: State<EngineManager>, name: String, width: u32, height: u32) -> u32 {
-    engine.create_pixel_map(name, width, height)
+pub fn engine_create_pixel_map(engine: State<EngineManager>, name: String, width: u32, height: u32) -> Result<u32, String> {
+    engine.guard("create a pixel map")?;
+    Ok(engine.create_pixel_map(name, width, height))
 }
 
 #[tauri::command]
 pub fn engine_update_pixel_map(engine: State<EngineManager>, map: PixelMap) -> Result<(), String> {
+    engine.guard("edit a pixel map")?;
     engine.update_pixel_map(map)
 }
 
 #[tauri::command]
-pub fn engine_delete_pixel_map(engine: State<EngineManager>, id: u32) {
+pub fn engine_delete_pixel_map(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.guard("delete a pixel map")?;
     engine.delete_pixel_map(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -465,6 +498,7 @@ pub fn engine_list_pixel_maps(engine: State<EngineManager>) -> Vec<PixelMap> {
 /// JSON array of bytes).
 #[tauri::command]
 pub fn engine_import_pixel_map_media(engine: State<EngineManager>, id: u32, data: String) -> Result<(), String> {
+    engine.guard("import pixel map media")?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("Bad file data: {e}"))?;
     engine.import_pixel_map_media(id, &bytes)
 }

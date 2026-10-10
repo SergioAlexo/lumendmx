@@ -8,9 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 use super::migrate::migrate;
+use crate::reliability::fsutil::write_atomic;
+use crate::reliability::session::{choose_session_source, SessionGuard, SessionSource};
+use crate::reliability::show_mode::ShowLock;
 use super::schema::{RecentShowEntry, RestoredSession, ShowFile, CURRENT_SCHEMA_VERSION};
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -36,7 +39,7 @@ fn read_recent(app: &AppHandle) -> Vec<RecentShowEntry> {
 fn write_recent(app: &AppHandle, entries: &[RecentShowEntry]) {
     if let Ok(path) = recent_file_path(app) {
         if let Ok(text) = serde_json::to_string_pretty(entries) {
-            let _ = fs::write(path, text);
+            let _ = write_atomic(&path, text.as_bytes());
         }
     }
 }
@@ -75,12 +78,18 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 #[tauri::command]
-pub fn showfile_new() -> ShowFile {
-    ShowFile::new_default("Untitled Show")
+pub fn showfile_new(lock: State<ShowLock>) -> Result<ShowFile, String> {
+    lock.guard("start a new show")?;
+    Ok(ShowFile::new_default("Untitled Show"))
 }
 
 #[tauri::command]
-pub fn showfile_open(app: AppHandle, path: Option<String>) -> Result<(ShowFile, String), String> {
+pub fn showfile_open(
+    app: AppHandle,
+    lock: State<ShowLock>,
+    path: Option<String>,
+) -> Result<(ShowFile, String), String> {
+    lock.guard("open another show")?;
     let chosen = match path {
         Some(p) => Some(PathBuf::from(p)),
         None => rfd::FileDialog::new()
@@ -135,10 +144,7 @@ fn read_show_file(path: &Path) -> Result<ShowFile, String> {
 
 fn write_show_file(path: &Path, show: &ShowFile) -> Result<(), String> {
     let text = serde_json::to_string_pretty(show).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(path, text).map_err(|e| format!("Failed to write {}: {e}", path.display()))
+    write_atomic(path, text.as_bytes())
 }
 
 /// Writes a timestamped snapshot into the app data dir's autosave folder for
@@ -180,12 +186,16 @@ pub fn showfile_recent(app: AppHandle) -> Vec<RecentShowEntry> {
     read_recent(&app)
 }
 
-/// The newest autosave across every show's autosave folder, and when it was
-/// written.
-fn newest_autosave(app: &AppHandle) -> Option<(PathBuf, DateTime<Utc>)> {
-    let root = app_data_dir(app).ok()?.join("autosave");
-    fs::read_dir(root)
-        .ok()?
+/// Every autosave across every show's autosave folder, newest first, with
+/// when it was written.
+fn autosave_candidates(app: &AppHandle) -> Vec<(PathBuf, DateTime<Utc>)> {
+    let Some(root) = app_data_dir(app).ok().map(|d| d.join("autosave")) else {
+        return Vec::new();
+    };
+    let Ok(dirs) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(PathBuf, DateTime<Utc>)> = dirs
         .filter_map(|dir| fs::read_dir(dir.ok()?.path()).ok())
         .flatten()
         .filter_map(|entry| {
@@ -196,27 +206,9 @@ fn newest_autosave(app: &AppHandle) -> Option<(PathBuf, DateTime<Utc>)> {
             let modified = fs::metadata(&path).ok()?.modified().ok()?;
             Some((path, DateTime::<Utc>::from(modified)))
         })
-        .max_by_key(|(_, at)| *at)
-}
-
-#[derive(Debug, PartialEq)]
-enum SessionSource {
-    Autosave,
-    RecentFile,
-}
-
-/// Whichever was touched last wins: an autosave newer than the last
-/// open/save holds unsaved work; otherwise the last show file is current.
-fn choose_session_source(
-    autosave_at: Option<DateTime<Utc>>,
-    recent_opened_at: Option<DateTime<Utc>>,
-) -> Option<SessionSource> {
-    match (autosave_at, recent_opened_at) {
-        (Some(autosave), Some(recent)) if autosave > recent => Some(SessionSource::Autosave),
-        (_, Some(_)) => Some(SessionSource::RecentFile),
-        (Some(_), None) => Some(SessionSource::Autosave),
-        (None, None) => None,
-    }
+        .collect();
+    found.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    found
 }
 
 /// Brings back the last session on launch: the newest autosave if it's
@@ -224,14 +216,20 @@ fn choose_session_source(
 /// that show was saved before), else the most recent show file. `None`
 /// means there's nothing to restore and the caller should start a new show.
 #[tauri::command]
-pub fn showfile_restore_session(app: AppHandle) -> Option<RestoredSession> {
+pub fn showfile_restore_session(app: AppHandle, guard: State<SessionGuard>) -> Option<RestoredSession> {
     let recent = read_recent(&app);
     let last_file = recent.iter().find(|e| Path::new(&e.path).exists());
-    let autosave = newest_autosave(&app);
+    let autosaves = autosave_candidates(&app);
+    let autosave = autosaves.first();
 
+    // The newest autosave that still parses: a half-written or corrupt one
+    // (power cut mid-save) falls through to the one before it.
     let from_autosave = || {
-        let (path, _) = autosave.as_ref()?;
-        let show = read_show_file(path).ok()?;
+        let show = autosaves.iter().find_map(|(path, _)| {
+            read_show_file(path)
+                .map_err(|e| tracing::warn!("skipping unreadable autosave {}: {e}", path.display()))
+                .ok()
+        })?;
         let file_path = recent
             .iter()
             .find(|e| read_show_file(Path::new(&e.path)).is_ok_and(|s| s.id == show.id))
@@ -250,35 +248,8 @@ pub fn showfile_restore_session(app: AppHandle) -> Option<RestoredSession> {
     let recent_opened_at = last_file.map(|e| {
         DateTime::parse_from_rfc3339(&e.opened_at).map_or(DateTime::<Utc>::MIN_UTC, |t| t.with_timezone(&Utc))
     });
-    match choose_session_source(autosave.as_ref().map(|(_, at)| *at), recent_opened_at)? {
+    match choose_session_source(autosave.map(|(_, at)| *at), recent_opened_at, guard.was_unclean())? {
         SessionSource::Autosave => from_autosave().or_else(from_recent_file),
         SessionSource::RecentFile => from_recent_file().or_else(from_autosave),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    fn at(hour: u32) -> Option<DateTime<Utc>> {
-        Some(Utc.with_ymd_and_hms(2026, 9, 30, hour, 0, 0).unwrap())
-    }
-
-    #[test]
-    fn newer_autosave_beats_the_last_opened_file() {
-        assert_eq!(choose_session_source(at(12), at(11)), Some(SessionSource::Autosave));
-    }
-
-    #[test]
-    fn a_save_or_open_after_the_last_autosave_wins() {
-        assert_eq!(choose_session_source(at(11), at(12)), Some(SessionSource::RecentFile));
-    }
-
-    #[test]
-    fn falls_back_to_whichever_exists() {
-        assert_eq!(choose_session_source(None, at(12)), Some(SessionSource::RecentFile));
-        assert_eq!(choose_session_source(at(12), None), Some(SessionSource::Autosave));
-        assert_eq!(choose_session_source(None, None), None);
     }
 }

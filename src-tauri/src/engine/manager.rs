@@ -3,6 +3,7 @@
 //! command line resolves against, and the 44Hz tick thread.
 
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,7 +20,7 @@ use super::groups::{Group, GroupStore};
 use super::legacy_playback::{LegacyAsset, RunningPlayback};
 use super::merge::{
     channel_sources, merge_channel_static, merge_universe, merge_universe_static, merge_universe_unmastered,
-    TrackedChannels,
+    merge_universes, TrackedChannels,
 };
 use super::pixelmap::{self, PixelMap, PixelMapRuntime, PixelMapStore};
 use super::playback::{FaderMode, PlayInfo, PlaybackRuntime};
@@ -29,10 +30,12 @@ use super::audio_reactive::{AudioMods, AudioReactive};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::{self, TimecodeClock};
 use crate::output::manager::OutputManager;
+use crate::reliability::go_guard::GoDebounce;
+use crate::reliability::show_mode::ShowLock;
+use crate::reliability::watchdog::Heartbeat;
 use crate::output::UNIVERSE_SIZE;
 
 const TICK_HZ: f64 = 44.0;
-const DISPLAY_HZ: f64 = 20.0;
 /// A cuelist marked `Override` gets a priority at least this high (below the
 /// programmer's `i64::MAX`), so it wins LTP over any standard/chase playback
 /// or legacy-asset layer regardless of trigger order.
@@ -441,6 +444,19 @@ impl TickShared {
     }
 }
 
+/// Preferences the engine reads live (see `reliability::prefs`).
+pub struct EngineTuning {
+    pub display_hz: AtomicU32,
+    pub go_debounce_ms: AtomicU32,
+    pub go_resumes_paused: AtomicBool,
+}
+
+impl Default for EngineTuning {
+    fn default() -> Self {
+        Self { display_hz: AtomicU32::new(20), go_debounce_ms: AtomicU32::new(0), go_resumes_paused: AtomicBool::new(false) }
+    }
+}
+
 pub struct EngineManager {
     state: Arc<Mutex<EngineState>>,
     playbacks: Arc<Mutex<Vec<RunningPlayback>>>,
@@ -472,6 +488,10 @@ pub struct EngineManager {
     audio: Arc<Mutex<AudioReactive>>,
     chases_follow_tempo: Arc<AtomicBool>,
     timecode_learn: Arc<AtomicBool>,
+    show_lock: ShowLock,
+    heartbeat: Arc<Heartbeat>,
+    tuning: Arc<EngineTuning>,
+    go_debounce: Mutex<GoDebounce>,
 }
 
 /// What `crate::timing` needs from the engine to feed it.
@@ -514,7 +534,28 @@ impl EngineManager {
             audio: Arc::new(Mutex::new(AudioReactive::new())),
             chases_follow_tempo: Arc::new(AtomicBool::new(false)),
             timecode_learn: Arc::new(AtomicBool::new(false)),
+            show_lock: ShowLock::default(),
+            heartbeat: Arc::new(Heartbeat::new()),
+            tuning: Arc::new(EngineTuning::default()),
+            go_debounce: Mutex::new(GoDebounce::default()),
         }
+    }
+
+    /// Show mode: editing commands call `guard` and fail while it is on.
+    pub fn show_lock(&self) -> &ShowLock {
+        &self.show_lock
+    }
+
+    pub fn guard(&self, action: &str) -> Result<(), String> {
+        self.show_lock.guard(action)
+    }
+
+    pub fn heartbeat(&self) -> Arc<Heartbeat> {
+        self.heartbeat.clone()
+    }
+
+    pub fn tuning(&self) -> &EngineTuning {
+        &self.tuning
     }
 
     fn tick_shared(&self) -> TickShared {
@@ -561,10 +602,11 @@ impl EngineManager {
 
         let shared = self.tick_shared();
         let state = self.state.clone();
+        let heartbeat = self.heartbeat.clone();
+        let tuning = self.tuning.clone();
 
         thread::spawn(move || {
             let tick_interval = Duration::from_secs_f64(1.0 / TICK_HZ);
-            let display_interval = Duration::from_secs_f64(1.0 / DISPLAY_HZ);
             let mut last_tick = Instant::now();
             let mut last_display = Instant::now();
 
@@ -572,32 +614,44 @@ impl EngineManager {
                 let now = Instant::now();
                 let dt_ms = now.duration_since(last_tick).as_secs_f64() * 1000.0;
                 last_tick = now;
+                let display_interval =
+                    Duration::from_secs_f64(1.0 / tuning.display_hz.load(Ordering::Relaxed).clamp(1, 120) as f64);
 
-                shared.advance(dt_ms);
+                // A panic in one tick (a bug in a generator, say) is logged
+                // and survived; the previous merged frame keeps being sent
+                // by the output threads meanwhile.
+                let tick = catch_unwind(AssertUnwindSafe(|| {
+                    shared.advance(dt_ms);
 
-                let output = app.state::<OutputManager>();
-                let universe_ids = output.universe_ids();
-                let show_display = now.duration_since(last_display) >= display_interval;
+                    let output = app.state::<OutputManager>();
+                    let universe_ids = output.universe_ids();
+                    let show_display = now.duration_since(last_display) >= display_interval;
 
-                for universe_id in universe_ids {
-                    let frame = {
+                    let frames = {
                         let state = state.lock().unwrap();
-                        merge_universe(&state, universe_id)
+                        merge_universes(&state, &universe_ids)
                     };
-                    let _ = output.set_universe_data(universe_id, frame);
+                    for (universe_id, frame) in frames {
+                        let _ = output.set_universe_data(universe_id, frame);
 
-                    if show_display {
-                        let _ = app.emit(
-                            "engine://universe-frame",
-                            EngineFrame { universe_id, channels: frame.to_vec() },
-                        );
+                        if show_display {
+                            let _ = app.emit(
+                                "engine://universe-frame",
+                                EngineFrame { universe_id, channels: frame.to_vec() },
+                            );
+                        }
                     }
-                }
-                if show_display {
-                    last_display = now;
+                    if show_display {
+                        last_display = now;
+                    }
+                }));
+                if tick.is_err() {
+                    heartbeat.record_panic();
+                    tracing::error!("engine tick panicked; continuing");
                 }
 
                 let elapsed = now.elapsed();
+                heartbeat.record_tick(elapsed);
                 if elapsed < tick_interval {
                     thread::sleep(tick_interval - elapsed);
                 }
@@ -1783,7 +1837,15 @@ impl EngineManager {
     }
 
     pub fn playback_go(&self, id: u32) -> Result<(), String> {
+        let debounce_ms = self.tuning.go_debounce_ms.load(Ordering::Relaxed);
+        if !self.go_debounce.lock().unwrap().allow(id, Instant::now(), debounce_ms) {
+            return Ok(());
+        }
+        let resume = self.tuning.go_resumes_paused.load(Ordering::Relaxed);
         let landed = self.with_playback(id, |pb, list, presets| {
+            if resume {
+                pb.paused = false;
+            }
             pb.go_next(list, presets);
             (list.id, list.kind, pb.current_index)
         })?;
@@ -2751,5 +2813,95 @@ mod tests {
         handles.audio.lock().unwrap().levels.low = 0.0;
         engine.step(500.0);
         assert_eq!(engine.get_universe_data(1)[0], 0);
+    }
+
+    // --- Performance budget (Phase 13) ---
+
+    /// 500 fixtures spread over 64 universes, each with ten attribute
+    /// channels (the first being the HTP dimmer).
+    fn benchmark_rig() -> (EngineManager, Vec<u32>) {
+        const ATTRIBUTES: [&str; 10] =
+            ["dimmer", "red", "green", "blue", "pan", "tilt", "zoom", "focus", "gobo", "strobe"];
+        let engine = EngineManager::new();
+        let mut next_free = [1u16; 64];
+        let mut patch = Vec::new();
+        let mut htp: HashMap<u32, Vec<u16>> = HashMap::new();
+        for n in 0..500u32 {
+            let universe = n % 64 + 1;
+            let base = next_free[(universe - 1) as usize];
+            next_free[(universe - 1) as usize] += 10;
+            let attribute_channels: HashMap<String, u16> =
+                ATTRIBUTES.iter().enumerate().map(|(i, a)| (a.to_string(), base + i as u16)).collect();
+            htp.entry(universe).or_default().push(base);
+            patch.push(PatchIndexEntry {
+                fixture_number: n + 1,
+                universe,
+                intensity_channel: Some(base),
+                attribute_channels,
+                cells: Vec::new(),
+            });
+        }
+        engine.set_patch_index(patch);
+        for (universe, channels) in htp {
+            engine.set_htp_channels(universe, channels);
+        }
+        // 50 effects: ten attributes x five blocks of 100 fixtures.
+        for (a, attribute) in ATTRIBUTES.iter().enumerate() {
+            for block in 0..5u32 {
+                let waveform = [effects::Waveform::Sine, effects::Waveform::Saw, effects::Waveform::Square][(a + block as usize) % 3];
+                let fixtures: Vec<u32> = (block * 100 + 1..=block * 100 + 100).collect();
+                engine.start_effect(EffectDef::new_attribute(attribute, waveform), fixtures, None);
+            }
+        }
+        assert_eq!(engine.list_effects().len(), 50);
+        engine.execute_command("1 THRU 500 @ 60");
+        (engine, (1..=64).collect())
+    }
+
+    /// One engine tick as the tick thread does it: advance, then merge every
+    /// universe. Reports time per tick; the budget is a fraction of the
+    /// 22.7ms tick period (the plan's target is 25% CPU on a mid laptop, i.e.
+    /// about 5.7ms per tick, which a release build beats by a wide margin;
+    /// the debug-build bound is looser because unoptimised code is 10-30x
+    /// slower).
+    #[test]
+    fn benchmark_64_universes_500_fixtures_50_effects_stays_within_the_tick_budget() {
+        let (engine, universes) = benchmark_rig();
+        let shared = engine.tick_shared();
+        let one_tick = |dt: f64| {
+            shared.advance(dt);
+            let state = engine.state.lock().unwrap();
+            merge_universes(&state, &universes)
+        };
+        for _ in 0..20 {
+            one_tick(22.7);
+        }
+        const TICKS: usize = 300;
+        let mut samples = Vec::with_capacity(TICKS);
+        let mut checksum = 0u64;
+        for _ in 0..TICKS {
+            let start = Instant::now();
+            let frames = one_tick(22.7);
+            samples.push(start.elapsed());
+            checksum += frames.iter().map(|(_, f)| f.iter().map(|&b| b as u64).sum::<u64>()).sum::<u64>();
+        }
+        assert!(checksum > 0, "the rig produced no output");
+        samples.sort();
+        let mean = samples.iter().sum::<Duration>() / TICKS as u32;
+        let p99 = samples[TICKS * 99 / 100];
+        let max = *samples.last().unwrap();
+        println!(
+            "bench 64 universes / 500 fixtures / 50 effects: mean {:.3} ms, p99 {:.3} ms, max {:.3} ms per tick ({})",
+            mean.as_secs_f64() * 1000.0,
+            p99.as_secs_f64() * 1000.0,
+            max.as_secs_f64() * 1000.0,
+            if cfg!(debug_assertions) { "debug" } else { "release" },
+        );
+        let budget_ms = if cfg!(debug_assertions) { 20.0 } else { 5.0 };
+        assert!(
+            mean.as_secs_f64() * 1000.0 < budget_ms,
+            "mean tick {:.3} ms exceeds the {budget_ms} ms budget",
+            mean.as_secs_f64() * 1000.0
+        );
     }
 }

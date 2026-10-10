@@ -327,6 +327,71 @@ write into shared `Arc<Mutex<..>>` state obtained from
   sample-locked to DMX; it is a monitor, and MTC/LTC are the sample-accurate
   routes.
 
+## Reliability (Phase 13)
+
+Code lives in `src-tauri/src/reliability/`. None of it is on the DMX output
+path; the FTDI thread in `output/` is untouched.
+
+- **Merge cost.** `merge_universes` merges every universe in one pass over
+  the layers: layers are sorted once per tick, then each layer's sparse
+  `values`/`fx_values` are walked and written into per-universe scratch
+  buffers (HTP keeps a running max, LTP takes the first, i.e. highest
+  priority, writer). Cost follows the number of driven channels, not
+  universes x 512 x layers with a hash lookup each, as before.
+  `merge_universe` remains as a one-universe wrapper.
+- **Benchmark.** `benchmark_64_universes_500_fixtures_50_effects_...` in
+  `manager.rs` builds 500 fixtures over 64 universes, 50 running effects
+  (10 attributes x 5 blocks of 100 fixtures) and times `TickShared::advance`
+  plus the merge of all universes. On a development laptop in release it
+  runs at about 0.6 ms per tick (mean; p99 0.7 ms) against the 22.7 ms
+  period; the debug build, which the default `cargo test` uses, is about
+  10 ms. The test asserts 20 ms in debug and 5 ms in release, so a
+  regression of the merge or the effect renderer trips it.
+  Run `cargo test --release benchmark -- --nocapture` for the numbers.
+- **Show mode.** `ShowLock` is an `Arc<AtomicBool>` shared by the
+  `EngineManager` (`engine.guard(...)`) and Tauri state. Editing commands
+  (record/rename/delete group, preset, cuelist, cue, playback, pixel map,
+  effect preset; `engine_load_show_data`; `showfile_new`/`showfile_open`;
+  output configure/remove; command-line verbs RECORD, DELETE, UPDATE, COPY,
+  MOVE, STORE) return an error while it is on. Live operation (GO, faders,
+  programmer, running effects, tempo, blackout, save) is never gated.
+  Show mode is session-only: it is not saved and a relaunch starts unlocked.
+  A new editing command should call `engine.guard("verb phrase")?` first.
+- **Watchdog.** The tick thread records a heartbeat (count, last/max tick
+  time, slow ticks over 20 ms). A watchdog thread polls twice a second:
+  no tick for over 1 s means `stalled`; a connected output reporting under
+  0.5 frames/s for three polls in a row is flagged. Changes are pushed as
+  `reliability://health` and logged. The tick loop catches a panic in one
+  tick, counts it and carries on; the output threads keep sending the
+  previous frame meanwhile. A deadlocked tick cannot be interrupted, so
+  that case is reported rather than repaired.
+- **Webview reload.** Engine state, output drivers and show mode live in
+  Rust and survive a reload. The frontend mirrors the frontend-owned show
+  (patch, universes, settings, library) to `session_set_live` shortly after
+  each change; on startup `useShowStore.init` asks `session_get_live` first
+  and, if a snapshot exists, adopts it instead of restoring from disk and
+  re-loading engine data over the running show.
+- **Preferences** (`preferences.json` in the app data dir, not the show
+  file): new-output rates, display rate, default fades, GO debounce and
+  resume-paused, confirm on delete, autosave interval, UI scale, touch
+  mode, window placement. Values are clamped on load and save. The engine
+  reads `display_hz` and the GO settings live through `EngineTuning`.
+- **Window placement.** The main window's position and size are saved on
+  close and restored if still on a connected monitor (`resolve_placement`
+  clamps an oversized or edge-hanging rectangle). Tauri can position and
+  fullscreen the main window on any monitor; it cannot reliably place
+  windows on Wayland, and no secondary output windows exist yet.
+- **Logging.** `tracing` writes `logs/lumendmx.<date>.log` in the app data
+  dir with daily rotation, keeping seven files, and mirrors info and above
+  into a 1000-entry ring shown in the Messages window
+  (`log://message` events). Frontend errors, unhandled rejections and
+  `console.error/warn` are forwarded through `log_write`. Panics are logged
+  with their location.
+- **Diagnostics export.** `diagnostics_export` asks for a path and writes a
+  zip: `system.txt`, `messages.txt`, `preferences.json`, `health.json`,
+  `outputs.json`, the current (possibly unsaved) `show.lumen`, and
+  `logs/*`. API keys are stored in the webview, not in any of these files.
+
 ## What isn't here yet
 
 - **An attribute encoder bar / full manual programmer UI**: `CommandLine.tsx`

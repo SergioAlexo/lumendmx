@@ -18,6 +18,7 @@ import { LiveSheet } from "./components/LiveSheet";
 import { StagePlot } from "./components/StagePlot";
 import { TimingPanel } from "./components/TimingPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
+import { StatusBanners } from "./components/StatusBanners";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -70,6 +71,7 @@ function App() {
   return (
     <div className="flex h-screen flex-col bg-background">
       <TopBar />
+      <StatusBanners />
       <div className="flex flex-1 overflow-hidden">
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex gap-1 border-b border-border px-4 py-2">
