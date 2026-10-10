@@ -2,6 +2,8 @@ import { create } from "zustand";
 import * as dmx from "../lib/dmx";
 import * as engineApi from "../lib/engine";
 import { PRIMARY_UNIVERSE_ID } from "../lib/constants";
+import { sessionGetLive, sessionSetLive, sessionStatus } from "../lib/reliability";
+import { autosaveDue, recoveryNotice, startupPlan, type RecoveryNotice } from "../lib/sessionPolicy";
 import {
   showfileAutosave,
   showfileNew,
@@ -12,6 +14,7 @@ import {
 } from "../lib/showfile/api";
 import type {
   DriverConfig,
+  LiveSession,
   PatchIndexEntry,
   RecentShowEntry,
   ShowFile,
@@ -23,6 +26,7 @@ import { assetsToLegacy, legacyToAssets } from "../lib/showfile/legacyAssets";
 import { getAllFixtures, useFixtureLibraryStore } from "./useFixtureLibraryStore";
 import { useLibraryStore } from "./useLibraryStore";
 import { usePatchStore } from "./usePatchStore";
+import { usePrefsStore } from "./usePrefsStore";
 
 /** Stable reference for "no show open yet" selectors (`s.meta?.universes ??
  * EMPTY_UNIVERSES`). A fresh `[]` literal in the selector itself would give
@@ -30,7 +34,11 @@ import { usePatchStore } from "./usePatchStore";
  * infinite re-render loop. */
 export const EMPTY_UNIVERSES: UniverseConfig[] = [];
 
-const AUTOSAVE_INTERVAL_MS = 60_000;
+/** How often to check whether an autosave is due (the interval itself is a
+ * preference). */
+const AUTOSAVE_CHECK_MS = 5_000;
+/** Wait this long after a change before mirroring the show to Rust. */
+const LIVE_SYNC_DEBOUNCE_MS = 750;
 /** How often to check the engine for unsaved group/preset/cuelist edits. */
 const ENGINE_DIRTY_POLL_MS = 1_000;
 
@@ -79,6 +87,13 @@ async function assembleShowFile(meta: ShowMeta): Promise<{ show: ShowFile; engin
   };
 }
 
+/** The complete current show (including unsaved changes), for diagnostics
+ * export. Null before a show is open. */
+export async function assembleCurrentShow(): Promise<ShowFile | null> {
+  const meta = useShowStore.getState().meta;
+  return meta ? (await assembleShowFile(meta)).show : null;
+}
+
 /** The engine's data revision as of the last save/load; any other value
  * means unsaved group/preset/cuelist edits. Null while a show is loading. */
 let savedEngineRevision: number | null = null;
@@ -108,6 +123,38 @@ async function applyShow(show: ShowFile): Promise<void> {
   savedEngineRevision = await engineApi.showDataRevision();
 }
 
+/** Loads the frontend-owned part of a show (patch, library) without touching
+ * the engine: used when the webview reloads and the engine already holds the
+ * running show. */
+function applyShowLocally(show: ShowFile): void {
+  applyingShow = true;
+  try {
+    usePatchStore.getState().replaceAll(show.patch);
+    useLibraryStore.getState().replaceAll(legacyToAssets(show.legacyAssets));
+  } finally {
+    applyingShow = false;
+  }
+}
+
+let liveSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let liveSyncEnabled = false;
+
+/** Mirrors the frontend-owned show to Rust shortly after any change, so a
+ * webview reload or crash can pick up exactly where it was instead of
+ * reloading from disk over the running engine. */
+function scheduleLiveSync(): void {
+  if (!liveSyncEnabled) return;
+  if (liveSyncTimer) clearTimeout(liveSyncTimer);
+  liveSyncTimer = setTimeout(() => {
+    liveSyncTimer = null;
+    const { meta, path, dirty } = useShowStore.getState();
+    if (!meta) return;
+    void assembleShowFile(meta)
+      .then(({ show }) => sessionSetLive({ show, path, dirty }))
+      .catch((err) => console.warn("Could not mirror the session:", err));
+  }, LIVE_SYNC_DEBOUNCE_MS);
+}
+
 /** Spins up (or re-spins-up) each of the show's universes' output drivers to
  * match what's on disk. Best-effort: a universe whose driver fails to start
  * (e.g. its serial port isn't plugged in) is logged, not fatal to loading the
@@ -133,6 +180,10 @@ interface ShowState {
   /** Bumped every time a show is loaded, so views holding engine data they
    * fetched once (cuelists, presets, groups) can remount and re-fetch. */
   loadCount: number;
+  /** Shown after a restore from disk: the last run crashed, or there was
+   * unsaved work. Cleared by the operator. */
+  recoveryNotice: RecoveryNotice;
+  dismissRecoveryNotice: () => void;
 
   init: () => Promise<void>;
   newShow: () => Promise<void>;
@@ -159,40 +210,73 @@ export const useShowStore = create<ShowState>((set, get) => ({
   saving: false,
   recent: [],
   loadCount: 0,
+  recoveryNotice: null,
+  dismissRecoveryNotice: () => set({ recoveryNotice: null }),
 
   init: async () => {
-    // Reopen the last session (unsaved work from an autosave, else the last
-    // show file); only start a blank show when there's nothing to restore.
-    let restored = null;
+    // A live session in Rust means the webview was reloaded while the engine
+    // kept running: re-sync from it, and leave the engine and outputs alone.
+    let live: LiveSession | null = null;
     try {
-      restored = await showfileRestoreSession();
-    } catch (err) {
-      console.warn("Could not restore last session:", err);
+      live = await sessionGetLive();
+    } catch {
+      // Not in the Tauri runtime.
     }
-    if (restored) {
-      await applyShow(restored.show);
+
+    if (startupPlan(live !== null) === "adopt-live" && live) {
+      applyShowLocally(live.show);
+      savedEngineRevision = await engineApi.showDataRevision().catch(() => null);
       set((s) => ({
-        meta: toMeta(restored.show),
-        path: restored.path,
-        dirty: restored.recovered,
+        meta: toMeta(live.show),
+        path: live.path,
+        dirty: live.dirty,
         loadCount: s.loadCount + 1,
       }));
-      void activateUniverses(restored.show);
+      console.warn("Webview reloaded: re-synced from the running engine");
     } else {
-      await get().newShow();
+      // Reopen the last session (unsaved work from an autosave, else the last
+      // show file); only start a blank show when there's nothing to restore.
+      let restored = null;
+      try {
+        restored = await showfileRestoreSession();
+      } catch (err) {
+        console.warn("Could not restore last session:", err);
+      }
+      if (restored) {
+        await applyShow(restored.show);
+        const unclean = await sessionStatus()
+          .then((s) => s.uncleanShutdown)
+          .catch(() => false);
+        set((s) => ({
+          meta: toMeta(restored.show),
+          path: restored.path,
+          dirty: restored.recovered,
+          loadCount: s.loadCount + 1,
+          recoveryNotice: recoveryNotice(restored.recovered, unclean),
+        }));
+        void activateUniverses(restored.show);
+      } else {
+        await get().newShow();
+      }
     }
     void get().refreshRecent();
+    liveSyncEnabled = true;
+    scheduleLiveSync();
 
     if (!autosaveTimer) {
+      let lastAutosaveMs = Date.now();
       autosaveTimer = setInterval(() => {
         const { meta, dirty } = get();
-        if (!meta || !dirty) return;
+        if (!meta) return;
+        const intervalS = usePrefsStore.getState().prefs.autosaveIntervalS;
+        if (!autosaveDue({ dirty, nowMs: Date.now(), lastAutosaveMs, intervalS })) return;
+        lastAutosaveMs = Date.now();
         void assembleShowFile(meta)
           .then(({ show }) => showfileAutosave(show))
           .catch((err) => {
             console.warn("Autosave failed:", err);
           });
-      }, AUTOSAVE_INTERVAL_MS);
+      }, AUTOSAVE_CHECK_MS);
     }
 
     if (!engineDirtyTimer) {
@@ -312,8 +396,15 @@ function markDirtyUnlessApplyingShow() {
 usePatchStore.subscribe(() => {
   if (patchHydrated) markDirtyUnlessApplyingShow();
   syncEnginePatch();
+  scheduleLiveSync();
 });
-useLibraryStore.subscribe(markDirtyUnlessApplyingShow);
+useLibraryStore.subscribe(() => {
+  markDirtyUnlessApplyingShow();
+  scheduleLiveSync();
+});
+useShowStore.subscribe((state, prev) => {
+  if (state.meta !== prev.meta || state.path !== prev.path || state.dirty !== prev.dirty) scheduleLiveSync();
+});
 
 /** Pushes the current patch to the engine as (a) which channels are HTP
  * (a fixture's dimmer channel) for the merge, per universe, and (b) the

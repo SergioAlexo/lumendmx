@@ -143,3 +143,17 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Touch mode (Preferences): larger hit targets for a touchscreen console. */
+html.touch button,
+html.touch select,
+html.touch input:not([type="checkbox"]):not([type="range"]) {
+  min-height: 2.75rem;
+}
+html.touch button {
+  min-width: 2.75rem;
+}
+html.touch input[type="checkbox"] {
+  width: 1.5rem;
+  height: 1.5rem;
+}

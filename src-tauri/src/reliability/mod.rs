@@ -3,6 +3,7 @@
 //! Everything here is observational or policy: none of it sits on the DMX
 //! output path, and the FTDI thread in `output/` is untouched.
 
+pub mod backup;
 pub mod diagnostics;
 pub mod fsutil;
 pub mod go_guard;

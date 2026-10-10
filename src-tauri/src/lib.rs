@@ -72,6 +72,8 @@ pub fn run() {
             reliability::logging::log_write,
             reliability::logging::log_dir_path,
             reliability::diagnostics::diagnostics_export,
+            reliability::backup::update_prepare_backup,
+            reliability::backup::update_record_version,
             reliability::window::window_monitors,
             reliability::window::window_move_to_monitor,
             reliability::window::window_set_fullscreen,

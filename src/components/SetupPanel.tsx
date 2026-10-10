@@ -7,6 +7,8 @@ import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
 import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
 import { Button } from "./ui/button";
 import { Input, Select } from "./ui/input";
+import { PreferencesPanel } from "./PreferencesPanel";
+import { confirmDelete, useShowModeStore } from "../store/useShowModeStore";
 
 type DriverKind = DriverConfig["kind"];
 
@@ -52,6 +54,8 @@ export function SetupPanel() {
   const addUniverse = useShowStore((s) => s.addUniverse);
   const removeUniverseEntirely = useShowStore((s) => s.removeUniverseEntirely);
   const statuses = useUniverseStatusesStore((s) => s.statuses);
+  // Show mode: output changes could interrupt a running show.
+  const locked = useShowModeStore((s) => s.locked);
 
   const [ports, setPorts] = useState<dmx.SerialPortDescriptor[]>([]);
   const [rates, setRates] = useState({ serial: 30, network: 40 });
@@ -87,7 +91,7 @@ export function SetupPanel() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Universes &amp; Output
         </h2>
-        <Button size="sm" onClick={() => addUniverse(`Universe ${universes.length + 1}`)}>
+        <Button size="sm" disabled={locked} onClick={() => addUniverse(`Universe ${universes.length + 1}`)}>
           <Plus />
           Add universe
         </Button>
@@ -108,6 +112,7 @@ export function SetupPanel() {
 
                 <Select
                   className="w-40"
+                  disabled={locked}
                   value={universe.driver.kind}
                   onChange={(e) =>
                     void setUniverseDriver(universe.id, defaultDriverFor(e.target.value as DriverKind, rates))
@@ -137,7 +142,8 @@ export function SetupPanel() {
                   variant="ghost"
                   size="iconSm"
                   title="Remove universe"
-                  onClick={() => removeUniverseEntirely(universe.id)}
+                  disabled={locked}
+                  onClick={() => confirmDelete(`universe "${universe.name}"`) && removeUniverseEntirely(universe.id)}
                 >
                   <Trash2 />
                 </Button>
@@ -167,6 +173,8 @@ export function SetupPanel() {
           </ul>
         )}
       </div>
+
+      <PreferencesPanel />
     </div>
   );
 }

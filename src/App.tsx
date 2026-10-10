@@ -13,6 +13,7 @@ import { SetupPanel } from "./components/SetupPanel";
 import { PalettesPanel } from "./components/PalettesPanel";
 import { EffectsPanel } from "./components/EffectsPanel";
 import { PixelMapPanel } from "./components/PixelMapPanel";
+import { StatusBanners } from "./components/StatusBanners";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -56,6 +57,7 @@ function App() {
   return (
     <div className="flex h-screen flex-col bg-background">
       <TopBar />
+      <StatusBanners />
       <div className="flex flex-1 overflow-hidden">
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex gap-1 border-b border-border px-4 py-2">

@@ -5,6 +5,7 @@ import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
 import { Button } from "./ui/button";
 import { Select } from "./ui/input";
 import { cn } from "../lib/utils";
+import { ReliabilityBar } from "./ReliabilityBar";
 import { ShowMenu } from "./ShowMenu";
 import { TempoControl } from "./TempoControl";
 
@@ -103,6 +104,8 @@ export function TopBar() {
       </div>
 
       <TempoControl />
+
+      <ReliabilityBar />
 
       <Button
         variant={blackout ? "destructive" : "outline"}

@@ -3,6 +3,7 @@ import { Trash2, Unlink } from "lucide-react";
 import * as engineApi from "../lib/engine";
 import type { ChaseDirection, CuelistDto, CuelistKind, Preset, PresetFamily } from "../lib/engine";
 import { usePatchStore } from "../store/usePatchStore";
+import { usePrefsStore } from "../store/usePrefsStore";
 import { useAllFixtures } from "../store/useFixtureLibraryStore";
 import type { ChannelType } from "../lib/fixtures/types";
 import { Button } from "./ui/button";
@@ -175,8 +176,8 @@ function CueSheet({
 }) {
   const [number, setNumber] = useState(cuelist.cues.length > 0 ? cuelist.cues[cuelist.cues.length - 1].number + 1 : 1);
   const [name, setName] = useState("");
-  const [fadeInMs, setFadeInMs] = useState(1000);
-  const [fadeOutMs, setFadeOutMs] = useState(1000);
+  const [fadeInMs, setFadeInMs] = useState(() => usePrefsStore.getState().prefs.defaultFadeInMs);
+  const [fadeOutMs, setFadeOutMs] = useState(() => usePrefsStore.getState().prefs.defaultFadeOutMs);
 
   const [linkCue, setLinkCue] = useState<number | null>(null);
   const [linkFixture, setLinkFixture] = useState<number | null>(null);
