@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { TriggerGrid } from "./components/TriggerGrid";
 import { CuePanel } from "./components/CuePanel";
@@ -13,6 +13,9 @@ import { SetupPanel } from "./components/SetupPanel";
 import { PalettesPanel } from "./components/PalettesPanel";
 import { EffectsPanel } from "./components/EffectsPanel";
 import { PixelMapPanel } from "./components/PixelMapPanel";
+import { DmxMonitor } from "./components/DmxMonitor";
+import { LiveSheet } from "./components/LiveSheet";
+import { StagePlot } from "./components/StagePlot";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
@@ -22,7 +25,10 @@ import { useShowStore } from "./store/useShowStore";
 import { useUniverseStatusesStore } from "./store/useUniverseStatusesStore";
 import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
 
-type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "setup";
+// three.js is only fetched when the 3D tab is first opened.
+const Visualizer3D = lazy(() => import("./components/Visualizer3D"));
+
+type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "stage" | "visualizer" | "livesheet" | "monitor" | "setup";
 
 const VIEW_LABELS: Record<MainView, string> = {
   fixtures: "Fixtures",
@@ -31,6 +37,10 @@ const VIEW_LABELS: Record<MainView, string> = {
   palettes: "Palettes",
   effects: "Effects",
   pixelmaps: "Pixel maps",
+  stage: "Stage plot",
+  visualizer: "3D",
+  livesheet: "Output",
+  monitor: "DMX monitor",
   setup: "Setup",
 };
 
@@ -86,6 +96,16 @@ function App() {
               <EffectsPanel />
             ) : mainView === "pixelmaps" ? (
               <PixelMapPanel />
+            ) : mainView === "stage" ? (
+              <StagePlot />
+            ) : mainView === "visualizer" ? (
+              <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading 3D view...</div>}>
+                <Visualizer3D />
+              </Suspense>
+            ) : mainView === "livesheet" ? (
+              <LiveSheet />
+            ) : mainView === "monitor" ? (
+              <DmxMonitor />
             ) : (
               <SetupPanel />
             )}
