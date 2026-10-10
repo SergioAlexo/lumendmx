@@ -4,48 +4,110 @@
 //! programmer always has the highest priority, so "programmer > playbacks"
 //! falls out of this naturally rather than needing a special case.
 
-use super::state::{EngineState, Layer, PROGRAMMER_PRIORITY};
+use std::collections::HashMap;
+
+use super::state::{ChannelKey, EngineState, Layer, PROGRAMMER_PRIORITY};
 use crate::output::UNIVERSE_SIZE;
 
 pub fn merge_universe(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, true)
+    merge(state, &[universe], true).pop().map_or([0u8; UNIVERSE_SIZE], |(_, frame)| frame)
 }
 
 /// The merge without any layer's effect output — what a relative effect's
 /// "underlying value" is for a channel its own layer doesn't set.
 pub fn merge_universe_static(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    merge(state, universe, false)
+    merge(state, &[universe], false).pop().map_or([0u8; UNIVERSE_SIZE], |(_, frame)| frame)
 }
 
-fn merge(state: &EngineState, universe: u32, with_effects: bool) -> [u8; UNIVERSE_SIZE] {
-    let value_of = |layer: &Layer, key: &(u32, u16)| {
-        if with_effects {
-            layer.get(key)
-        } else {
-            layer.values.get(key).copied()
-        }
-    };
+/// Merges several universes in one pass over the layers (the per-tick path).
+/// Returns `(universe, frame)` in the order given.
+pub fn merge_universes(state: &EngineState, universes: &[u32]) -> Vec<(u32, [u8; UNIVERSE_SIZE])> {
+    merge(state, universes, true)
+}
+
+/// Per-universe scratch for one merge.
+struct Scratch<'a> {
+    htp: Option<&'a std::collections::HashSet<u16>>,
+    /// Highest scaled value seen per HTP channel.
+    htp_max: [f32; UNIVERSE_SIZE],
+    /// LTP channel already won by a higher-priority layer.
+    filled: [bool; UNIVERSE_SIZE],
+    out: [u8; UNIVERSE_SIZE],
+}
+
+/// Walks each layer's (sparse) values once, highest priority first, instead
+/// of probing every layer for every one of the 512 channels: cost scales with
+/// how many channels are actually driven, not with universes x 512 x layers.
+fn merge(state: &EngineState, universes: &[u32], with_effects: bool) -> Vec<(u32, [u8; UNIVERSE_SIZE])> {
     let mut layers: Vec<(i64, &Layer)> =
         state.playbacks.values().map(|(priority, layer)| (*priority, layer)).collect();
     layers.push((PROGRAMMER_PRIORITY, &state.programmer));
     layers.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
 
-    let mut out = [0u8; UNIVERSE_SIZE];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let channel = (i + 1) as u16;
-        let key = (universe, channel);
+    let mut slots: HashMap<u32, usize> = HashMap::with_capacity(universes.len());
+    let mut scratch: Vec<Scratch> = Vec::with_capacity(universes.len());
+    for &universe in universes {
+        slots.entry(universe).or_insert_with(|| {
+            scratch.push(Scratch {
+                htp: state.htp_channels.get(&universe),
+                htp_max: [0.0; UNIVERSE_SIZE],
+                filled: [false; UNIVERSE_SIZE],
+                out: [0u8; UNIVERSE_SIZE],
+            });
+            scratch.len() - 1
+        });
+    }
 
-        if state.is_htp(universe, channel) {
-            let max = layers
-                .iter()
-                .filter_map(|(_, layer)| value_of(layer, &key).map(|v| v * layer.intensity_scale))
-                .fold(0.0f32, f32::max);
-            *slot = to_u8(max);
-        } else if let Some(value) = layers.iter().find_map(|(_, layer)| value_of(layer, &key)) {
-            *slot = to_u8(value);
+    for (_, layer) in &layers {
+        let mut apply = |key: &ChannelKey, value: f32| {
+            let (universe, channel) = *key;
+            if channel == 0 || channel as usize > UNIVERSE_SIZE {
+                return;
+            }
+            let Some(&slot) = slots.get(&universe) else { return };
+            let scratch = &mut scratch[slot];
+            let i = channel as usize - 1;
+            if scratch.htp.is_some_and(|set| set.contains(&channel)) {
+                let scaled = value * layer.intensity_scale;
+                if scaled > scratch.htp_max[i] {
+                    scratch.htp_max[i] = scaled;
+                }
+            } else if !scratch.filled[i] {
+                scratch.filled[i] = true;
+                scratch.out[i] = to_u8(value);
+            }
+        };
+        if with_effects {
+            for (key, value) in &layer.fx_values {
+                apply(key, *value);
+            }
+            for (key, value) in &layer.values {
+                if !layer.fx_values.contains_key(key) {
+                    apply(key, *value);
+                }
+            }
+        } else {
+            for (key, value) in &layer.values {
+                apply(key, *value);
+            }
         }
     }
-    out
+
+    universes
+        .iter()
+        .map(|universe| {
+            let scratch = &mut scratch[slots[universe]];
+            let mut out = scratch.out;
+            if let Some(set) = scratch.htp {
+                for &channel in set {
+                    if channel >= 1 && channel as usize <= UNIVERSE_SIZE {
+                        out[channel as usize - 1] = to_u8(scratch.htp_max[channel as usize - 1]);
+                    }
+                }
+            }
+            (*universe, out)
+        })
+        .collect()
 }
 
 fn to_u8(value: f32) -> u8 {
@@ -144,5 +206,29 @@ mod tests {
         let out = merge_universe(&state, 1);
         assert_eq!(out[0], 125); // effect value, then scaled
         assert_eq!(out[1], 200); // LTP channel unscaled
+    }
+
+    #[test]
+    fn merge_universes_matches_per_universe_merges() {
+        let mut state = EngineState::new();
+        state.htp_channels.entry(1).or_default().insert(1);
+        state.htp_channels.entry(2).or_default().insert(7);
+        state.playbacks.insert("a".into(), (1, layer(&[(1, 90.0), (5, 10.0)])));
+        let mut l = Layer::default();
+        l.values.insert((2, 7), 200.0);
+        l.values.insert((2, 8), 33.0);
+        l.fx_values.insert((2, 8), 44.0);
+        l.intensity_scale = 0.5;
+        state.playbacks.insert("b".into(), (2, l));
+        state.programmer.values.insert((1, 5), 77.0);
+
+        let all = merge_universes(&state, &[2, 1, 3]);
+        assert_eq!(all.iter().map(|(u, _)| *u).collect::<Vec<_>>(), vec![2, 1, 3]);
+        for (universe, frame) in &all {
+            assert_eq!(*frame, merge_universe(&state, *universe), "universe {universe}");
+        }
+        assert_eq!(all[0].1[6], 100); // HTP 200 * 0.5
+        assert_eq!(all[0].1[7], 44); // effect value beats the static one
+        assert_eq!(all[1].1[4], 77); // programmer wins LTP
     }
 }

@@ -4,7 +4,9 @@ use serde::Serialize;
 use tauri::State;
 use ts_rs::TS;
 
-use super::config::{DriverConfig, DEFAULT_NETWORK_RATE_HZ, DEFAULT_SERIAL_RATE_HZ};
+use super::config::DriverConfig;
+use crate::reliability::prefs::PrefsStore;
+use crate::reliability::show_mode::ShowLock;
 use super::input::DmxInputManager;
 use super::manager::OutputManager;
 use super::runner::UniverseStatus;
@@ -52,14 +54,21 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
 #[tauri::command]
 pub fn output_configure_universe(
     manager: State<OutputManager>,
+    lock: State<ShowLock>,
     universe_id: u32,
     driver: DriverConfig,
 ) -> Result<(), String> {
+    lock.guard("change an output")?;
     manager.configure(universe_id, driver)
 }
 
 #[tauri::command]
-pub fn output_remove_universe(manager: State<OutputManager>, universe_id: u32) -> Result<(), String> {
+pub fn output_remove_universe(
+    manager: State<OutputManager>,
+    lock: State<ShowLock>,
+    universe_id: u32,
+) -> Result<(), String> {
+    lock.guard("remove an output")?;
     manager.remove(universe_id);
     Ok(())
 }
@@ -130,10 +139,11 @@ pub struct DriverDefaults {
 /// Default output rates for the Setup screen's "add a universe" form (30Hz
 /// for serial widgets, 40Hz for network protocols).
 #[tauri::command]
-pub fn output_driver_defaults() -> DriverDefaults {
+pub fn output_driver_defaults(prefs: State<PrefsStore>) -> DriverDefaults {
+    let prefs = prefs.get();
     DriverDefaults {
-        serial_rate_hz: DEFAULT_SERIAL_RATE_HZ,
-        network_rate_hz: DEFAULT_NETWORK_RATE_HZ,
+        serial_rate_hz: prefs.serial_rate_hz,
+        network_rate_hz: prefs.network_rate_hz,
     }
 }
 

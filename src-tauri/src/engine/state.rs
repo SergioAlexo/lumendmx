@@ -44,6 +44,7 @@ impl Default for Layer {
 impl Layer {
     /// This layer's value for `key`, effects included, before
     /// `intensity_scale`.
+    #[allow(dead_code)] // the sparse merge walks the maps directly
     pub fn get(&self, key: &ChannelKey) -> Option<f32> {
         self.fx_values.get(key).or_else(|| self.values.get(key)).copied()
     }
@@ -101,6 +102,7 @@ impl EngineState {
         self.next_playback_priority
     }
 
+    #[allow(dead_code)] // the sparse merge resolves HTP sets once per universe
     pub fn is_htp(&self, universe: u32, channel: u16) -> bool {
         self.htp_channels.get(&universe).is_some_and(|set| set.contains(&channel))
     }
