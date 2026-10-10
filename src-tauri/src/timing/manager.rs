@@ -265,12 +265,19 @@ impl TimingManager {
     }
 
     pub fn status(&self) -> TimingStatus {
+        // Read `inputs` once, up front: a guard taken inside the struct
+        // literal lives until the function returns, so locking it twice there
+        // deadlocks the calling (main) thread.
+        let (settings, ltc_running) = {
+            let inputs = self.inputs.lock().unwrap();
+            (inputs.settings.clone(), inputs.ltc.is_some())
+        };
         let shared = self.shared.lock().unwrap();
         TimingStatus {
-            settings: self.inputs.lock().unwrap().settings.clone(),
+            settings,
             audio: shared.audio.clone(),
             midi: shared.midi.clone(),
-            ltc_running: self.inputs.lock().unwrap().ltc.is_some(),
+            ltc_running,
             ltc_error: shared.ltc_error.clone(),
             timecode: self.handles.timecode.lock().unwrap().status(),
             timecode_learn: self.handles.timecode_learn.load(Ordering::Relaxed),
@@ -316,4 +323,25 @@ impl TimingManager {
 
 pub fn list_audio_inputs() -> Vec<audio_input::AudioDeviceInfo> {
     audio_input::list_input_devices()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::manager::EngineManager;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// `status()` once locked `inputs` twice in one expression and hung the
+    /// UI thread on the frontend's first `timing_status` poll.
+    #[test]
+    fn status_does_not_deadlock() {
+        let timing = TimingManager::new(EngineManager::new().timing_handles());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(timing.status().ltc_running).unwrap();
+        });
+        let ltc_running = rx.recv_timeout(Duration::from_secs(2)).expect("status() deadlocked");
+        assert!(!ltc_running);
+    }
 }
