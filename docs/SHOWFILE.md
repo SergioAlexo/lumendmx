@@ -87,7 +87,8 @@ the file's `groups`/`presets`/`cuelists` fields travel through the engine:
   (`engine_show_data_revision`); the frontend polls it and marks the show
   unsaved when it differs from the revision at the last save/load.
 
-Playbacks are runtime state and aren't saved.
+Running playback state (which cue is live, pause) is runtime state and
+isn't saved; where playbacks sit on the playback bar is (see v6 below).
 
 ## Tempo, effects and pixel maps (v5+)
 
@@ -102,6 +103,20 @@ Playbacks are runtime state and aren't saved.
   aren't saved, like the rest of the programmer.
 - Running pixel maps and programmer effects are runtime state and aren't
   saved.
+
+## Playback pages (v6+)
+
+- `playbacks`: one entry per assigned playback slot: `page` (0-based),
+  `column` (0-based, 0-9), `cuelistId`, `fader` (0-1) and `faderMode`
+  (`intensityMaster`, `crossfade` or `rate`). Engine-owned like the above:
+  it travels through `engine_export_show_data`/`engine_load_show_data`, and
+  loading recreates each playback in its slot (a slot whose cuelist no
+  longer exists is skipped).
+- `releaseOnPageChange`: whether leaving a page releases its playbacks.
+- Cues gained optional fields (`delayOutMs`, `attrFadeMs`, `attrDelayMs`,
+  `followMs`, `waitMs`, `linkTo`, `loopCount`); a v5 cue without them loads
+  with no delay out, attribute timing following the in-timing, and no
+  follow or link. `upgrade_5_to_6` adds the two top-level fields.
 
 ## Restoring the last session
 

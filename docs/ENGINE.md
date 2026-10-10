@@ -103,10 +103,8 @@ actually removes a layer.
   whichever cue number `RECORD CUE` last touched (the grammar gives it no
   number of its own). `NEXT`/`PREV` step the first playback slot attached
   to the current cuelist; if none exists yet, they return a clear error
-  rather than silently doing nothing. `COPY`/`MOVE` still parse (and are
-  unit-tested) but stay unimplemented — the existing grammar gives them no
-  target-number argument, and inventing one isn't this phase's call to
-  make; see DECISIONS.md.
+  rather than silently doing nothing. `COPY CUE a @ b` / `MOVE CUE a @ b`
+  are implemented (see "Playback and programmer completion").
 - `CueDto`/`CuelistDto`/`CueValueEntry` flatten `Cue.values`'s
   `HashMap<(u32,u16), CueValue>` into a plain list crossing the Tauri
   boundary, the same reason `PatchIndexEntry` exists — JSON object keys
@@ -170,6 +168,67 @@ actually removes a layer.
   merging and sending. Tests call it directly through `EngineManager::step`.
   Lock order is patch index → state → … everywhere, so the tick can't
   deadlock against `apply_intensity`/`record_cue`.
+
+## Playback and programmer completion
+
+- **Cue timing** (`playback.rs`): a transition is per channel
+  (`Transition { from, to, delay_ms, fade_ms }`). Intensity (HTP) channels
+  use the cue's delay/fade *in* when they rise and delay/fade *out* when they
+  fall; every other attribute uses the cue's `attr_delay_ms`/`attr_fade_ms`,
+  which default to the in-timing. Which channels are intensity comes from
+  `PlayInfo` (HTP set + each attribute channel's fixture intensity channel),
+  rebuilt by the manager whenever the patch or HTP set changes and handed to
+  every playback.
+- **Follow / wait / links / loops:** `follow_ms` GOes the next cue that long
+  after this cue *starts*; `wait_ms` that long after its fade *finishes*
+  (`Some(0)` = follow on completion). `link_to` sends the next GO (manual or
+  automatic) to that cue number instead; with `loop_count = Some(n)` the link
+  is taken n times and then play continues in order (`None` loops forever).
+  Counters reset on release. A cue with nothing to follow into just stays.
+- **Mark (move-in-black):** when the next cue is marked and the current
+  cue's fade is done, every attribute of that next cue whose fixture is dark
+  (intensity below 1) is applied early; the next GO then starts from the
+  already positioned value, so nothing visibly moves. It needs a fixture
+  intensity channel (fixtures without one are never marked).
+- **`go_to(cuelist, presets, index)`** is the single entry point that fires a
+  cue with its own timing (manual GO, follows, links and any external
+  driver such as timecode); `EngineManager::playback_go_to` wraps it.
+- **Pages:** each `PlaybackRuntime` has a `page` (0-39) and `column` (0-9).
+  `assign_playback` replaces whatever occupies a slot; `create_playback`
+  takes the first free slot (current page first). The current page and the
+  release-on-page-change flag live in the manager; `set_page` releases the
+  page being left when the flag is on. Assignments, faders and fader modes
+  are saved in the show file (`ShowEngineData.playbacks`).
+- **Masters:** the *grand master* (`EngineState.grand_master`) multiplies
+  every HTP channel of the output in `merge_universe`; the unmastered views
+  (`merge_universe_static`, `merge_universe_unmastered`) leave it out so
+  recording a cue or preset never captures a mastered value. The *rate master*
+  (0-200%) scales the tempo clock the tick integrates, so BPM and Hz
+  effects and pixel maps speed up or slow down, and it scales a chase's step
+  timer. A playback's *rate* fader mode (`FaderMode::Rate`, fader 0-100% =
+  0-2x) scales that one playback's own time: fades, delays, follows, chase
+  steps.
+- **TIME in the programmer:** with `TIME n` set, command-line intensity
+  edits and preset applies fade in over n seconds. `Layer::set_value` records
+  a `ValueFade` (from the programmer's current value, else the static merge
+  at that channel); `TickShared::advance` steps the fades and writes the
+  in-between values into the programmer layer. `TIME 0` makes edits
+  immediate again. Slider drags (`set_channels`) never fade.
+- **Blind:** `EngineState.blind_mode` redirects every programmer edit
+  (`edit_layer()`) to a second layer, `blind`, which no merge reads, so it
+  can't reach the output. While blind, `RECORD CUE`/`UPDATE` store only what
+  was edited in the blind layer (everything else tracks). CLEAR/RELEASE act on
+  the layer being edited. Leaving blind keeps the blind layer's contents.
+- **Highlight:** a `Highlight { lit, dimmed }` applied as the last step of
+  `merge_universe` only: the selected fixtures' intensity and RGBW go to full
+  (CMY to 0) and every other fixture's intensity drops to 25%. It is never
+  written into a layer, so recording ignores it. It is recomputed after every
+  command (it follows the selection) and when the patch changes.
+- **COPY/MOVE:** `COPY CUE a @ b` and `MOVE CUE a @ b` (`AT` works too)
+  copy/renumber a cue in the current cuelist, replacing any cue at `b`.
+  `BLIND [ON|OFF]` and `HIGHLIGHT|HIGHLT|HLT [ON|OFF]` toggle the modes.
+- **Cue sheet editing:** `engine_update_cue` replaces a cue's name, timing,
+  follow/wait, link/loop and mark. Re-recording a cue keeps those settings.
 
 ## What isn't here yet
 
