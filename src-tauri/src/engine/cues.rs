@@ -10,6 +10,7 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::effects::EffectInstance;
 use super::presets::PresetStore;
 
 // `Cue.values` is keyed by `(u32, u16)`, which serde_json can't serialize as
@@ -41,11 +42,25 @@ pub struct Cue {
     /// future engine consumer; the merge/playback path doesn't act on it yet
     /// since there's no "blackout while moving" timing model built.
     pub mark: bool,
+    /// Effects that run while this cue is live (Phase 7). Unlike `values`,
+    /// effects don't track: a cue runs only its own. Every recorded cue
+    /// holds a literal for every channel it captured, so a tracked effect
+    /// could never be stopped by a later cue — see DECISIONS.md.
+    pub effects: Vec<EffectInstance>,
 }
 
 impl Cue {
     pub fn new(number: f64, name: String) -> Self {
-        Self { number, name, values: HashMap::new(), fade_in_ms: 0.0, fade_out_ms: 0.0, delay_in_ms: 0.0, mark: false }
+        Self {
+            number,
+            name,
+            values: HashMap::new(),
+            fade_in_ms: 0.0,
+            fade_out_ms: 0.0,
+            delay_in_ms: 0.0,
+            mark: false,
+            effects: Vec::new(),
+        }
     }
 }
 

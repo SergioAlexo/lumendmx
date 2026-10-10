@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::cues::{resolve_cue_state, ChaseDirection, Cuelist, CuelistKind};
+use super::effects::EffectInstance;
 use super::presets::PresetStore;
+use super::state::LayerEffect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -38,6 +40,9 @@ pub struct PlaybackRuntime {
     pub paused: bool,
     from_state: HashMap<(u32, u16), f32>,
     to_state: HashMap<(u32, u16), f32>,
+    /// The outgoing and incoming cue's effects, crossfaded like the values.
+    from_effects: Vec<EffectInstance>,
+    to_effects: Vec<EffectInstance>,
     fade_ms: f64,
     elapsed_ms: f64,
     /// Time since the last `go()`, for a Chase's BPM-driven auto-advance —
@@ -59,6 +64,8 @@ impl PlaybackRuntime {
             paused: false,
             from_state: HashMap::new(),
             to_state: HashMap::new(),
+            from_effects: Vec::new(),
+            to_effects: Vec::new(),
             fade_ms: 1.0,
             elapsed_ms: 0.0,
             step_elapsed_ms: 0.0,
@@ -66,42 +73,64 @@ impl PlaybackRuntime {
         }
     }
 
-    /// This tick's blended (universe,channel)->value state, before the fader
-    /// is applied.
-    fn render_unfadered(&self) -> HashMap<(u32, u16), f32> {
-        let t = if self.fader_mode == FaderMode::Crossfade {
-            self.fader as f64
+    /// How far the current crossfade has got, 0.0-1.0.
+    fn progress(&self) -> f32 {
+        if self.fader_mode == FaderMode::Crossfade {
+            self.fader
         } else {
-            (self.elapsed_ms / self.fade_ms).min(1.0)
-        };
+            (self.elapsed_ms / self.fade_ms).min(1.0) as f32
+        }
+    }
+
+    /// This tick's blended (universe,channel)->value state. The fader isn't
+    /// applied here: in intensity-master mode it's the layer's
+    /// `intensity_scale` (see `intensity_scale`), applied at merge time so
+    /// it also scales effects on intensity channels.
+    pub fn render_values(&self) -> HashMap<(u32, u16), f32> {
+        let t = self.progress();
         let mut keys: HashSet<(u32, u16)> = self.from_state.keys().copied().collect();
         keys.extend(self.to_state.keys().copied());
         keys.into_iter()
             .map(|key| {
                 let from = *self.from_state.get(&key).unwrap_or(&0.0);
                 let to = *self.to_state.get(&key).unwrap_or(&0.0);
-                (key, from + (to - from) * t as f32)
+                (key, from + (to - from) * t)
             })
             .collect()
     }
 
-    /// This tick's contribution, with the fader applied (intensity-master
-    /// mode scales only channels in `htp_channels`).
-    pub fn render(&self, htp_channels: &HashMap<u32, HashSet<u16>>) -> HashMap<(u32, u16), f32> {
-        let mut state = self.render_unfadered();
-        if self.fader_mode == FaderMode::IntensityMaster {
-            for (&(universe, channel), value) in state.iter_mut() {
-                if htp_channels.get(&universe).is_some_and(|set| set.contains(&channel)) {
-                    *value *= self.fader;
-                }
-            }
+    /// What this playback's layer's HTP channels are multiplied by.
+    pub fn intensity_scale(&self) -> f32 {
+        match self.fader_mode {
+            FaderMode::IntensityMaster => self.fader,
+            FaderMode::Crossfade => 1.0,
         }
-        state
+    }
+
+    /// This tick's effects with their crossfade weights: the incoming cue's
+    /// fade in as the outgoing cue's fade out. An effect both cues share
+    /// (the same recorded instance) just keeps running at full weight.
+    pub fn effects(&self) -> Vec<LayerEffect> {
+        let t = self.progress();
+        let mut effects: Vec<LayerEffect> = self
+            .from_effects
+            .iter()
+            .filter(|e| !self.to_effects.contains(e))
+            .map(|e| LayerEffect { instance: e.clone(), scale: 1.0 - t })
+            .filter(|e| e.scale > 0.0)
+            .collect();
+        effects.extend(self.to_effects.iter().map(|e| LayerEffect {
+            instance: e.clone(),
+            scale: if self.from_effects.contains(e) { 1.0 } else { t },
+        }));
+        effects
     }
 
     pub fn go(&mut self, cuelist: &Cuelist, presets: &PresetStore, target_index: usize) {
-        self.from_state = self.render_unfadered();
+        self.from_state = self.render_values();
         self.to_state = resolve_cue_state(cuelist, target_index, presets);
+        self.from_effects = std::mem::take(&mut self.to_effects);
+        self.to_effects = cuelist.cues.get(target_index).map(|c| c.effects.clone()).unwrap_or_default();
         self.fade_ms = cuelist.cues.get(target_index).map_or(1.0, |c| c.fade_in_ms.max(1.0));
         self.elapsed_ms = 0.0;
         self.step_elapsed_ms = 0.0;
@@ -126,8 +155,9 @@ impl PlaybackRuntime {
     /// Fades everything this playback is contributing down to nothing and
     /// forgets its cue position.
     pub fn release(&mut self, release_fade_ms: f64) {
-        self.from_state = self.render_unfadered();
+        self.from_state = self.render_values();
         self.to_state = HashMap::new();
+        self.from_effects = std::mem::take(&mut self.to_effects);
         self.fade_ms = release_fade_ms.max(1.0);
         self.elapsed_ms = 0.0;
         self.current_index = None;
@@ -212,16 +242,16 @@ mod tests {
         let mut pb = PlaybackRuntime::new(1, 1, 10);
         pb.go(&list, &presets, 0);
         pb.tick(50.0, &list, &presets);
-        let mid = pb.render(&HashMap::new());
+        let mid = pb.render_values();
         assert_eq!(mid[&(1, 1)].round() as u8, 100); // halfway through a 100ms fade to 200
 
         pb.tick(50.0, &list, &presets);
-        let done = pb.render(&HashMap::new());
+        let done = pb.render_values();
         assert_eq!(done[&(1, 1)].round() as u8, 200);
     }
 
     #[test]
-    fn intensity_master_fader_scales_only_htp_channels() {
+    fn intensity_master_fader_becomes_the_layers_intensity_scale() {
         let mut list = Cuelist::new(1, "L".to_string(), CuelistKind::Standard, true);
         let mut cue = Cue::new(1.0, "Cue 1".to_string());
         cue.values.insert((1, 1), CueValue::Literal { value: 200.0 }); // intensity
@@ -235,11 +265,14 @@ mod tests {
         pb.go(&list, &presets, 0);
         pb.tick(10.0, &list, &presets);
 
-        let mut htp = HashMap::new();
-        htp.insert(1u32, HashSet::from([1u16]));
-        let rendered = pb.render(&htp);
-        assert_eq!(rendered[&(1, 1)], 100.0); // scaled by the 50% fader
-        assert_eq!(rendered[&(1, 2)], 200.0); // untouched
+        // The fader becomes the layer's intensity scale; the merge applies
+        // it to HTP channels only (see merge.rs's tests).
+        assert_eq!(pb.intensity_scale(), 0.5);
+        let rendered = pb.render_values();
+        assert_eq!(rendered[&(1, 1)], 200.0);
+        assert_eq!(rendered[&(1, 2)], 200.0);
+        pb.fader_mode = FaderMode::Crossfade;
+        assert_eq!(pb.intensity_scale(), 1.0);
     }
 
     #[test]
@@ -252,11 +285,11 @@ mod tests {
         let mut pb = PlaybackRuntime::new(1, 1, 10);
         pb.go(&list, &presets, 1);
         pb.tick(10.0, &list, &presets);
-        assert_eq!(pb.render(&HashMap::new())[&(1, 1)], 200.0);
+        assert_eq!(pb.render_values()[&(1, 1)], 200.0);
 
         pb.go_back(&list, &presets);
         pb.tick(10.0, &list, &presets);
-        assert_eq!(pb.render(&HashMap::new())[&(1, 1)], 100.0);
+        assert_eq!(pb.render_values()[&(1, 1)], 100.0);
     }
 
     #[test]
@@ -272,7 +305,7 @@ mod tests {
         pb.tick(100.0, &list, &presets);
 
         assert_eq!(pb.current_index, None);
-        assert_eq!(pb.render(&HashMap::new()).get(&(1, 1)), Some(&0.0));
+        assert_eq!(pb.render_values().get(&(1, 1)), Some(&0.0));
     }
 
     #[test]
@@ -341,5 +374,39 @@ mod tests {
         pb.paused = true;
         pb.tick(1000.0, &list, &presets);
         assert_eq!(pb.current_index, Some(0));
+    }
+
+    #[test]
+    fn cue_effects_crossfade_and_shared_effects_keep_running() {
+        use crate::engine::effects::{EffectDef, Waveform};
+        let instance = |id| EffectInstance {
+            id,
+            def: EffectDef::new_attribute("dimmer", Waveform::Sine),
+            preset_id: None,
+            fixtures: vec![1],
+        };
+        let mut list = Cuelist::new(1, "L".to_string(), CuelistKind::Standard, true);
+        let mut c1 = cue_with(1.0, 1, 0.0, 100.0);
+        c1.effects = vec![instance(1), instance(2)];
+        let mut c2 = cue_with(2.0, 1, 0.0, 100.0);
+        c2.effects = vec![instance(2), instance(3)];
+        list.upsert_cue(c1);
+        list.upsert_cue(c2);
+        let presets = PresetStore::new();
+
+        let mut pb = PlaybackRuntime::new(1, 1, 10);
+        pb.go(&list, &presets, 0);
+        pb.tick(100.0, &list, &presets);
+        pb.go(&list, &presets, 1);
+        pb.tick(25.0, &list, &presets); // a quarter of the way into cue 2
+
+        let scales: HashMap<u32, f32> = pb.effects().iter().map(|e| (e.instance.id, e.scale)).collect();
+        assert_eq!(scales[&1], 0.75); // only in cue 1: fading out
+        assert_eq!(scales[&2], 1.0); // in both: uninterrupted
+        assert_eq!(scales[&3], 0.25); // only in cue 2: fading in
+
+        pb.release(100.0);
+        pb.tick(100.0, &list, &presets);
+        assert!(pb.effects().is_empty());
     }
 }

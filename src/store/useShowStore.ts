@@ -61,7 +61,7 @@ function toMeta(show: ShowFile): ShowMeta {
   };
 }
 
-/** Groups/presets/cuelists live in the Rust engine, so a complete show file
+/** Groups/presets/cuelists/tempo/pixel maps live in the Rust engine, so a complete show file
  * has to fetch them. `engineRevision` is the engine's data revision the
  * fetch reflects (read first, so an edit racing the save still reads as
  * unsaved afterwards). */
@@ -87,8 +87,8 @@ let savedEngineRevision: number | null = null;
  * so their change subscriptions below don't mark the freshly-opened show dirty. */
 let applyingShow = false;
 
-/** Loads `show` into the patch/library stores and its groups/presets/
- * cuelists into the engine. */
+/** Loads `show` into the patch/library stores and its engine-owned data
+ * (groups, presets, cuelists, tempo, pixel maps) into the engine. */
 async function applyShow(show: ShowFile): Promise<void> {
   applyingShow = true;
   try {
@@ -98,7 +98,13 @@ async function applyShow(show: ShowFile): Promise<void> {
     applyingShow = false;
   }
   savedEngineRevision = null;
-  await engineApi.loadShowData({ groups: show.groups, presets: show.presets, cuelists: show.cuelists });
+  await engineApi.loadShowData({
+    groups: show.groups,
+    presets: show.presets,
+    cuelists: show.cuelists,
+    bpm: show.bpm,
+    pixelMaps: show.pixelMaps,
+  });
   savedEngineRevision = await engineApi.showDataRevision();
 }
 
@@ -323,6 +329,8 @@ function syncEnginePatch(): void {
     const mode = def?.modes[instance.modeIndex];
     let intensityChannel: number | null = null;
     const attributeChannels: Record<string, number> = {};
+    // Multi-cell fixtures: cell number -> that cell's attribute channels.
+    const cellChannels = new Map<number, Record<string, number>>();
     if (mode) {
       let htpChannels = htpChannelsByUniverse.get(instance.universe);
       if (!htpChannels) {
@@ -338,6 +346,11 @@ function syncEnginePatch(): void {
         // First occurrence of each attribute wins, matching the patch
         // panel's own unionChannels() convention for multi-channel fixtures.
         if (!(ch.type in attributeChannels)) attributeChannels[ch.type] = channel;
+        if (ch.cell) {
+          const cell = cellChannels.get(ch.cell) ?? {};
+          if (!(ch.type in cell)) cell[ch.type] = channel;
+          cellChannels.set(ch.cell, cell);
+        }
       }
     }
     return {
@@ -345,6 +358,7 @@ function syncEnginePatch(): void {
       universe: instance.universe,
       intensityChannel,
       attributeChannels,
+      cells: [...cellChannels.entries()].sort(([a], [b]) => a - b).map(([, channels]) => channels),
     };
   });
 

@@ -4,11 +4,28 @@
 //! programmer always has the highest priority, so "programmer > playbacks"
 //! falls out of this naturally rather than needing a special case.
 
-use super::state::{EngineState, PROGRAMMER_PRIORITY};
+use super::state::{EngineState, Layer, PROGRAMMER_PRIORITY};
 use crate::output::UNIVERSE_SIZE;
 
 pub fn merge_universe(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
-    let mut layers: Vec<(i64, &super::state::Layer)> =
+    merge(state, universe, true)
+}
+
+/// The merge without any layer's effect output — what a relative effect's
+/// "underlying value" is for a channel its own layer doesn't set.
+pub fn merge_universe_static(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE] {
+    merge(state, universe, false)
+}
+
+fn merge(state: &EngineState, universe: u32, with_effects: bool) -> [u8; UNIVERSE_SIZE] {
+    let value_of = |layer: &Layer, key: &(u32, u16)| {
+        if with_effects {
+            layer.get(key)
+        } else {
+            layer.values.get(key).copied()
+        }
+    };
+    let mut layers: Vec<(i64, &Layer)> =
         state.playbacks.values().map(|(priority, layer)| (*priority, layer)).collect();
     layers.push((PROGRAMMER_PRIORITY, &state.programmer));
     layers.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
@@ -21,12 +38,11 @@ pub fn merge_universe(state: &EngineState, universe: u32) -> [u8; UNIVERSE_SIZE]
         if state.is_htp(universe, channel) {
             let max = layers
                 .iter()
-                .filter_map(|(_, layer)| layer.values.get(&key))
-                .copied()
+                .filter_map(|(_, layer)| value_of(layer, &key).map(|v| v * layer.intensity_scale))
                 .fold(0.0f32, f32::max);
             *slot = to_u8(max);
-        } else if let Some((_, layer)) = layers.iter().find(|(_, layer)| layer.values.contains_key(&key)) {
-            *slot = to_u8(layer.values[&key]);
+        } else if let Some(value) = layers.iter().find_map(|(_, layer)| value_of(layer, &key)) {
+            *slot = to_u8(value);
         }
     }
     out
@@ -39,12 +55,9 @@ fn to_u8(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::state::Layer;
 
     fn layer(entries: &[(u16, f32)]) -> Layer {
-        Layer {
-            values: entries.iter().map(|&(ch, v)| ((1, ch), v)).collect(),
-        }
+        Layer { values: entries.iter().map(|&(ch, v)| ((1, ch), v)).collect(), ..Default::default() }
     }
 
     #[test]
@@ -106,5 +119,30 @@ mod tests {
         assert_eq!(out[0], 255);
         assert_eq!(out[1], 255);
         assert_eq!(out[2], 0);
+    }
+
+    #[test]
+    fn effect_values_win_over_the_same_layers_static_values() {
+        let mut state = EngineState::new();
+        let mut l = layer(&[(5, 100.0)]);
+        l.fx_values.insert((1, 5), 180.0);
+        state.playbacks.insert("fx".into(), (1, l));
+
+        assert_eq!(merge_universe(&state, 1)[4], 180);
+        assert_eq!(merge_universe_static(&state, 1)[4], 100);
+    }
+
+    #[test]
+    fn intensity_scale_applies_to_htp_channels_only() {
+        let mut state = EngineState::new();
+        state.htp_channels.entry(1).or_default().insert(1);
+        let mut l = layer(&[(1, 200.0), (2, 200.0)]);
+        l.fx_values.insert((1, 1), 250.0);
+        l.intensity_scale = 0.5;
+        state.playbacks.insert("pb".into(), (1, l));
+
+        let out = merge_universe(&state, 1);
+        assert_eq!(out[0], 125); // effect value, then scaled
+        assert_eq!(out[1], 200); // LTP channel unscaled
     }
 }

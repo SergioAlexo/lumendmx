@@ -2,12 +2,19 @@ use std::collections::{HashMap, HashSet};
 
 use tauri::State;
 
+use base64::Engine as _;
+
 use super::cues::CuelistKind;
+use super::effects::{EffectDef, EffectInstance};
 use super::groups::Group;
 use super::legacy_playback::{LegacyAsset, LegacyStep};
-use super::manager::{CommandResult, CuelistDto, EngineManager, PatchIndexEntry, PlaybackStatus, ShowEngineData};
+use super::manager::{
+    CommandResult, CuelistDto, EngineManager, PatchIndexEntry, PixelMapStatus, PlaybackStatus, ShowEngineData,
+};
+use super::pixelmap::PixelMap;
 use super::playback::FaderMode;
 use super::presets::{Preset, PresetFamily};
+use super::tempo::TempoStatus;
 
 #[tauri::command]
 pub fn engine_set_htp_channels(engine: State<EngineManager>, universe: u32, channels: Vec<u16>) {
@@ -295,4 +302,113 @@ pub fn engine_playback_set_fader(engine: State<EngineManager>, id: u32, percent:
 #[tauri::command]
 pub fn engine_playback_set_fader_mode(engine: State<EngineManager>, id: u32, mode: FaderMode) -> Result<(), String> {
     engine.playback_set_fader_mode(id, mode)
+}
+
+// --- Tempo (Phase 7) ---
+
+#[tauri::command]
+pub fn engine_tempo_status(engine: State<EngineManager>) -> TempoStatus {
+    engine.tempo_status()
+}
+
+#[tauri::command]
+pub fn engine_set_bpm(engine: State<EngineManager>, bpm: f32) {
+    engine.set_bpm(bpm);
+}
+
+#[tauri::command]
+pub fn engine_tap_tempo(engine: State<EngineManager>, now_ms: f64) -> f32 {
+    engine.tap_tempo(now_ms)
+}
+
+// --- Effects (Phase 7) ---
+
+#[tauri::command]
+pub fn engine_start_effect(
+    engine: State<EngineManager>,
+    def: EffectDef,
+    fixture_numbers: Vec<u32>,
+    preset_id: Option<u32>,
+) -> u32 {
+    engine.start_effect(def, fixture_numbers, preset_id)
+}
+
+#[tauri::command]
+pub fn engine_update_effect(engine: State<EngineManager>, id: u32, def: EffectDef) -> Result<(), String> {
+    engine.update_effect(id, def)
+}
+
+#[tauri::command]
+pub fn engine_stop_effect(engine: State<EngineManager>, id: u32) {
+    engine.stop_effect(id);
+}
+
+#[tauri::command]
+pub fn engine_list_effects(engine: State<EngineManager>) -> Vec<EffectInstance> {
+    engine.list_effects()
+}
+
+#[tauri::command]
+pub fn engine_record_effect_preset(engine: State<EngineManager>, name: String, def: EffectDef) -> u32 {
+    engine.record_effect_preset(name, def)
+}
+
+#[tauri::command]
+pub fn engine_update_effect_preset(engine: State<EngineManager>, id: u32, def: EffectDef) -> Result<(), String> {
+    engine.update_effect_preset(id, def)
+}
+
+// --- Pixel maps (Phase 7) ---
+
+#[tauri::command]
+pub fn engine_create_pixel_map(engine: State<EngineManager>, name: String, width: u32, height: u32) -> u32 {
+    engine.create_pixel_map(name, width, height)
+}
+
+#[tauri::command]
+pub fn engine_update_pixel_map(engine: State<EngineManager>, map: PixelMap) -> Result<(), String> {
+    engine.update_pixel_map(map)
+}
+
+#[tauri::command]
+pub fn engine_delete_pixel_map(engine: State<EngineManager>, id: u32) {
+    engine.delete_pixel_map(id);
+}
+
+#[tauri::command]
+pub fn engine_list_pixel_maps(engine: State<EngineManager>) -> Vec<PixelMap> {
+    engine.list_pixel_maps()
+}
+
+/// `data`: the image/GIF file, base64-encoded (far smaller over IPC than a
+/// JSON array of bytes).
+#[tauri::command]
+pub fn engine_import_pixel_map_media(engine: State<EngineManager>, id: u32, data: String) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("Bad file data: {e}"))?;
+    engine.import_pixel_map_media(id, &bytes)
+}
+
+#[tauri::command]
+pub fn engine_start_pixel_map(engine: State<EngineManager>, id: u32) -> Result<(), String> {
+    engine.start_pixel_map(id)
+}
+
+#[tauri::command]
+pub fn engine_stop_pixel_map(engine: State<EngineManager>, id: u32) {
+    engine.stop_pixel_map(id);
+}
+
+#[tauri::command]
+pub fn engine_set_pixel_map_intensity(engine: State<EngineManager>, id: u32, percent: f32) -> Result<(), String> {
+    engine.set_pixel_map_intensity(id, percent)
+}
+
+#[tauri::command]
+pub fn engine_running_pixel_maps(engine: State<EngineManager>) -> Vec<PixelMapStatus> {
+    engine.running_pixel_maps()
+}
+
+#[tauri::command]
+pub fn engine_pixel_map_preview(engine: State<EngineManager>, id: u32) -> Result<Vec<u8>, String> {
+    engine.pixel_map_preview(id)
 }

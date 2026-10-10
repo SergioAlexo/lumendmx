@@ -14,12 +14,15 @@ use ts_rs::TS;
 
 use super::command_line::{self, Command};
 use super::cues::{resolve_cue_value, Cue, CueStore, CueValue, Cuelist, CuelistKind};
+use super::effects::{self, EffectClock, EffectDef, EffectInstance, ResolvedEffect};
 use super::groups::{Group, GroupStore};
 use super::legacy_playback::{LegacyAsset, RunningPlayback};
-use super::merge::merge_universe;
+use super::merge::{merge_universe, merge_universe_static};
+use super::pixelmap::{self, PixelMap, PixelMapRuntime, PixelMapStore};
 use super::playback::{FaderMode, PlaybackRuntime};
 use super::presets::{Preset, PresetFamily, PresetStore};
-use super::state::EngineState;
+use super::state::{ChannelKey, EngineState, Layer, LayerEffect};
+use super::tempo::{Tempo, TempoStatus};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 
@@ -52,6 +55,12 @@ pub struct PatchIndexEntry {
     /// attribute values against for an arbitrary target fixture (Phase 5).
     #[serde(default)]
     pub attribute_channels: HashMap<String, u16>,
+    /// For a multi-cell fixture (an LED bar, a pixel batten): each cell's
+    /// attribute → channel map, in cell order (cell 1 first). Empty for a
+    /// single-cell fixture. What a pixel map's per-cell mapping resolves
+    /// against (Phase 7).
+    #[serde(default)]
+    pub cells: Vec<HashMap<String, u16>>,
 }
 
 #[derive(Default)]
@@ -110,6 +119,9 @@ pub struct CueDto {
     pub fade_out_ms: f64,
     pub delay_in_ms: f64,
     pub mark: bool,
+    /// Phase 7; absent in files saved before effects existed.
+    #[serde(default)]
+    pub effects: Vec<EffectInstance>,
 }
 
 impl From<&Cue> for CueDto {
@@ -128,6 +140,7 @@ impl From<&Cue> for CueDto {
             fade_out_ms: cue.fade_out_ms,
             delay_in_ms: cue.delay_in_ms,
             mark: cue.mark,
+            effects: cue.effects.clone(),
         }
     }
 }
@@ -153,6 +166,7 @@ impl From<CuelistDto> for Cuelist {
             cue.fade_out_ms = cue_dto.fade_out_ms;
             cue.delay_in_ms = cue_dto.delay_in_ms;
             cue.mark = cue_dto.mark;
+            cue.effects = cue_dto.effects;
             list.upsert_cue(cue); // keeps cues sorted even if the file isn't
         }
         list
@@ -185,13 +199,108 @@ pub struct PlaybackStatus {
 
 /// The engine-owned part of a show: what `.lumen` files store in their
 /// `groups`/`presets`/`cuelists` fields (schema v4+).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct ShowEngineData {
     pub groups: Vec<Group>,
     pub presets: Vec<Preset>,
     pub cuelists: Vec<CuelistDto>,
+    /// The global tempo (Phase 7).
+    pub bpm: f32,
+    pub pixel_maps: Vec<PixelMap>,
+}
+
+#[derive(Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct PixelMapStatus {
+    pub map_id: u32,
+    /// 0.0-1.0.
+    pub intensity: f32,
+}
+
+/// Everything one engine tick reads and writes — shared (by `Arc`) between
+/// `EngineManager` and its tick thread, and steppable directly in tests.
+struct TickShared {
+    state: Arc<Mutex<EngineState>>,
+    playbacks: Arc<Mutex<Vec<RunningPlayback>>>,
+    cues: Arc<Mutex<CueStore>>,
+    cue_playbacks: Arc<Mutex<Vec<PlaybackRuntime>>>,
+    presets: Arc<Mutex<PresetStore>>,
+    patch_index: Arc<Mutex<Vec<PatchIndexEntry>>>,
+    tempo: Arc<Mutex<Tempo>>,
+    pixel_maps: Arc<Mutex<PixelMapStore>>,
+    map_runtimes: Arc<Mutex<Vec<PixelMapRuntime>>>,
+}
+
+impl TickShared {
+    /// Advances time by `dt_ms` and re-renders every layer (playbacks, pixel
+    /// maps, effects). Output is the caller's job: merge and send.
+    fn advance(&self, dt_ms: f64) {
+        let clock = {
+            let mut tempo = self.tempo.lock().unwrap();
+            tempo.advance(dt_ms);
+            EffectClock { seconds: tempo.seconds(), beats: tempo.beat() }
+        };
+
+        {
+            // Lock order: patch index before state, as everywhere else.
+            let patch = self.patch_index.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
+            let mut playbacks = self.playbacks.lock().unwrap();
+            playbacks.retain_mut(|playback| {
+                let entry = state
+                    .playbacks
+                    .entry(playback.id.clone())
+                    .or_insert_with(|| (playback.priority, Default::default()));
+                // `advance` returning false only means "stop ticking
+                // this playback" — a finished non-looping asset's
+                // last values stay live in `state.playbacks` (a Scene
+                // applies once and persists; see LightAsset's
+                // docstring) until `stop_asset`/`trigger_asset`
+                // explicitly removes that layer.
+                playback.advance(dt_ms, &mut entry.1)
+            });
+
+            // Cue playbacks (Phase 6) render into the same
+            // `state.playbacks` map, keyed distinctly, so they merge
+            // through exactly the same HTP/LTP path as legacy assets.
+            let cues = self.cues.lock().unwrap();
+            let presets = self.presets.lock().unwrap();
+            for pb in self.cue_playbacks.lock().unwrap().iter_mut() {
+                let key = format!("cue-playback-{}", pb.id);
+                let Some(cuelist) = cues.get(pb.cuelist_id) else {
+                    state.playbacks.remove(&key);
+                    continue;
+                };
+                pb.tick(dt_ms, cuelist, &presets);
+                let entry = state.playbacks.entry(key).or_insert_with(|| (pb.priority, Default::default()));
+                entry.0 = pb.priority;
+                entry.1.values = pb.render_values();
+                entry.1.effects = pb.effects();
+                entry.1.intensity_scale = pb.intensity_scale();
+            }
+
+            // Pixel maps (Phase 7) are playback layers too.
+            let maps = self.pixel_maps.lock().unwrap();
+            let index: HashMap<u32, &PatchIndexEntry> = patch.iter().map(|e| (e.fixture_number, e)).collect();
+            for runtime in self.map_runtimes.lock().unwrap().iter_mut() {
+                let key = pixel_map_layer_key(runtime.map_id);
+                let Some(map) = maps.get(runtime.map_id) else {
+                    state.playbacks.remove(&key);
+                    continue;
+                };
+                let frame = runtime.render_frame(map, clock);
+                let entry = state.playbacks.entry(key).or_insert_with(|| (runtime.priority, Default::default()));
+                entry.1.values = pixelmap::frame_to_channels(map, &frame, &index, runtime.intensity);
+                entry.1.intensity_scale = runtime.intensity;
+            }
+            drop(maps);
+
+            render_layer_effects(&mut state, &patch, &presets, clock);
+        }
+    }
 }
 
 pub struct EngineManager {
@@ -205,6 +314,12 @@ pub struct EngineManager {
     cue_playbacks: Arc<Mutex<Vec<PlaybackRuntime>>>,
     next_playback_id: AtomicU32,
     tick_started: AtomicBool,
+    tempo: Arc<Mutex<Tempo>>,
+    pixel_maps: Arc<Mutex<PixelMapStore>>,
+    /// Running pixel maps, each a playback layer.
+    map_runtimes: Arc<Mutex<Vec<PixelMapRuntime>>>,
+    /// Ids for effect instances, unique across the programmer and every cue.
+    next_effect_id: AtomicU32,
     /// Bumped by every change to groups/presets/cuelists, so the frontend
     /// can tell the show has unsaved engine-side edits (see `ShowEngineData`).
     data_revision: AtomicU64,
@@ -223,8 +338,32 @@ impl EngineManager {
             cue_playbacks: Arc::new(Mutex::new(Vec::new())),
             next_playback_id: AtomicU32::new(0),
             tick_started: AtomicBool::new(false),
+            tempo: Arc::new(Mutex::new(Tempo::new())),
+            pixel_maps: Arc::new(Mutex::new(PixelMapStore::new())),
+            map_runtimes: Arc::new(Mutex::new(Vec::new())),
+            next_effect_id: AtomicU32::new(1),
             data_revision: AtomicU64::new(0),
         }
+    }
+
+    fn tick_shared(&self) -> TickShared {
+        TickShared {
+            state: self.state.clone(),
+            playbacks: self.playbacks.clone(),
+            cues: self.cues.clone(),
+            cue_playbacks: self.cue_playbacks.clone(),
+            presets: self.presets.clone(),
+            patch_index: self.patch_index.clone(),
+            tempo: self.tempo.clone(),
+            pixel_maps: self.pixel_maps.clone(),
+            map_runtimes: self.map_runtimes.clone(),
+        }
+    }
+
+    /// One tick without the output half — for tests.
+    #[cfg(test)]
+    fn step(&self, dt_ms: f64) {
+        self.tick_shared().advance(dt_ms);
     }
 
     /// Starts the 44Hz tick thread (idempotent — safe to call from `setup`
@@ -234,11 +373,8 @@ impl EngineManager {
             return;
         }
 
+        let shared = self.tick_shared();
         let state = self.state.clone();
-        let playbacks = self.playbacks.clone();
-        let cues = self.cues.clone();
-        let cue_playbacks = self.cue_playbacks.clone();
-        let presets = self.presets.clone();
 
         thread::spawn(move || {
             let tick_interval = Duration::from_secs_f64(1.0 / TICK_HZ);
@@ -251,41 +387,7 @@ impl EngineManager {
                 let dt_ms = now.duration_since(last_tick).as_secs_f64() * 1000.0;
                 last_tick = now;
 
-                {
-                    let mut state = state.lock().unwrap();
-                    let mut playbacks = playbacks.lock().unwrap();
-                    playbacks.retain_mut(|playback| {
-                        let entry = state
-                            .playbacks
-                            .entry(playback.id.clone())
-                            .or_insert_with(|| (playback.priority, Default::default()));
-                        // `advance` returning false only means "stop ticking
-                        // this playback" — a finished non-looping asset's
-                        // last values stay live in `state.playbacks` (a Scene
-                        // applies once and persists; see LightAsset's
-                        // docstring) until `stop_asset`/`trigger_asset`
-                        // explicitly removes that layer.
-                        playback.advance(dt_ms, &mut entry.1)
-                    });
-
-                    // Cue playbacks (Phase 6) render into the same
-                    // `state.playbacks` map, keyed distinctly, so they merge
-                    // through exactly the same HTP/LTP path as legacy assets.
-                    let cues = cues.lock().unwrap();
-                    let presets = presets.lock().unwrap();
-                    for pb in cue_playbacks.lock().unwrap().iter_mut() {
-                        let key = format!("cue-playback-{}", pb.id);
-                        let Some(cuelist) = cues.get(pb.cuelist_id) else {
-                            state.playbacks.remove(&key);
-                            continue;
-                        };
-                        pb.tick(dt_ms, cuelist, &presets);
-                        let rendered = pb.render(&state.htp_channels);
-                        let entry = state.playbacks.entry(key).or_insert_with(|| (pb.priority, Default::default()));
-                        entry.0 = pb.priority;
-                        entry.1.values = rendered;
-                    }
-                }
+                shared.advance(dt_ms);
 
                 let output = app.state::<OutputManager>();
                 let universe_ids = output.universe_ids();
@@ -406,7 +508,7 @@ impl EngineManager {
             }
             Command::Clear => {
                 if ctx.selection.is_empty() {
-                    self.state.lock().unwrap().programmer.values.clear();
+                    self.state.lock().unwrap().programmer.clear();
                     (true, "Cleared programmer values".to_string())
                 } else {
                     ctx.selection.clear();
@@ -415,7 +517,7 @@ impl EngineManager {
             }
             Command::Release => {
                 ctx.selection.clear();
-                self.state.lock().unwrap().programmer.values.clear();
+                self.state.lock().unwrap().programmer.clear();
                 (true, "Released".to_string())
             }
             Command::SelectAll => {
@@ -624,10 +726,19 @@ impl EngineManager {
     /// what every future apply (including, once Phase 6 exists, a recorded
     /// cue that references it) actually does.
     pub fn apply_preset(&self, id: u32, fixture_numbers: &HashSet<u32>) -> Result<usize, String> {
-        let values = {
+        let (values, effect) = {
             let presets = self.presets.lock().unwrap();
-            presets.get(id).ok_or_else(|| format!("No preset {id}"))?.values.clone()
+            let preset = presets.get(id).ok_or_else(|| format!("No preset {id}"))?;
+            (preset.values.clone(), preset.effect.clone())
         };
+        if let Some(def) = effect {
+            // An Effect preset runs its effect on the selection, linked to
+            // the preset so a recorded cue keeps following it.
+            let mut ordered: Vec<u32> = fixture_numbers.iter().copied().collect();
+            ordered.sort_unstable();
+            self.start_effect(def, ordered, Some(id));
+            return Ok(fixture_numbers.len());
+        }
         let index = self.patch_index.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         let mut applied = 0;
@@ -712,11 +823,15 @@ impl EngineManager {
             index.iter().filter(|e| fixture_numbers.contains(&e.fixture_number)).collect();
         entries.sort_by_key(|e| e.fixture_number);
         for entry in entries {
-            let frame = frames.entry(entry.universe).or_insert_with(|| merge_universe(&state, entry.universe));
+            // The static (effect-free) merge: a running effect is recorded
+            // as an effect below, not as whatever value it happened to be
+            // at this instant.
+            let frame = frames.entry(entry.universe).or_insert_with(|| merge_universe_static(&state, entry.universe));
             for &channel in entry.attribute_channels.values() {
                 cue.values.insert((entry.universe, channel), CueValue::Literal { value: frame[(channel - 1) as usize] as f32 });
             }
         }
+        cue.effects = programmer_effects_for(&state.programmer, fixture_numbers);
         drop(state);
         drop(index);
 
@@ -818,6 +933,8 @@ impl EngineManager {
             groups: self.list_groups(),
             presets: self.list_presets(None),
             cuelists: self.list_cuelists(),
+            bpm: self.tempo.lock().unwrap().bpm(),
+            pixel_maps: self.list_pixel_maps(),
         }
     }
 
@@ -837,10 +954,203 @@ impl EngineManager {
             ctx.current_cuelist = None;
             ctx.last_cue_number = None;
         }
+        let max_effect_id = data.cuelists.iter().flat_map(|l| &l.cues).flat_map(|c| &c.effects).map(|e| e.id).max();
+        let max_effect_id = max_effect_id.into_iter().chain(self.list_effects().iter().map(|e| e.id)).max().unwrap_or(0);
+        self.next_effect_id.fetch_max(max_effect_id + 1, Ordering::SeqCst);
+        self.tempo.lock().unwrap().set_bpm(data.bpm);
+        let map_ids: Vec<u32> = self.map_runtimes.lock().unwrap().drain(..).map(|r| r.map_id).collect();
+        {
+            let mut state = self.state.lock().unwrap();
+            for id in map_ids {
+                state.playbacks.remove(&pixel_map_layer_key(id));
+            }
+        }
+        self.pixel_maps.lock().unwrap().replace_all(data.pixel_maps);
         self.groups.lock().unwrap().replace_all(data.groups);
         self.presets.lock().unwrap().replace_all(data.presets);
         self.cues.lock().unwrap().replace_all(data.cuelists.into_iter().map(Cuelist::from).collect());
         self.mark_data_changed();
+    }
+
+    // --- Tempo (Phase 7) ---
+
+    pub fn tempo_status(&self) -> TempoStatus {
+        self.tempo.lock().unwrap().status()
+    }
+
+    pub fn set_bpm(&self, bpm: f32) {
+        self.mark_data_changed();
+        self.tempo.lock().unwrap().set_bpm(bpm);
+    }
+
+    /// `now_ms`: the caller's timestamp for the tap (the frontend's
+    /// `performance.now()`), so network/IPC jitter doesn't skew the
+    /// measured interval.
+    pub fn tap_tempo(&self, now_ms: f64) -> f32 {
+        self.mark_data_changed();
+        self.tempo.lock().unwrap().tap(now_ms)
+    }
+
+    // --- Programmer effects (Phase 7) ---
+
+    /// Starts `def` on `fixtures` (in that order) in the programmer. Any
+    /// programmer effect already driving one of the same attributes on one
+    /// of these fixtures gives those fixtures up — applying a new effect to
+    /// an attribute replaces the old one, it doesn't stack.
+    pub fn start_effect(&self, def: EffectDef, fixtures: Vec<u32>, preset_id: Option<u32>) -> u32 {
+        let id = self.next_effect_id.fetch_add(1, Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap();
+        let attributes: HashSet<String> = def.attributes().into_iter().map(str::to_string).collect();
+        let taken: HashSet<u32> = fixtures.iter().copied().collect();
+        let programmer = &mut state.programmer;
+        for existing in programmer.effects.iter_mut() {
+            if existing.instance.def.attributes().iter().any(|a| attributes.contains(*a)) {
+                existing.instance.fixtures.retain(|f| !taken.contains(f));
+            }
+        }
+        programmer.effects.retain(|e| !e.instance.fixtures.is_empty());
+        programmer.effects.push(LayerEffect { instance: EffectInstance { id, def, preset_id, fixtures }, scale: 1.0 });
+        id
+    }
+
+    /// Replaces a running programmer effect's definition. Unlinks it from
+    /// its preset, since it no longer plays the preset's definition.
+    pub fn update_effect(&self, id: u32, def: EffectDef) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap();
+        let effect = state
+            .programmer
+            .effects
+            .iter_mut()
+            .find(|e| e.instance.id == id)
+            .ok_or_else(|| format!("No running effect {id}"))?;
+        effect.instance.def = def;
+        effect.instance.preset_id = None;
+        Ok(())
+    }
+
+    pub fn stop_effect(&self, id: u32) {
+        self.state.lock().unwrap().programmer.effects.retain(|e| e.instance.id != id);
+    }
+
+    /// The programmer's running effects, with preset-linked ones showing
+    /// the preset's current definition.
+    pub fn list_effects(&self) -> Vec<EffectInstance> {
+        let effects: Vec<EffectInstance> =
+            self.state.lock().unwrap().programmer.effects.iter().map(|e| e.instance.clone()).collect();
+        let presets = self.presets.lock().unwrap();
+        effects
+            .into_iter()
+            .map(|mut e| {
+                if let Some(def) = e.preset_id.and_then(|id| presets.get(id)).and_then(|p| p.effect.clone()) {
+                    e.def = def;
+                }
+                e
+            })
+            .collect()
+    }
+
+    pub fn record_effect_preset(&self, name: String, def: EffectDef) -> u32 {
+        self.mark_data_changed();
+        self.presets.lock().unwrap().record_effect(name, def)
+    }
+
+    pub fn update_effect_preset(&self, id: u32, def: EffectDef) -> Result<(), String> {
+        self.mark_data_changed();
+        self.presets.lock().unwrap().update_effect(id, def)
+    }
+
+    // --- Pixel maps (Phase 7) ---
+
+    pub fn create_pixel_map(&self, name: String, width: u32, height: u32) -> u32 {
+        self.mark_data_changed();
+        self.pixel_maps.lock().unwrap().create(name, width, height)
+    }
+
+    pub fn update_pixel_map(&self, map: PixelMap) -> Result<(), String> {
+        self.mark_data_changed();
+        self.pixel_maps.lock().unwrap().update(map)
+    }
+
+    pub fn delete_pixel_map(&self, id: u32) {
+        self.mark_data_changed();
+        self.stop_pixel_map(id);
+        self.pixel_maps.lock().unwrap().delete(id);
+    }
+
+    pub fn list_pixel_maps(&self) -> Vec<PixelMap> {
+        self.pixel_maps.lock().unwrap().list()
+    }
+
+    /// Decodes an image/GIF, scales it to the map and switches the map to
+    /// play it. A GIF's own frame timing becomes one cycle of the map's
+    /// rate, so it plays at its natural speed until the rate is changed.
+    pub fn import_pixel_map_media(&self, id: u32, bytes: &[u8]) -> Result<(), String> {
+        let mut maps = self.pixel_maps.lock().unwrap();
+        let mut map = maps.get(id).ok_or_else(|| format!("No pixel map {id}"))?.clone();
+        let media = pixelmap::import_media(bytes, map.width, map.height)?;
+        let total_ms: f64 = media.frames.iter().map(|f| f.delay_ms.max(1.0)).sum();
+        map.rate = effects::EffectRate::Hz { hz: (1000.0 / total_ms) as f32 };
+        map.generator = pixelmap::Generator::Media;
+        map.media = Some(media);
+        maps.update(map)?;
+        drop(maps);
+        self.mark_data_changed();
+        Ok(())
+    }
+
+    pub fn start_pixel_map(&self, id: u32) -> Result<(), String> {
+        if self.pixel_maps.lock().unwrap().get(id).is_none() {
+            return Err(format!("No pixel map {id}"));
+        }
+        if self.map_runtimes.lock().unwrap().iter().any(|r| r.map_id == id) {
+            return Ok(());
+        }
+        let priority = self.state.lock().unwrap().next_priority();
+        self.map_runtimes.lock().unwrap().push(PixelMapRuntime::new(id, priority));
+        Ok(())
+    }
+
+    pub fn stop_pixel_map(&self, id: u32) {
+        self.map_runtimes.lock().unwrap().retain(|r| r.map_id != id);
+        self.state.lock().unwrap().playbacks.remove(&pixel_map_layer_key(id));
+    }
+
+    pub fn set_pixel_map_intensity(&self, id: u32, percent: f32) -> Result<(), String> {
+        let mut runtimes = self.map_runtimes.lock().unwrap();
+        let runtime = runtimes.iter_mut().find(|r| r.map_id == id).ok_or_else(|| format!("Pixel map {id} isn't running"))?;
+        runtime.intensity = percent.clamp(0.0, 100.0) / 100.0;
+        Ok(())
+    }
+
+    pub fn running_pixel_maps(&self) -> Vec<PixelMapStatus> {
+        self.map_runtimes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| PixelMapStatus { map_id: r.map_id, intensity: r.intensity })
+            .collect()
+    }
+
+    /// The map's current frame as `width × height × 3` RGB bytes: the
+    /// running map's last output, or (for a stopped map, e.g. a virtual
+    /// matrix in the editor) a frame rendered now at the current clock.
+    pub fn pixel_map_preview(&self, id: u32) -> Result<Vec<u8>, String> {
+        let frame = {
+            let runtimes = self.map_runtimes.lock().unwrap();
+            runtimes.iter().find(|r| r.map_id == id).map(|r| r.last_frame.clone())
+        };
+        let frame = match frame {
+            Some(frame) if !frame.is_empty() => frame,
+            _ => {
+                let map = self.pixel_maps.lock().unwrap().get(id).cloned().ok_or_else(|| format!("No pixel map {id}"))?;
+                let clock = {
+                    let tempo = self.tempo.lock().unwrap();
+                    EffectClock { seconds: tempo.seconds(), beats: tempo.beat() }
+                };
+                PixelMapRuntime::new(id, 0).render_frame(&map, clock)
+            }
+        };
+        Ok(frame.iter().flat_map(|c| c.map(|v| v.round().clamp(0.0, 255.0) as u8)).collect())
     }
 
     // --- Playbacks (Phase 6) ---
@@ -942,6 +1252,75 @@ impl EngineManager {
     }
 }
 
+fn pixel_map_layer_key(id: u32) -> String {
+    format!("pixelmap-{id}")
+}
+
+/// The programmer's effects restricted to `fixture_numbers` (in each
+/// effect's own fixture order) — what `record_cue` captures.
+fn programmer_effects_for(programmer: &Layer, fixture_numbers: &HashSet<u32>) -> Vec<EffectInstance> {
+    programmer
+        .effects
+        .iter()
+        .filter_map(|e| {
+            let fixtures: Vec<u32> = e.instance.fixtures.iter().copied().filter(|f| fixture_numbers.contains(f)).collect();
+            (!fixtures.is_empty()).then(|| EffectInstance { fixtures, ..e.instance.clone() })
+        })
+        .collect()
+}
+
+/// Renders every layer's effects into its `fx_values` for this tick.
+fn render_layer_effects(state: &mut EngineState, patch: &[PatchIndexEntry], presets: &PresetStore, clock: EffectClock) {
+    let any_effects = state.programmer.has_effects() || state.playbacks.values().any(|(_, l)| l.has_effects());
+    if !any_effects {
+        state.programmer.fx_values.clear();
+        for (_, layer) in state.playbacks.values_mut() {
+            layer.fx_values.clear();
+        }
+        return;
+    }
+
+    // A relative effect swings around the underlying value. For a channel
+    // its own layer sets, that's the layer's value; otherwise it's what the
+    // rest of the show (without any effects) is outputting there.
+    let universes: HashSet<u32> = patch.iter().map(|e| e.universe).collect();
+    let static_frames: HashMap<u32, [u8; UNIVERSE_SIZE]> =
+        universes.into_iter().map(|u| (u, merge_universe_static(state, u))).collect();
+    let index: HashMap<u32, &PatchIndexEntry> = patch.iter().map(|e| (e.fixture_number, e)).collect();
+
+    let layers = std::iter::once(&mut state.programmer).chain(state.playbacks.values_mut().map(|(_, l)| l));
+    for layer in layers {
+        let Layer { values, effects, fx_values, .. } = layer;
+        fx_values.clear();
+        if effects.is_empty() {
+            continue;
+        }
+        // Preset-linked effects play the preset's current definition.
+        let defs: Vec<EffectDef> = effects
+            .iter()
+            .map(|e| {
+                e.instance
+                    .preset_id
+                    .and_then(|id| presets.get(id))
+                    .and_then(|p| p.effect.clone())
+                    .unwrap_or_else(|| e.instance.def.clone())
+            })
+            .collect();
+        let resolved: Vec<ResolvedEffect> = effects
+            .iter()
+            .zip(&defs)
+            .map(|(e, def)| ResolvedEffect { def, fixtures: &e.instance.fixtures, scale: e.scale })
+            .collect();
+        let base = |key: ChannelKey| {
+            values
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| static_frames.get(&key.0).map_or(0.0, |frame| frame[(key.1 - 1) as usize] as f32))
+        };
+        effects::render(&resolved, &index, clock, &base, fx_values);
+    }
+}
+
 impl Default for EngineManager {
     fn default() -> Self {
         Self::new()
@@ -966,6 +1345,7 @@ mod tests {
             universe,
             intensity_channel: Some(intensity_channel),
             attribute_channels: [("dimmer".to_string(), intensity_channel)].into_iter().collect(),
+            cells: Vec::new(),
         }
     }
 
@@ -1078,5 +1458,146 @@ mod tests {
         engine.set_current_cuelist(Some(cuelist_id));
         let result = engine.execute_command("NEXT");
         assert!(!result.ok);
+    }
+
+    // --- Phase 7: effects, tempo, pixel maps through the real tick ---
+
+    /// The user's rig: 4 six-colour pars (dimmer + red at the start of each
+    /// 10-channel block, addresses 1/11/21/31).
+    fn four_pars() -> Vec<PatchIndexEntry> {
+        (0..4u16)
+            .map(|i| {
+                let base = 1 + i * 10;
+                PatchIndexEntry {
+                    fixture_number: i as u32 + 1,
+                    universe: 1,
+                    intensity_channel: Some(base),
+                    attribute_channels: [("dimmer", base), ("red", base + 1), ("green", base + 2), ("blue", base + 3)]
+                        .into_iter()
+                        .map(|(a, c)| (a.to_string(), c))
+                        .collect(),
+                    cells: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    fn reds(engine: &EngineManager) -> Vec<u8> {
+        let frame = engine.get_universe_data(1);
+        [2usize, 12, 22, 32].iter().map(|&ch| frame[ch - 1]).collect()
+    }
+
+    #[test]
+    fn a_bpm_synced_colour_fan_wave_runs_across_the_four_pars() {
+        use crate::engine::effects::{EffectDef, Waveform};
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        engine.set_bpm(120.0); // 500ms per beat
+        let mut wave = EffectDef::new_attribute("red", Waveform::Sine);
+        wave.spread = 360.0;
+        engine.start_effect(wave, vec![1, 2, 3, 4], None);
+
+        engine.step(125.0); // a quarter beat in
+        let first = reds(&engine);
+        // Fanned: no two pars are at the same point in the wave.
+        let mut distinct = first.clone();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 4, "{first:?}");
+
+        // A quarter cycle later (one cycle per beat), each par has taken the
+        // previous par's value: the wave travels along the selection.
+        engine.step(125.0);
+        let second = reds(&engine);
+        assert_eq!(second[1], first[0], "{first:?} -> {second:?}");
+        assert_eq!(second[2], first[1], "{first:?} -> {second:?}");
+
+        // Doubling the tempo doubles the speed: a quarter cycle now takes
+        // half the time.
+        engine.set_bpm(240.0);
+        engine.step(62.5);
+        assert_eq!(reds(&engine)[1], second[0]);
+    }
+
+    #[test]
+    fn clear_and_release_stop_programmer_effects() {
+        use crate::engine::effects::{EffectDef, Waveform};
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        engine.start_effect(EffectDef::new_attribute("red", Waveform::Square), vec![1], None);
+        engine.step(10.0);
+        assert_eq!(reds(&engine)[0], 255);
+
+        engine.execute_command("CLEAR"); // nothing selected: clears values + effects
+        engine.step(10.0);
+        assert_eq!(reds(&engine)[0], 0);
+        assert!(engine.list_effects().is_empty());
+    }
+
+    #[test]
+    fn a_new_effect_on_the_same_attribute_replaces_the_old_one_for_those_fixtures() {
+        use crate::engine::effects::{EffectDef, Waveform};
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        engine.start_effect(EffectDef::new_attribute("red", Waveform::Sine), vec![1, 2], None);
+        engine.start_effect(EffectDef::new_attribute("red", Waveform::Square), vec![2, 3], None);
+        engine.start_effect(EffectDef::new_attribute("dimmer", Waveform::Sine), vec![1], None);
+        let effects = engine.list_effects();
+        assert_eq!(effects.len(), 3);
+        assert_eq!(effects[0].fixtures, vec![1]); // gave up fixture 2
+        assert_eq!(effects[1].fixtures, vec![2, 3]);
+    }
+
+    #[test]
+    fn a_recorded_effect_plays_back_from_its_cue_and_follows_its_preset() {
+        use crate::engine::effects::{EffectDef, EffectMode, Waveform};
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        let mut on = EffectDef::new_attribute("red", Waveform::Square);
+        on.mode = EffectMode::Absolute;
+        let preset = engine.record_effect_preset("Strobe red".to_string(), on.clone());
+        let fixtures: HashSet<u32> = [1].into();
+        engine.apply_preset(preset, &fixtures).unwrap();
+
+        let list = engine.create_cuelist("FX".to_string(), CuelistKind::Standard, true);
+        engine.record_cue(list, 1.0, "Cue 1".to_string(), &fixtures, 1.0, 1.0).unwrap();
+        engine.execute_command("CLEAR");
+        let pb = engine.create_playback(list).unwrap();
+        engine.playback_go(pb).unwrap();
+        engine.step(10.0); // square: high for the first half of the beat
+        assert_eq!(reds(&engine)[0], 255);
+
+        // Turn the preset's square into a constant-low one: the cue follows.
+        let mut off = on;
+        off.size = 0.0;
+        off.center = 0.0;
+        engine.update_effect_preset(preset, off).unwrap();
+        engine.step(10.0);
+        assert_eq!(reds(&engine)[0], 0);
+    }
+
+    #[test]
+    fn a_running_pixel_map_drives_fixtures_and_its_master_scales_their_dimmers() {
+        let engine = EngineManager::new();
+        engine.set_patch_index(four_pars());
+        engine.set_htp_channels(1, vec![1, 11, 21, 31]);
+        let id = engine.create_pixel_map("Row".to_string(), 4, 1);
+        let mut map = engine.list_pixel_maps()[0].clone();
+        map.cells = (0..4).map(|x| pixelmap::PixelCell { x, y: 0, fixture_number: x + 1, cell: 0 }).collect();
+        engine.update_pixel_map(map).unwrap();
+
+        engine.start_pixel_map(id).unwrap();
+        engine.step(10.0);
+        let frame = engine.get_universe_data(1);
+        assert_eq!(frame[0], 255); // dimmer up so the colour shows
+        assert!(reds(&engine).iter().any(|&r| r > 0)); // a rainbow has some red
+
+        engine.set_pixel_map_intensity(id, 50.0).unwrap();
+        engine.step(10.0);
+        assert_eq!(engine.get_universe_data(1)[0], 128);
+        assert_eq!(engine.pixel_map_preview(id).unwrap().len(), 4 * 3);
+
+        engine.stop_pixel_map(id);
+        engine.step(10.0);
+        assert_eq!(engine.get_universe_data(1)[0], 0);
     }
 }

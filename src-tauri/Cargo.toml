@@ -31,6 +31,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ts-rs = "9"
 socket2 = { version = "0.5", features = ["all"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

@@ -3,6 +3,7 @@ import type { CuelistDto } from "./CuelistDto";
 import type { Group } from "./Group";
 import type { LegacyAsset } from "./LegacyAsset";
 import type { PatchedFixture } from "./PatchedFixture";
+import type { PixelMap } from "./PixelMap";
 import type { Preset } from "./Preset";
 import type { ShowSettings } from "./ShowSettings";
 import type { UniverseConfig } from "./UniverseConfig";
@@ -25,4 +26,12 @@ legacyAssets: Array<LegacyAsset>,
  * (`engine_export_show_data`) and pushes it back on load
  * (`engine_load_show_data`).
  */
-groups: Array<Group>, presets: Array<Preset>, cuelists: Array<CuelistDto>, };
+groups: Array<Group>, presets: Array<Preset>, cuelists: Array<CuelistDto>, 
+/**
+ * The global tempo (v5+).
+ */
+bpm: number, 
+/**
+ * Pixel maps (v5+), also engine-owned.
+ */
+pixelMaps: Array<PixelMap>, };

@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::effects::EffectDef;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
@@ -41,6 +43,9 @@ pub struct Preset {
     pub values: HashMap<String, f32>,
     /// For a Colour preset's grid swatch; not meaningful for other families.
     pub color: Option<String>,
+    /// An Effect preset's effect (Phase 7). `values` is empty for those.
+    #[serde(default)]
+    pub effect: Option<EffectDef>,
 }
 
 #[derive(Default)]
@@ -57,8 +62,28 @@ impl PresetStore {
     pub fn record(&mut self, family: PresetFamily, name: String, values: HashMap<String, f32>, color: Option<String>) -> u32 {
         self.next_id += 1;
         let id = self.next_id;
-        self.presets.insert(id, Preset { id, family, name, values, color });
+        self.presets.insert(id, Preset { id, family, name, values, color, effect: None });
         id
+    }
+
+    /// Records an Effect preset holding `effect`.
+    pub fn record_effect(&mut self, name: String, effect: EffectDef) -> u32 {
+        self.next_id += 1;
+        let id = self.next_id;
+        let preset = Preset { id, family: PresetFamily::Effect, name, values: HashMap::new(), color: None, effect: Some(effect) };
+        self.presets.insert(id, preset);
+        id
+    }
+
+    /// Replaces an Effect preset's effect in place (same id, so every cue
+    /// playing it picks up the change on its next tick).
+    pub fn update_effect(&mut self, id: u32, effect: EffectDef) -> Result<(), String> {
+        let preset = self.presets.get_mut(&id).ok_or_else(|| format!("No preset {id}"))?;
+        if preset.family != PresetFamily::Effect {
+            return Err(format!("Preset {id} isn't an Effect preset"));
+        }
+        preset.effect = Some(effect);
+        Ok(())
     }
 
     /// Re-records an existing preset's values in place (same id, so every
