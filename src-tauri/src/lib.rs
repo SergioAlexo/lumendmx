@@ -71,6 +71,10 @@ pub fn run() {
             engine::commands::engine_record_cue,
             engine::commands::engine_delete_cue,
             engine::commands::engine_set_cue_preset_reference,
+            engine::commands::engine_unlink_cue_preset,
+            engine::commands::engine_export_show_data,
+            engine::commands::engine_load_show_data,
+            engine::commands::engine_show_data_revision,
             engine::commands::engine_set_chase_tempo,
             engine::commands::engine_create_playback,
             engine::commands::engine_delete_playback,
@@ -86,6 +90,7 @@ pub fn run() {
             showfile::commands::showfile_save,
             showfile::commands::showfile_autosave,
             showfile::commands::showfile_recent,
+            showfile::commands::showfile_restore_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

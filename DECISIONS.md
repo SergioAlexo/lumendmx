@@ -292,3 +292,26 @@ One line (or a short paragraph) per call made without stopping to ask, per
   models (`LightAsset` vs. `Cuelist`/`Cue`) with different lifecycles, and
   conflating them in one screen would have been more confusing than two
   clearly-named tabs.
+
+## Phase 6 follow-up — Show persistence
+
+- **Groups, presets and cuelists are saved in the show file (schema v4)
+  through the engine, not a frontend store.** The engine owns this data at
+  runtime, so Save calls `engine_export_show_data` and Open/New call
+  `engine_load_show_data`. A second copy in a Zustand store would just be a
+  second source of truth to keep in sync. Ids are kept on load so cue→preset
+  references stay valid, and new ids continue after the highest loaded one.
+- **Cuelists are stored in the flattened `CuelistDto` shape**, the same one
+  the UI already uses, because `Cue.values` is keyed by `(universe, channel)`
+  tuples, which can't be JSON object keys.
+- **Dirty tracking for engine data uses a polled revision counter**
+  (`engine_show_data_revision`), not change events. Every engine edit bumps
+  it; the frontend compares it to the revision at the last save/load. It's
+  one cheap integer read and doesn't need a new event channel.
+- **Playbacks aren't saved.** They're runtime state (which cue is live,
+  fader positions), and loading a show drops running cue playbacks since
+  they point at the outgoing cuelists.
+- **On launch, the app restores whichever is newer: the newest autosave or
+  the last opened/saved show** (`showfile_restore_session`). An autosave is
+  reattached to its show's path (if it has one) and marked dirty, so recovered
+  work is never silently treated as saved.

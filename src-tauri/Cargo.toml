@@ -30,7 +30,7 @@ rfd = "0.15"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ts-rs = "9"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 tempfile = "3"

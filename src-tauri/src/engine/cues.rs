@@ -180,6 +180,13 @@ impl CueStore {
     pub fn delete(&mut self, id: u32) {
         self.cuelists.remove(&id);
     }
+
+    /// Replaces every cuelist (loading a show). New ids continue after the
+    /// highest loaded one.
+    pub fn replace_all(&mut self, cuelists: Vec<Cuelist>) {
+        self.next_id = cuelists.iter().map(|c| c.id).max().unwrap_or(0);
+        self.cuelists = cuelists.into_iter().map(|c| (c.id, c)).collect();
+    }
 }
 
 #[cfg(test)]

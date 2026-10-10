@@ -5,10 +5,10 @@
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct Group {
@@ -50,6 +50,13 @@ impl GroupStore {
 
     pub fn get(&self, id: u32) -> Option<&Group> {
         self.groups.get(&id)
+    }
+
+    /// Replaces every group (loading a show). New ids continue after the
+    /// highest loaded one so they never collide with a loaded group.
+    pub fn replace_all(&mut self, groups: Vec<Group>) {
+        self.next_id = groups.iter().map(|g| g.id).max().unwrap_or(0);
+        self.groups = groups.into_iter().map(|g| (g.id, g)).collect();
     }
 
     pub fn list(&self) -> Vec<Group> {

@@ -1,9 +1,9 @@
 //! The `.lumen` show-file schema.
 //!
 //! Only fields backed by real functionality today are modelled here
-//! (universes, patch, workspaces, settings, legacy assets). Groups, presets,
-//! cuelists, effects, pixel maps, timelines and MIDI/OSC mappings are added to
-//! this schema — each with its own `schema_version` bump and migration step —
+//! (universes, patch, workspaces, settings, legacy assets, and since v4 the
+//! engine's groups/presets/cuelists). Effects, pixel maps, timelines and
+//! MIDI/OSC mappings are added to this schema — each with its own `schema_version` bump and migration step —
 //! by the phase that actually implements them (see `DECISIONS.md`). Designing
 //! their shape now, before any of that logic exists, would just mean
 //! redesigning it later.
@@ -11,11 +11,14 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::engine::groups::Group;
+use crate::engine::manager::CuelistDto;
+use crate::engine::presets::Preset;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +129,13 @@ pub struct ShowFile {
     /// library. Superseded once Phase 5's preset families and Phase 6's
     /// cuelists exist; kept as plain data until then so nothing is lost.
     pub legacy_assets: Vec<LegacyAsset>,
+    /// Engine-owned show data (v4+). Owned and edited by the Rust engine at
+    /// runtime; the frontend fetches it into the file on save
+    /// (`engine_export_show_data`) and pushes it back on load
+    /// (`engine_load_show_data`).
+    pub groups: Vec<Group>,
+    pub presets: Vec<Preset>,
+    pub cuelists: Vec<CuelistDto>,
 }
 
 impl ShowFile {
@@ -146,6 +156,9 @@ impl ShowFile {
             workspaces: default_workspaces(),
             settings: ShowSettings::default(),
             legacy_assets: Vec::new(),
+            groups: Vec::new(),
+            presets: Vec::new(),
+            cuelists: Vec::new(),
         }
     }
 }
@@ -170,4 +183,18 @@ pub struct RecentShowEntry {
     pub path: String,
     pub name: String,
     pub opened_at: String,
+}
+
+/// What `showfile_restore_session` brings back on launch.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct RestoredSession {
+    pub show: ShowFile,
+    /// The show's file on disk, if it has one (a recovered autosave of a
+    /// never-saved show has none).
+    pub path: Option<String>,
+    /// True when `show` came from an autosave holding changes newer than the
+    /// last open/save, i.e. it has unsaved work.
+    pub recovered: bool,
 }

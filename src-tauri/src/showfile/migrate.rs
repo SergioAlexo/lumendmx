@@ -40,6 +40,10 @@ pub fn migrate(raw: Value) -> Result<ShowFile, String> {
         value = upgrade_2_to_3(value);
         current_version = 3;
     }
+    if current_version == 3 {
+        value = upgrade_3_to_4(value);
+        current_version = 4;
+    }
 
     debug_assert_eq!(current_version, CURRENT_SCHEMA_VERSION);
 
@@ -125,6 +129,21 @@ fn upgrade_2_to_3(value: Value) -> Value {
     }
 
     obj.insert("schemaVersion".to_string(), Value::from(3));
+    Value::Object(obj)
+}
+
+/// v3 -> v4: groups, presets and cuelists (Phases 5/6) are saved in the
+/// show file. Before v4 they only lived in the engine's memory, so an older
+/// file simply has none.
+fn upgrade_3_to_4(value: Value) -> Value {
+    let mut obj = match value {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    };
+    for key in ["groups", "presets", "cuelists"] {
+        obj.entry(key).or_insert(Value::Array(Vec::new()));
+    }
+    obj.insert("schemaVersion".to_string(), Value::from(4));
     Value::Object(obj)
 }
 
@@ -236,6 +255,64 @@ mod tests {
         assert!(!migrated.patch[0].invert_tilt);
         assert!(!migrated.patch[0].swap_pan_tilt);
         assert_eq!(migrated.patch[1].fixture_number, 2);
+    }
+
+    #[test]
+    fn v3_gains_empty_groups_presets_and_cuelists() {
+        let mut v3 = serde_json::to_value(ShowFile::new_default("Old Show")).unwrap();
+        let obj = v3.as_object_mut().unwrap();
+        for key in ["groups", "presets", "cuelists"] {
+            obj.remove(key);
+        }
+        obj.insert("schemaVersion".to_string(), Value::from(3));
+
+        let migrated = migrate(v3).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(migrated.groups.is_empty());
+        assert!(migrated.presets.is_empty());
+        assert!(migrated.cuelists.is_empty());
+    }
+
+    #[test]
+    fn engine_data_survives_a_save_and_load() {
+        use crate::engine::cues::CuelistKind;
+        use crate::engine::manager::{EngineManager, PatchIndexEntry};
+        use crate::engine::presets::PresetFamily;
+        use std::collections::HashSet;
+
+        let engine = EngineManager::new();
+        engine.set_patch_index(vec![PatchIndexEntry {
+            fixture_number: 1,
+            universe: 1,
+            intensity_channel: Some(1),
+            attribute_channels: [("dimmer".to_string(), 1)].into_iter().collect(),
+        }]);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.record_group("Front".to_string(), vec![1]);
+        engine.execute_command("1 @ 50");
+        let preset_id = engine.record_preset(PresetFamily::Intensity, "Half".to_string(), &fixtures, None);
+        let cuelist_id = engine.create_cuelist("Main".to_string(), CuelistKind::Standard, true);
+        engine.record_cue(cuelist_id, 1.0, "Look".to_string(), &fixtures, 500.0, 500.0).unwrap();
+        engine.set_cue_preset_reference(cuelist_id, 1.0, 1, "dimmer".to_string(), preset_id).unwrap();
+        let saved = engine.export_show_data();
+
+        // Through the file format and back, as Save then Open would.
+        let mut show = ShowFile::new_default("Show");
+        show.groups = saved.groups.clone();
+        show.presets = saved.presets.clone();
+        show.cuelists = saved.cuelists.clone();
+        let reopened = migrate(serde_json::to_value(&show).unwrap()).unwrap();
+
+        let fresh = EngineManager::new();
+        fresh.load_show_data(crate::engine::manager::ShowEngineData {
+            groups: reopened.groups,
+            presets: reopened.presets,
+            cuelists: reopened.cuelists,
+        });
+        assert_eq!(fresh.export_show_data(), saved);
+
+        // New ids continue after the loaded ones instead of colliding.
+        assert!(fresh.record_group("Back".to_string(), vec![1]) > saved.groups[0].id);
     }
 
     #[test]
