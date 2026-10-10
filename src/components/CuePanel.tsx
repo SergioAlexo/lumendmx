@@ -6,6 +6,7 @@ import { usePatchStore } from "../store/usePatchStore";
 import { useAllFixtures } from "../store/useFixtureLibraryStore";
 import type { ChannelType } from "../lib/fixtures/types";
 import { Button } from "./ui/button";
+import { describeEffect } from "./EffectsPanel";
 import { Input, Select } from "./ui/input";
 import { cn } from "../lib/utils";
 
@@ -294,7 +295,17 @@ function CueSheet({
                 <Fragment key={cue.number}>
                   <tr className="border-b border-border/50">
                     <td className="px-2 py-1">{cue.number}</td>
-                    <td className="px-2 py-1">{cue.name}</td>
+                    <td className="px-2 py-1">
+                      {cue.name}
+                      {cue.effects.length > 0 && (
+                        <span
+                          className="ml-1.5 rounded bg-primary/15 px-1 text-[10px] text-primary"
+                          title={cue.effects.map((e) => describeEffect(e.def)).join("\n")}
+                        >
+                          FX {cue.effects.length}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-2 py-1">{cue.fadeInMs}ms</td>
                     <td className="px-2 py-1">{cue.fadeOutMs}ms</td>
                     <td className="px-2 py-1">
