@@ -4,6 +4,7 @@ import type { Group } from "./Group";
 import type { LegacyAsset } from "./LegacyAsset";
 import type { PatchedFixture } from "./PatchedFixture";
 import type { PixelMap } from "./PixelMap";
+import type { PlaybackSlot } from "./PlaybackSlot";
 import type { Preset } from "./Preset";
 import type { ShowSettings } from "./ShowSettings";
 import type { UniverseConfig } from "./UniverseConfig";
@@ -34,4 +35,13 @@ bpm: number,
 /**
  * Pixel maps (v5+), also engine-owned.
  */
-pixelMaps: Array<PixelMap>, };
+pixelMaps: Array<PixelMap>, 
+/**
+ * Which cuelist sits on which playback page and column, with its fader
+ * (v6+), also engine-owned.
+ */
+playbacks: Array<PlaybackSlot>, 
+/**
+ * Release a page's playbacks when the playback bar leaves that page (v6+).
+ */
+releaseOnPageChange: boolean, };

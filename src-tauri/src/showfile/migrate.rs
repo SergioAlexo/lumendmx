@@ -48,6 +48,10 @@ pub fn migrate(raw: Value) -> Result<ShowFile, String> {
         value = upgrade_4_to_5(value);
         current_version = 5;
     }
+    if current_version == 5 {
+        value = upgrade_5_to_6(value);
+        current_version = 6;
+    }
 
     debug_assert_eq!(current_version, CURRENT_SCHEMA_VERSION);
 
@@ -162,6 +166,21 @@ fn upgrade_4_to_5(value: Value) -> Value {
     obj.entry("bpm").or_insert(Value::from(crate::engine::tempo::DEFAULT_BPM));
     obj.entry("pixelMaps").or_insert(Value::Array(Vec::new()));
     obj.insert("schemaVersion".to_string(), Value::from(5));
+    Value::Object(obj)
+}
+
+/// v5 -> v6: playback bar assignments (which cuelist sits on which page and
+/// column) and the "release on page change" option. Cue timing details
+/// (delay out, per-attribute timing, follow/wait, links, loop counts) are new
+/// optional fields inside existing cues and default to "off".
+fn upgrade_5_to_6(value: Value) -> Value {
+    let mut obj = match value {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    };
+    obj.entry("playbacks").or_insert(Value::Array(Vec::new()));
+    obj.entry("releaseOnPageChange").or_insert(Value::Bool(false));
+    obj.insert("schemaVersion".to_string(), Value::from(6));
     Value::Object(obj)
 }
 
@@ -294,6 +313,34 @@ mod tests {
     }
 
     #[test]
+    fn v5_gains_no_playbacks_and_keeps_old_cues_working() {
+        let mut v5 = serde_json::to_value(ShowFile::new_default("Old Show")).unwrap();
+        let obj = v5.as_object_mut().unwrap();
+        obj.remove("playbacks");
+        obj.remove("releaseOnPageChange");
+        // A v5 cue has none of the new timing fields.
+        obj.insert(
+            "cuelists".to_string(),
+            serde_json::json!([{
+                "id": 1, "name": "Main", "kind": {"kind": "standard"}, "tracking": true,
+                "cues": [{
+                    "number": 1.0, "name": "A", "values": [],
+                    "fadeInMs": 500.0, "fadeOutMs": 500.0, "delayInMs": 0.0, "mark": false, "effects": []
+                }]
+            }]),
+        );
+        obj.insert("schemaVersion".to_string(), Value::from(5));
+
+        let migrated = migrate(v5).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(migrated.playbacks.is_empty());
+        assert!(!migrated.release_on_page_change);
+        let cue = &migrated.cuelists[0].cues[0];
+        assert_eq!(cue.delay_out_ms, 0.0);
+        assert_eq!((cue.follow_ms, cue.wait_ms, cue.link_to, cue.loop_count), (None, None, None, None));
+    }
+
+    #[test]
     fn engine_data_survives_a_save_and_load() {
         use crate::engine::cues::CuelistKind;
         use crate::engine::effects::{EffectDef, Waveform};
@@ -332,6 +379,8 @@ mod tests {
         show.cuelists = saved.cuelists.clone();
         show.bpm = saved.bpm;
         show.pixel_maps = saved.pixel_maps.clone();
+        show.playbacks = saved.playbacks.clone();
+        show.release_on_page_change = saved.release_on_page_change;
         let reopened = migrate(serde_json::to_value(&show).unwrap()).unwrap();
 
         let fresh = EngineManager::new();
@@ -341,6 +390,8 @@ mod tests {
             cuelists: reopened.cuelists,
             bpm: reopened.bpm,
             pixel_maps: reopened.pixel_maps,
+            playbacks: reopened.playbacks,
+            release_on_page_change: reopened.release_on_page_change,
         });
         assert_eq!(fresh.export_show_data(), saved);
 

@@ -2,7 +2,7 @@
 //!
 //! Only fields backed by real functionality today are modelled here
 //! (universes, patch, workspaces, settings, legacy assets, since v4 the
-//! engine's groups/presets/cuelists, and since v5 its tempo and pixel maps;
+//! engine's groups/presets/cuelists, since v5 its tempo and pixel maps, and since v6 its playback pages;
 //! effects live inside cues and Effect presets). Timelines and MIDI/OSC
 //! mappings are added to this schema — each with its own `schema_version` bump and migration step —
 //! by the phase that actually implements them (see `DECISIONS.md`). Designing
@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::engine::groups::Group;
-use crate::engine::manager::CuelistDto;
+use crate::engine::manager::{CuelistDto, PlaybackSlot};
 use crate::engine::pixelmap::PixelMap;
 use crate::engine::presets::Preset;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +142,11 @@ pub struct ShowFile {
     pub bpm: f32,
     /// Pixel maps (v5+), also engine-owned.
     pub pixel_maps: Vec<PixelMap>,
+    /// Which cuelist sits on which playback page and column, with its fader
+    /// (v6+), also engine-owned.
+    pub playbacks: Vec<PlaybackSlot>,
+    /// Release a page's playbacks when the playback bar leaves that page (v6+).
+    pub release_on_page_change: bool,
 }
 
 impl ShowFile {
@@ -167,6 +172,8 @@ impl ShowFile {
             cuelists: Vec::new(),
             bpm: crate::engine::tempo::DEFAULT_BPM,
             pixel_maps: Vec::new(),
+            playbacks: Vec::new(),
+            release_on_page_change: false,
         }
     }
 }

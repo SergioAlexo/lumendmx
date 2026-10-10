@@ -104,6 +104,8 @@ async function applyShow(show: ShowFile): Promise<void> {
     cuelists: show.cuelists,
     bpm: show.bpm,
     pixelMaps: show.pixelMaps,
+    playbacks: show.playbacks,
+    releaseOnPageChange: show.releaseOnPageChange,
   });
   savedEngineRevision = await engineApi.showDataRevision();
 }
