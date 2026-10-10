@@ -6,4 +6,8 @@ export type CueDto = { number: number, name: string, values: Array<CueValueEntry
 /**
  * Phase 7; absent in files saved before effects existed.
  */
-effects: Array<EffectInstance>, };
+effects: Array<EffectInstance>, 
+/**
+ * Phase 8 (schema v6): when a Timecode cuelist fires this cue.
+ */
+timecodeMs: number | null, };

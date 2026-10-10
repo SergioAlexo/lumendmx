@@ -304,6 +304,18 @@ pub fn engine_playback_set_fader_mode(engine: State<EngineManager>, id: u32, mod
     engine.playback_set_fader_mode(id, mode)
 }
 
+// --- Timecode cues (Phase 8) ---
+
+#[tauri::command]
+pub fn engine_set_cue_timecode(
+    engine: State<EngineManager>,
+    cuelist_id: u32,
+    cue_number: f64,
+    ms: Option<f64>,
+) -> Result<(), String> {
+    engine.set_cue_timecode(cuelist_id, cue_number, ms)
+}
+
 // --- Tempo (Phase 7) ---
 
 #[tauri::command]

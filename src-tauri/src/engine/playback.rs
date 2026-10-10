@@ -50,6 +50,12 @@ pub struct PlaybackRuntime {
     /// beat interval) generally isn't the same as its crossfade time.
     step_elapsed_ms: f64,
     chase_forward: bool,
+    /// Phase 8: an audio-reactive flash level (0.0-1.0) that lifts the
+    /// intensity scale like a held Flash button. Set by the engine tick.
+    pub audio_flash: f32,
+    /// Phase 8: when set, a Chase runs at this BPM (the show tempo) instead
+    /// of its own. Set by the engine tick.
+    pub tempo_bpm: Option<f32>,
 }
 
 impl PlaybackRuntime {
@@ -70,6 +76,8 @@ impl PlaybackRuntime {
             elapsed_ms: 0.0,
             step_elapsed_ms: 0.0,
             chase_forward: true,
+            audio_flash: 0.0,
+            tempo_bpm: None,
         }
     }
 
@@ -102,7 +110,7 @@ impl PlaybackRuntime {
     /// What this playback's layer's HTP channels are multiplied by.
     pub fn intensity_scale(&self) -> f32 {
         match self.fader_mode {
-            FaderMode::IntensityMaster => self.fader,
+            FaderMode::IntensityMaster => self.fader.max(self.audio_flash),
             FaderMode::Crossfade => 1.0,
         }
     }
@@ -173,6 +181,7 @@ impl PlaybackRuntime {
         self.step_elapsed_ms += dt_ms;
 
         if let CuelistKind::Chase { bpm, direction } = cuelist.kind {
+            let bpm = self.tempo_bpm.unwrap_or(bpm);
             if bpm <= 0.0 || cuelist.cues.is_empty() {
                 return;
             }
@@ -355,6 +364,35 @@ mod tests {
         }
         // 0 -> 1 -> 2 -> 1 -> 0 -> 1 : bounces at both ends instead of wrapping.
         assert_eq!(indices, vec![0, 1, 2, 1, 0, 1]);
+    }
+
+    #[test]
+    fn chase_follows_the_show_tempo_when_one_is_given() {
+        let mut list = Cuelist::new(
+            1,
+            "Chase".to_string(),
+            CuelistKind::Chase { bpm: 60.0, direction: ChaseDirection::Forward },
+            true,
+        );
+        list.upsert_cue(cue_with(1.0, 1, 100.0, 1.0));
+        list.upsert_cue(cue_with(2.0, 1, 200.0, 1.0));
+        let presets = PresetStore::new();
+
+        let mut pb = PlaybackRuntime::new(1, 1, 10);
+        pb.tempo_bpm = Some(120.0); // 500ms/beat, not the chase's own 1000ms
+        pb.tick(1.0, &list, &presets);
+        pb.tick(500.0, &list, &presets);
+        assert_eq!(pb.current_index, Some(1));
+    }
+
+    #[test]
+    fn audio_flash_lifts_the_intensity_scale() {
+        let mut pb = PlaybackRuntime::new(1, 1, 10);
+        pb.fader = 0.2;
+        pb.audio_flash = 0.7;
+        assert_eq!(pb.intensity_scale(), 0.7);
+        pb.audio_flash = 0.0;
+        assert_eq!(pb.intensity_scale(), 0.2);
     }
 
     #[test]
