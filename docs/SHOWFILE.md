@@ -46,7 +46,7 @@ same way.
 
 ## Versioning and migration
 
-`schemaVersion` (currently `5`) is bumped whenever `ShowFile`'s on-disk shape
+`schemaVersion` (currently `6`) is bumped whenever `ShowFile`'s on-disk shape
 changes. `migrate::migrate()` takes the raw parsed JSON, reads `schemaVersion`
 (treating a missing field as version `0`), and applies upgrade steps one
 version at a time until it reaches the current version, then deserializes into
@@ -102,6 +102,16 @@ Playbacks are runtime state and aren't saved.
   aren't saved, like the rest of the programmer.
 - Running pixel maps and programmer effects are runtime state and aren't
   saved.
+
+## Timecode cues (v6+)
+
+- `cuelists[].cues[].timecodeMs`: when a Timecode cuelist fires the cue, in
+  milliseconds on the timecode clock. Optional (`null`/absent = never fires
+  from timecode); v5 files load without it.
+- The timing source settings (tempo source, audio/MIDI devices, timecode
+  source) and audio-reactive triggers are runtime/machine state and aren't
+  saved: a show moves between machines, device ids and runtime playback ids
+  don't.
 
 ## Restoring the last session
 

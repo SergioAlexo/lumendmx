@@ -20,7 +20,7 @@ use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
