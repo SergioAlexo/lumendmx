@@ -38,6 +38,12 @@ export function getUniverseData(universe: number): Promise<number[]> {
   return invoke("engine_get_universe_data", { universe });
 }
 
+/** Which layer won each of a universe's 512 channels (index 0 = channel 1):
+ * 0 default, 1 programmer, 2 playback, 3 tracked, 4 effect. A polled query. */
+export function getUniverseSources(universe: number): Promise<number[]> {
+  return invoke("engine_get_universe_sources", { universe });
+}
+
 export interface LegacyStepPayload {
   channels: Record<string, number>;
   fadeMs: number;

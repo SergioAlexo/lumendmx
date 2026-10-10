@@ -48,6 +48,7 @@ pub fn run() {
             engine::commands::engine_set_patch_index,
             engine::commands::engine_set_channels,
             engine::commands::engine_get_universe_data,
+            engine::commands::engine_get_universe_sources,
             engine::commands::engine_trigger_asset,
             engine::commands::engine_stop_asset,
             engine::commands::engine_execute_command,

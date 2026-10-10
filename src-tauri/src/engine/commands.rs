@@ -38,6 +38,13 @@ pub fn engine_get_universe_data(engine: State<EngineManager>, universe: u32) -> 
     engine.get_universe_data(universe).to_vec()
 }
 
+/// Which layer won each of a universe's 512 channels: 0 default, 1
+/// programmer, 2 playback, 3 tracked, 4 effect (`merge::ChannelSource`).
+#[tauri::command]
+pub fn engine_get_universe_sources(engine: State<EngineManager>, universe: u32) -> Vec<u8> {
+    engine.get_universe_sources(universe)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyStepDto {
