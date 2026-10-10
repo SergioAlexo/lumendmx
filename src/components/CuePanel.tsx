@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { Trash2, Unlink } from "lucide-react";
 import * as engineApi from "../lib/engine";
-import type { ChaseDirection, CuelistDto, CuelistKind, Preset, PresetFamily } from "../lib/engine";
+import type { ChaseDirection, CueDto, CueSettings, CuelistDto, CuelistKind, Preset, PresetFamily } from "../lib/engine";
 import { usePatchStore } from "../store/usePatchStore";
 import { useAllFixtures } from "../store/useFixtureLibraryStore";
 import type { ChannelType } from "../lib/fixtures/types";
@@ -164,6 +164,78 @@ function ChaseTempo({ cuelist, refresh }: { cuelist: CuelistDto; refresh: () => 
   );
 }
 
+/** The cue sheet columns that are plain milliseconds or cue numbers. */
+function settingsOf(cue: CueDto): CueSettings {
+  return {
+    name: cue.name,
+    fadeInMs: cue.fadeInMs,
+    fadeOutMs: cue.fadeOutMs,
+    delayInMs: cue.delayInMs,
+    delayOutMs: cue.delayOutMs,
+    attrFadeMs: cue.attrFadeMs,
+    attrDelayMs: cue.attrDelayMs,
+    followMs: cue.followMs,
+    waitMs: cue.waitMs,
+    linkTo: cue.linkTo,
+    loopCount: cue.loopCount,
+    mark: cue.mark,
+  };
+}
+
+/** An inline number cell: commits on blur / Enter, Escape reverts. With
+ * `optional`, an empty field means "not set" (null). */
+function NumCell({
+  value,
+  onCommit,
+  optional,
+  title,
+  className,
+}: {
+  value: number | null;
+  onCommit: (value: number | null) => void;
+  optional?: boolean;
+  title?: string;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value === null ? "" : String(value));
+  const commit = () => {
+    if (draft === null) return;
+    const text = draft.trim();
+    setDraft(null);
+    if (text === "") {
+      if (optional && value !== null) onCommit(null);
+      return;
+    }
+    const n = Number(text);
+    if (Number.isFinite(n) && n >= 0 && n !== value) onCommit(n);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      title={title}
+      aria-label={title}
+      placeholder={optional ? "–" : undefined}
+      className={cn(
+        "h-7 w-16 rounded border border-transparent bg-transparent px-1 text-xs tabular-nums hover:border-border focus:border-ring focus:outline-none",
+        className,
+      )}
+      value={shown}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        else if (e.key === "Escape") {
+          setDraft(null);
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 function CueSheet({
   cuelist,
   picked,
@@ -273,14 +345,23 @@ function CueSheet({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-md border border-border">
+      <div className="flex-1 overflow-auto rounded-md border border-border">
         <table className="w-full text-left text-xs">
           <thead className="sticky top-0 bg-card">
             <tr className="border-b border-border text-muted-foreground">
               <th className="px-2 py-1">#</th>
               <th className="px-2 py-1">Name</th>
-              <th className="px-2 py-1">Fade In</th>
-              <th className="px-2 py-1">Fade Out</th>
+              <th className="px-2 py-1" title="Intensity fade in (ms)">Fade In</th>
+              <th className="px-2 py-1" title="Intensity delay in (ms)">Delay In</th>
+              <th className="px-2 py-1" title="Intensity fade out (ms)">Fade Out</th>
+              <th className="px-2 py-1" title="Intensity delay out (ms)">Delay Out</th>
+              <th className="px-2 py-1" title="Fade for colour, position and other non-intensity attributes (ms). Blank follows Fade In.">Attr Fade</th>
+              <th className="px-2 py-1" title="Delay for non-intensity attributes (ms). Blank follows Delay In.">Attr Delay</th>
+              <th className="px-2 py-1" title="Auto-follow: GO the next cue this many ms after this cue starts">Follow</th>
+              <th className="px-2 py-1" title="Auto-follow: GO the next cue this many ms after this cue's fade finishes">Wait</th>
+              <th className="px-2 py-1" title="Link: GO this cue number next instead of the following cue">Link</th>
+              <th className="px-2 py-1" title="Link repeats; blank loops forever">Loop</th>
+              <th className="px-2 py-1" title="Mark (move-in-black): pre-position this cue's colour/position while the previous cue has these fixtures dark">Mark</th>
               <th className="px-2 py-1">Values</th>
               <th className="px-2 py-1" />
             </tr>
@@ -306,8 +387,45 @@ function CueSheet({
                         </span>
                       )}
                     </td>
-                    <td className="px-2 py-1">{cue.fadeInMs}ms</td>
-                    <td className="px-2 py-1">{cue.fadeOutMs}ms</td>
+                    {(
+                      [
+                        ["fadeInMs", "Fade In", false],
+                        ["delayInMs", "Delay In", false],
+                        ["fadeOutMs", "Fade Out", false],
+                        ["delayOutMs", "Delay Out", false],
+                        ["attrFadeMs", "Attr Fade", true],
+                        ["attrDelayMs", "Attr Delay", true],
+                        ["followMs", "Follow", true],
+                        ["waitMs", "Wait", true],
+                        ["linkTo", "Link", true],
+                        ["loopCount", "Loop", true],
+                      ] as const
+                    ).map(([field, label, optional]) => (
+                      <td key={field} className="px-1 py-0.5">
+                        <NumCell
+                          value={cue[field]}
+                          optional={optional}
+                          title={`Cue ${cue.number} ${label}`}
+                          onCommit={(v) =>
+                            void engineApi
+                              .updateCue(cuelist.id, cue.number, { ...settingsOf(cue), [field]: v })
+                              .then(refresh)
+                          }
+                        />
+                      </td>
+                    ))}
+                    <td className="px-2 py-1">
+                      <input
+                        type="checkbox"
+                        aria-label={`Cue ${cue.number} mark`}
+                        checked={cue.mark}
+                        onChange={(e) =>
+                          void engineApi
+                            .updateCue(cuelist.id, cue.number, { ...settingsOf(cue), mark: e.target.checked })
+                            .then(refresh)
+                        }
+                      />
+                    </td>
                     <td className="px-2 py-1">
                       {cue.values.length}
                       {links.length > 0 && (
@@ -332,7 +450,7 @@ function CueSheet({
                   </tr>
                   {expanded && (
                     <tr className="border-b border-border/50 bg-muted/30">
-                      <td colSpan={6} className="px-4 py-2">
+                      <td colSpan={15} className="px-4 py-2">
                         <ul className="flex flex-col gap-0.5">
                           {links.map((l) => {
                             const preset = allPresets.find((p) => p.id === l.presetId);
@@ -372,7 +490,7 @@ function CueSheet({
             })}
             {cuelist.cues.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-2 py-3 text-center text-muted-foreground">
+                <td colSpan={15} className="px-2 py-3 text-center text-muted-foreground">
                   No cues recorded yet.
                 </td>
               </tr>
