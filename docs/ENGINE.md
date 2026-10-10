@@ -112,6 +112,65 @@ actually removes a layer.
   boundary, the same reason `PatchIndexEntry` exists — JSON object keys
   must be strings, and a `(universe, channel)` tuple isn't one.
 
+## Tempo, effects and pixel maps (Phase 7)
+
+- `engine::tempo::Tempo`: one global BPM (typed in or tapped in the top
+  bar) and a beat position that the tick *integrates* (`advance`). Because
+  it isn't recomputed as wall-clock × BPM, changing the BPM changes the
+  speed from that moment on without making synced effects jump. A tap also
+  rounds the beat position to a whole beat, so tapping along puts effects
+  on the downbeat. Phase 8's audio/Link/MIDI-clock sources will just call
+  `set_bpm`.
+- `engine::effects`: pure maths. An `EffectDef` is a waveform on one
+  attribute (sine, square, saw, ramp, random, step, pulse) or a pan/tilt
+  shape (circle, figure-8, ballyhoo, pan saw, tilt saw), with size, rate
+  (`Hz`, or `Beats` per cycle at the global BPM), fan spread, phase, width,
+  direction, and groups/blocks/wings. `Relative` swings around the
+  underlying value; `Absolute` around a fixed centre. An `EffectInstance`
+  applies a def to an *ordered* fixture list; the order is the fan order.
+- **Effects run inside layers.** `Layer` has `effects` (with a crossfade
+  weight each) and `fx_values`, which the tick fills by rendering them and
+  which win over the layer's own `values` for the same channel. So an effect
+  merges HTP/LTP exactly like the layer it lives in, with no separate path.
+  A relative effect's "underlying value" is its own layer's value for that
+  channel, else the effect-free merge of the whole show
+  (`merge_universe_static`).
+- **Programmer effects** (`start_effect` and friends): starting an effect on
+  an attribute takes those fixtures away from any programmer effect already
+  running on the same attribute (it replaces, it doesn't stack). CLEAR's
+  second press and RELEASE stop them along with the values.
+- **Effects in cues:** `RECORD CUE` captures the programmer's effects for
+  the selected fixtures into `Cue.effects` (values are captured from the
+  effect-free merge, so a running effect is recorded as an effect, not as
+  whatever value it happened to have that instant). A playback crossfades
+  the outgoing cue's effects out and the incoming cue's in; an effect both
+  cues share keeps running at full weight. Effects don't track (see
+  DECISIONS.md).
+- **Effect presets** are `Preset`s with `family: Effect` and an `effect`
+  def. Applying one starts the effect linked by `preset_id`, and a linked
+  instance renders the preset's *current* def every tick, so updating the
+  preset changes every cue that uses it.
+- **Fader and effects:** a playback's intensity-master fader is now the
+  layer's `intensity_scale`, applied to HTP channels at merge time (after
+  effects), so a dimmer effect fades with its fader.
+- `engine::pixelmap`: a `PixelMap` is a W×H grid. `PixelMapRuntime::
+  render_frame` produces one RGB per position from a generator (colour
+  chase, rainbow, wave, plasma, text scroll with a built-in 5×7 font, fire,
+  noise, or imported image/GIF frames), independent of what's mapped, so an
+  unmapped "virtual matrix" still renders and previews.
+  `frame_to_channels` writes mapped cells' colours into their fixture or
+  fixture cell (`PatchIndexEntry.cells`): RGB, CMY as the inverse, or
+  brightness for a dimmer-only cell. A fixture with a dimmer is driven to
+  full, and the map's master scales it through the layer's
+  `intensity_scale`. A running map is a playback layer
+  (`"pixelmap-{id}"`). Imported media is decoded in Rust (`image` crate),
+  scaled to the map at import time, and stored base64 in the show file.
+- **The tick** now lives in `TickShared::advance` (tempo → legacy assets →
+  cue playbacks → pixel maps → effects), which the 44Hz thread calls before
+  merging and sending. Tests call it directly through `EngineManager::step`.
+  Lock order is patch index → state → … everywhere, so the tick can't
+  deadlock against `apply_intensity`/`record_cue`.
+
 ## What isn't here yet
 
 - **An attribute encoder bar / full manual programmer UI**: `CommandLine.tsx`
