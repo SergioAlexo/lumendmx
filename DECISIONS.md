@@ -379,3 +379,38 @@ One line (or a short paragraph) per call made without stopping to ask, per
 - **The fire generator steps at `height` steps per cycle** and catches up
   at most four steps per tick, so after a long pause it doesn't spend a
   tick simulating seconds of flames.
+
+## Phase 12 — Visualisation
+
+- **Stage positions live on `PatchedFixture` (`stage`, optional), schema v6.**
+  They follow the fixture when it is re-patched or removed, and `usePatchStore`
+  already round-trips through the show file. Metres, x across, y upstage, z
+  height. The stage is a fixed 12 x 8 x 6 m box for now; a configurable stage
+  size is a later nicety.
+- **Unplaced fixtures get an automatic layout, not a stored one.** A fresh
+  patch shows up on the plot and in 3D immediately; positions are written to
+  the show only once the user drags a fixture or presses "Save layout".
+- **Source attribution is a separate polled query, not part of the frame
+  event.** The tick and the 20Hz frame stay exactly as cheap as before;
+  the Output sheet polls `engine_get_universe_sources` at 4Hz while it is open.
+  "Tracked" is computed from the cuelist (values in earlier cues but not the
+  current one on a tracking cuelist), not stored on the layer.
+- **Selection is keyed by fixture number and pushed into the engine, one way.**
+  Reading the engine's selection back would need a new event or polling for
+  little gain; the plot is the only writer today.
+- **Dragging positions is not undoable.** Positions don't affect output, and
+  the undo stack is for patch edits.
+- **Zoom maps 0 to the narrow end of the definition's beam-angle range.**
+  Definitions don't say which end is which; this is the usual convention.
+  Pan/tilt use the definition's degree range, defaulting to 540/270.
+- **The 3D view uses unlit materials with additive cones.** "Volumetric-lite":
+  a translucent cone per beam plus a floor pool, no shadows or fog, so
+  hundreds of fixtures stay cheap. three.js, @react-three/fiber and
+  @react-three/drei are all MIT.
+- **3D in "its own window" is not done.** It is a tab like the others; a
+  separate OS window needs the multi-window work in Phase 13's preferences.
+  The 3D chunk is lazy-loaded (about 950 kB, 254 kB gzipped) so the main
+  bundle only grew by the new panels.
+- **Gobo and colour-wheel images are not rendered.** Colour wheels tint the
+  beam when the definition gives a slot colour; gobo patterns are skipped.
+

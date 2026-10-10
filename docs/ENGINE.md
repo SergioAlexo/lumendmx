@@ -171,6 +171,46 @@ actually removes a layer.
   Lock order is patch index → state → … everywhere, so the tick can't
   deadlock against `apply_intensity`/`record_cue`.
 
+## Visualisation (Phase 12)
+
+Everything here is read-only: nothing runs in the 44Hz tick that wasn't
+already there.
+
+- **Live values** come from the existing `engine://universe-frame` event
+  (~20Hz, merged output per universe), held in `useUniverseChannelsStore`.
+  The DMX monitor, Output sheet, 2D plot and 3D view all read it.
+- **Winning source per channel.** `merge::channel_sources` re-runs the
+  merge's winner rules (HTP: highest scaled value; LTP: highest priority)
+  and reports which layer won each of a universe's 512 channels:
+  0 default, 1 programmer, 2 playback, 3 tracked, 4 effect. A channel
+  written by an effect in the winning layer is "effect"; a cue playback
+  value that comes from an earlier cue rather than the current one (only on
+  tracking cuelists) is "tracked". `engine_get_universe_sources(universe)`
+  wraps it; the Output sheet polls it at 4Hz while visible. It takes the
+  locks briefly like any other command (cues, cue playbacks, then state) and
+  is never called from the tick.
+- **Fixture look.** `src/lib/visualisation/fixtureLook.ts` turns channel
+  values plus a fixture definition into colour, intensity, pan/tilt (using
+  channel `physicalRange`, defaulting to 540/270 degrees, and the patch's
+  invert/swap flags) and beam angle (the definition's `beamAngleDeg`
+  interpolated by the zoom channel). Colour is an additive mix of
+  red/green/blue/white/amber/UV, CMY subtracts from white, and a colour wheel
+  slot filters the result when the definition gives the slot a colour.
+  Multi-cell fixtures average their cells.
+- **Stage positions** are `stage: {x, y, z}` metres on each patched fixture
+  (show file v6, see SHOWFILE.md). Fixtures that haven't been placed get an
+  automatic layout along the truss; "Save layout" in the Stage plot stores it.
+  The 2D plot and the 3D view share `src/lib/visualisation/stage.ts`.
+- **Shared selection.** `src/store/useSelectionStore.ts` holds the selected
+  fixture numbers for visual windows and mirrors them into the engine's
+  programmer selection by running the equivalent command line (`1 + 3`).
+  The engine's selection is not read back. Other windows adopt it by calling
+  `select`/`toggle` on click and reading `selected` for highlighting.
+- **3D view** (`Visualizer3D.tsx`, react-three-fiber + three.js) is loaded
+  with `React.lazy`, so it is a separate chunk fetched on first use. Each
+  fixture updates its beam cone, floor pool and pan/tilt imperatively from the
+  latest frame in `useFrame`, with no React render per frame.
+
 ## What isn't here yet
 
 - **An attribute encoder bar / full manual programmer UI**: `CommandLine.tsx`
