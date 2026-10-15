@@ -12,6 +12,7 @@ use ts_rs::TS;
 use super::analysis::Analyzer;
 use super::audio_input::{self, AudioCapture};
 use super::ltc::LtcDecoder;
+use super::mixxx::MixxxDecoder;
 use super::mtc::{ClockEvent, MidiClockTracker, MtcDecoder};
 use crate::engine::audio_reactive::{AudioTrigger, BandLevels};
 use crate::engine::manager::TimingHandles;
@@ -30,6 +31,9 @@ pub enum TempoSource {
     Audio,
     /// MIDI clock from the selected MIDI port.
     MidiClock,
+    /// BPM and beats from the Mixxx script (see `timing::mixxx`), over the
+    /// selected MIDI port.
+    Mixxx,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -172,7 +176,7 @@ impl TimingManager {
             }
         }
 
-        let want_midi = settings.tempo_source == TempoSource::MidiClock || settings.timecode_source == TimecodeSource::Mtc;
+        let want_midi = matches!(settings.tempo_source, TempoSource::MidiClock | TempoSource::Mixxx) || settings.timecode_source == TimecodeSource::Mtc;
         if !want_midi || old.midi_port != settings.midi_port {
             inputs.midi = None;
             self.shared.lock().unwrap().midi = MidiInputStatus::default();
@@ -246,12 +250,18 @@ impl TimingManager {
         let clock = self.handles.timecode.clone();
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
+        let mut mixxx = MixxxDecoder::new();
         midi::open_input(port, move |stamp_us, msg| {
             if let Some(pos) = mtc.feed(msg) {
                 clock.lock().unwrap().set_external(TimecodeSource::Mtc, pos.ms, pos.fps);
             }
-            let driving = shared.lock().unwrap().tempo_source == Some(TempoSource::MidiClock);
-            match midi_clock.feed(stamp_us, msg) {
+            let source = shared.lock().unwrap().tempo_source;
+            let event = match source {
+                Some(TempoSource::Mixxx) => mixxx.feed(msg),
+                _ => midi_clock.feed(stamp_us, msg),
+            };
+            let driving = matches!(source, Some(TempoSource::MidiClock | TempoSource::Mixxx));
+            match event {
                 Some(ClockEvent::Bpm(bpm)) => {
                     shared.lock().unwrap().midi.clock_bpm = Some(bpm);
                     if driving {

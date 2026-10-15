@@ -292,14 +292,14 @@ export function TimingPanel() {
             ))}
           </Select>
         </Field>
-        {(s.tempoSource === "midiClock" || s.timecodeSource === "mtc") && (
+        {(s.tempoSource === "midiClock" || s.tempoSource === "mixxx" || s.timecodeSource === "mtc") && (
           <div className="rounded-md bg-muted/50 p-3 text-sm">
             {status.midi.error ? (
               <span className="text-destructive">{status.midi.error}</span>
             ) : status.midi.connected ? (
               <span>
-                Connected. MIDI clock:{" "}
-                <strong className="tabular-nums">{status.midi.clockBpm ? status.midi.clockBpm.toFixed(1) : "no clock yet"}</strong>
+                Connected. {s.tempoSource === "mixxx" ? "Mixxx BPM" : "MIDI clock"}:{" "}
+                <strong className="tabular-nums">{status.midi.clockBpm ? status.midi.clockBpm.toFixed(1) : (s.tempoSource === "mixxx" ? "waiting for Mixxx" : "no clock yet")}</strong>
               </span>
             ) : (
               <span className="text-muted-foreground">Not connected</span>

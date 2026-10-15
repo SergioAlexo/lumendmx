@@ -71,6 +71,7 @@ export const TEMPO_SOURCES: { id: TempoSource; label: string }[] = [
   { id: "tap", label: "Tap" },
   { id: "audio", label: "Audio" },
   { id: "midiClock", label: "MIDI clock" },
+  { id: "mixxx", label: "Mixxx" },
 ];
 
 export const TIMECODE_SOURCES: { id: TimecodeSource; label: string }[] = [

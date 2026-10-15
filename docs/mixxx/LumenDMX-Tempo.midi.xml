@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MixxxControllerPreset mixxxVersion="2.3.0" schemaVersion="1">
+    <info>
+        <name>LumenDMX Tempo</name>
+        <author>LumenDMX</author>
+        <description>Sends the playing deck's BPM and beats to LumenDMX over MIDI (channel 16). Output only.</description>
+        <forums></forums>
+    </info>
+    <controller id="LumenDMX">
+        <scriptfiles>
+            <file filename="LumenDMX-Tempo.js" functionprefix="LumenTempo"/>
+        </scriptfiles>
+        <controls/>
+        <outputs/>
+    </controller>
+</MixxxControllerPreset>

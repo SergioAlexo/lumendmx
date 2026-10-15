@@ -3,6 +3,7 @@
 //! state; the engine tick reads from there. Nothing here touches output.
 
 pub mod analysis;
+pub mod mixxx;
 pub mod mtc;
 pub mod ltc;
 pub mod audio_input;

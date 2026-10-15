@@ -336,3 +336,10 @@ write into shared `Arc<Mutex<..>>` state obtained from
 - **DMX input merged into output**: `output::input` receives and decodes
   Art-Net/sACN but doesn't feed it into this engine's merge — see
   docs/OUTPUT.md's scope note.
+
+- **Mixxx** (`timing::mixxx`): a `TempoSource::Mixxx` that reads BPM and
+  beats from the MIDI port, because Mixxx can't send a steady MIDI clock.
+  `docs/mixxx/LumenDMX-Tempo.js` (copy it and the `.midi.xml` to Mixxx's
+  `controllers` folder) sends the active deck's BPM x 10 as CC 20/52 and a
+  beat note on MIDI channel 16. Use a virtual port such as loopMIDI: Mixxx
+  outputs to it, LumenDMX reads it.
