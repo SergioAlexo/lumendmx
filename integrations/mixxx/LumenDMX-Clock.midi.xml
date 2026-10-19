@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MixxxControllerPreset mixxxVersion="2.4.0+" schemaVersion="1">
+    <info>
+        <name>LumenDMX MIDI Clock</name>
+        <author>LumenDMX</author>
+        <description>Sends 24 ppqn MIDI clock following the sync leader (or loudest playing) deck, for LumenDMX's MIDI clock tempo source. Load on the IAC Driver bus.</description>
+    </info>
+    <controller id="LumenClock">
+        <scriptfiles>
+            <file filename="LumenDMX-Clock.js" functionprefix="LumenClock"/>
+        </scriptfiles>
+        <controls/>
+        <outputs/>
+    </controller>
+</MixxxControllerPreset>
