@@ -95,8 +95,12 @@ pub struct MidiClockTracker {
 }
 
 const PPQN: usize = 24;
-/// Two beats of pulses smooth out the jitter of a software clock.
-const WINDOW: usize = PPQN * 2;
+/// Four beats of pulses smooth out the jitter of a software clock: Mixxx's
+/// script clock, for one, can only send once per audio buffer (~12 ms).
+const WINDOW: usize = PPQN * 4;
+/// A Start this soon after the last pulse (in pulse intervals) comes from a
+/// clock that kept running, so it only re-aligns the beat.
+const CONTINUOUS_START_PULSES: f64 = 4.0;
 
 /// What a MIDI real-time message means for the tempo.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,7 +119,9 @@ impl MidiClockTracker {
     pub fn feed(&mut self, stamp_us: u64, msg: &[u8]) -> Option<ClockEvent> {
         match msg {
             [0xF8] => {
-                if self.pulses.back().is_some_and(|&last| stamp_us <= last) {
+                // Equal stamps are fine: pulses sent together in one packet
+                // (as a once-per-buffer script clock does) share a stamp.
+                if self.pulses.back().is_some_and(|&last| stamp_us < last) {
                     return None;
                 }
                 self.pulses.push_back(stamp_us);
@@ -125,20 +131,43 @@ impl MidiClockTracker {
                 self.since_estimate += 1;
                 if self.pulses.len() > PPQN / 2 && self.since_estimate >= 6 {
                     self.since_estimate = 0;
-                    let span = (self.pulses.back()? - self.pulses.front()?) as f64;
-                    let interval = span / (self.pulses.len() - 1) as f64;
+                    let interval = self.pulse_interval_us();
                     return Some(ClockEvent::Bpm((60_000_000.0 / (interval * PPQN as f64)) as f32));
                 }
                 None
             }
             [0xFA] => {
-                self.pulses.clear();
+                // A sender that resyncs mid-stream (like the Mixxx script)
+                // keeps its pulse history; a fresh start after a stop doesn't.
+                let continuous = self.pulses.len() > PPQN / 2
+                    && self.pulses.back().is_some_and(|&last| {
+                        (stamp_us.saturating_sub(last) as f64) < self.pulse_interval_us() * CONTINUOUS_START_PULSES
+                    });
+                if !continuous {
+                    self.pulses.clear();
+                }
                 self.since_estimate = 0;
                 Some(ClockEvent::Start)
             }
             [0xFC] => Some(ClockEvent::Stop),
             _ => None,
         }
+    }
+
+    /// Least-squares slope of timestamp against pulse number: each pulse's
+    /// jitter counts once, not just the two at the ends of the window.
+    fn pulse_interval_us(&self) -> f64 {
+        let n = self.pulses.len() as f64;
+        let first = self.pulses.front().copied().unwrap_or(0);
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+        for (i, &t) in self.pulses.iter().enumerate() {
+            let (x, y) = (i as f64, (t - first) as f64);
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        (n * sxy - sx * sy) / (n * sxx - sx * sx)
     }
 }
 
@@ -219,5 +248,58 @@ mod tests {
         }
         assert!((bpm.unwrap() - 128.0).abs() < 0.1);
         assert_eq!(tracker.feed(0, &[0xFA]), Some(ClockEvent::Start));
+    }
+
+    /// 128 BPM pulses, each sent late by up to one 12 ms audio buffer.
+    fn jittered_pulses(from: u64, count: u64) -> impl Iterator<Item = u64> {
+        let pulse_us = 60_000_000.0 / 128.0 / 24.0;
+        (from..from + count).map(move |i| {
+            let t = i as f64 * pulse_us;
+            ((t / 12_000.0).ceil() * 12_000.0) as u64
+        })
+    }
+
+    #[test]
+    fn buffer_quantised_pulses_still_give_a_steady_bpm() {
+        let mut tracker = MidiClockTracker::new();
+        let mut estimates = Vec::new();
+        for stamp in jittered_pulses(0, 400) {
+            if let Some(ClockEvent::Bpm(b)) = tracker.feed(stamp, &[0xF8]) {
+                estimates.push(b);
+            }
+        }
+        for b in &estimates[20..] {
+            assert!((b - 128.0).abs() < 0.3, "{b}");
+        }
+    }
+
+    #[test]
+    fn pulses_sharing_a_packet_all_count() {
+        let mut tracker = MidiClockTracker::new();
+        let pulse_us = 60_000_000.0 / 165.0 / 24.0;
+        let mut bpm = None;
+        // A 23 ms buffer at 165 BPM sends a second pulse in some packets.
+        for i in 0..200u64 {
+            let stamp = ((i as f64 * pulse_us / 23_000.0).ceil() * 23_000.0) as u64;
+            if let Some(ClockEvent::Bpm(b)) = tracker.feed(stamp, &[0xF8]) {
+                bpm = Some(b);
+            }
+        }
+        assert!((bpm.unwrap() - 165.0).abs() < 0.5, "{bpm:?}");
+    }
+
+    #[test]
+    fn a_mid_stream_start_keeps_the_pulse_history() {
+        let mut tracker = MidiClockTracker::new();
+        let stamps: Vec<u64> = jittered_pulses(0, 200).collect();
+        for &stamp in &stamps {
+            tracker.feed(stamp, &[0xF8]);
+        }
+        let last = *stamps.last().unwrap();
+        assert_eq!(tracker.feed(last + 5_000, &[0xFA]), Some(ClockEvent::Start));
+        assert_eq!(tracker.pulses.len(), WINDOW);
+        // After a stop and a pause, Start begins a fresh estimate.
+        assert_eq!(tracker.feed(last + 2_000_000, &[0xFA]), Some(ClockEvent::Start));
+        assert!(tracker.pulses.is_empty());
     }
 }
