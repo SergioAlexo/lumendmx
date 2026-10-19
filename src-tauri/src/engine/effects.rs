@@ -255,6 +255,12 @@ fn directed(direction: EffectDirection, p: f64) -> f64 {
     }
 }
 
+/// FNV-1a of the attribute name, so Random effects on red, green and blue
+/// pick independent values instead of the same one (which made grey).
+fn attribute_seed(attribute: &str) -> u64 {
+    attribute.bytes().fold(0xCBF2_9CE4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3))
+}
+
 /// A deterministic pseudo-random value in [-1,1] for (cycle, seed).
 fn hash_unit(cycle: i64, seed: u64) -> f32 {
     let mut x = (cycle as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
@@ -346,7 +352,8 @@ pub fn render(
             };
             match &def.target {
                 EffectTarget::Attribute { attribute, waveform } => {
-                    write(attribute, waveform_value(*waveform, p, def.width, cycle as i64, position as u64));
+                    let seed = attribute_seed(attribute) ^ position as u64;
+                    write(attribute, waveform_value(*waveform, p, def.width, cycle as i64, seed));
                 }
                 EffectTarget::Position { shape } => {
                     let (pan, tilt) = shape_value(*shape, p);
@@ -514,5 +521,15 @@ mod tests {
         assert_eq!(directed(EffectDirection::Bounce, 0.25), 0.5);
         assert_eq!(directed(EffectDirection::Bounce, 0.75), 0.5);
         assert_eq!(directed(EffectDirection::Backward, 0.25), 0.75);
+    }
+
+    #[test]
+    fn random_effects_on_different_attributes_pick_independent_values() {
+        // The test par has red and pan; any two attributes show it.
+        let patch = four_pars();
+        let clock = EffectClock { seconds: 0.0, beats: 0.5 };
+        let red = render_once(&EffectDef::new_attribute("red", Waveform::Random), &[1], &patch, clock);
+        let pan = render_once(&EffectDef::new_attribute("pan", Waveform::Random), &[1], &patch, clock);
+        assert_ne!(red[&(1, 2)], pan[&(1, 3)]);
     }
 }
