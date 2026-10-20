@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Trash2, X } from "lucide-react";
 import * as engineApi from "../lib/engine";
-import { useDmxStore } from "../store/useDmxStore";
 import { usePatchStore, type PatchedFixture } from "../store/usePatchStore";
 import { useAllFixtures, useFixtureLibraryStore } from "../store/useFixtureLibraryStore";
 import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
@@ -138,8 +137,6 @@ function swatchColor(mode: FixtureMode, values: Record<number, number>): string 
 }
 
 export function FixturePatchPanel() {
-  const connected = useDmxStore((s) => s.status.connected);
-
   const { fixtures, addFixture, removeFixture, repatch, nextFixtureNumber } = usePatchStore();
   const addCustomFixture = useFixtureLibraryStore((s) => s.addCustomFixture);
   const customFixtures = useFixtureLibraryStore((s) => s.customFixtures);
@@ -258,12 +255,6 @@ export function FixturePatchPanel() {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-hidden p-4">
-      {!connected && (
-        <p className="shrink-0 text-xs text-destructive">
-          Connect a DMX interface in the top bar first.
-        </p>
-      )}
-
       <div className="flex shrink-0 flex-col gap-3 rounded-md border border-border p-3">
         <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-6">
           <label className="flex flex-col gap-1">

@@ -7,6 +7,8 @@ import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
 import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
 import { Button } from "./ui/button";
 import { Input, Select } from "./ui/input";
+import { AppUpdateCard } from "./AppUpdateCard";
+import { TimingSettingsPanel } from "./TimingSettings";
 
 type DriverKind = DriverConfig["kind"];
 
@@ -43,9 +45,9 @@ function statusColor(connected: boolean, hasDriver: boolean): string {
   return connected ? "bg-success" : "bg-destructive";
 }
 
-/** The universe -> output mapping table (BUILD_PLAN Phase 2): add/remove
- * universes, pick a driver per universe and its driver-specific settings, see
- * live status, and run Art-Net node discovery. */
+/** The Setup tab: universes and the controller each one outputs through
+ * (add/remove, driver settings, live status, Art-Net node discovery), then
+ * the tempo and input sources and app updates. */
 export function SetupPanel() {
   const universes = useShowStore((s) => s.meta?.universes ?? EMPTY_UNIVERSES);
   const setUniverseDriver = useShowStore((s) => s.setUniverseDriver);
@@ -167,6 +169,10 @@ export function SetupPanel() {
           </ul>
         )}
       </div>
+
+      <TimingSettingsPanel />
+
+      <AppUpdateCard />
     </div>
   );
 }

@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import * as dmx from "../lib/dmx";
 import * as engineApi from "../lib/engine";
-import { PRIMARY_UNIVERSE_ID } from "../lib/constants";
 import {
   showfileAutosave,
   showfileNew,
@@ -17,11 +16,8 @@ import type {
   ShowFile,
   ShowSettings,
   UniverseConfig,
-  Workspace,
 } from "../lib/showfile/generated";
-import { assetsToLegacy, legacyToAssets } from "../lib/showfile/legacyAssets";
 import { getAllFixtures, useFixtureLibraryStore } from "./useFixtureLibraryStore";
-import { useLibraryStore } from "./useLibraryStore";
 import { usePatchStore } from "./usePatchStore";
 
 /** Stable reference for "no show open yet" selectors (`s.meta?.universes ??
@@ -31,12 +27,11 @@ import { usePatchStore } from "./usePatchStore";
 export const EMPTY_UNIVERSES: UniverseConfig[] = [];
 
 const AUTOSAVE_INTERVAL_MS = 60_000;
-/** How often to check the engine for unsaved group/preset/cuelist edits. */
+/** How often to check the engine for unsaved group/tempo edits. */
 const ENGINE_DIRTY_POLL_MS = 1_000;
 
-/** Everything in a `ShowFile` except `patch` and `legacyAssets`, which live in
- * (and are read live from) `usePatchStore`/`useLibraryStore` instead of being
- * duplicated in this store's state. */
+/** Everything in a `ShowFile` except `patch`, which lives in (and is read
+ * live from) `usePatchStore`, and the engine-owned data. */
 export interface ShowMeta {
   schemaVersion: number;
   id: string;
@@ -44,7 +39,6 @@ export interface ShowMeta {
   createdAt: string;
   modifiedAt: string;
   universes: UniverseConfig[];
-  workspaces: Workspace[];
   settings: ShowSettings;
 }
 
@@ -56,12 +50,11 @@ function toMeta(show: ShowFile): ShowMeta {
     createdAt: show.createdAt,
     modifiedAt: show.modifiedAt,
     universes: show.universes,
-    workspaces: show.workspaces,
     settings: show.settings,
   };
 }
 
-/** Groups/presets/cuelists/tempo/pixel maps live in the Rust engine, so a complete show file
+/** Groups and the tempo live in the Rust engine, so a complete show file
  * has to fetch them. `engineRevision` is the engine's data revision the
  * fetch reflects (read first, so an edit racing the save still reads as
  * unsaved afterwards). */
@@ -72,7 +65,6 @@ async function assembleShowFile(meta: ShowMeta): Promise<{ show: ShowFile; engin
     show: {
       ...meta,
       patch: usePatchStore.getState().fixtures,
-      legacyAssets: assetsToLegacy(useLibraryStore.getState().assets),
       ...engineData,
     },
     engineRevision,
@@ -80,33 +72,24 @@ async function assembleShowFile(meta: ShowMeta): Promise<{ show: ShowFile; engin
 }
 
 /** The engine's data revision as of the last save/load; any other value
- * means unsaved group/preset/cuelist edits. Null while a show is loading. */
+ * means unsaved group/tempo edits. Null while a show is loading. */
 let savedEngineRevision: number | null = null;
 
-/** True while a show is being loaded into `usePatchStore`/`useLibraryStore`,
- * so their change subscriptions below don't mark the freshly-opened show dirty. */
+/** True while a show is being loaded into `usePatchStore`, so its change
+ * subscription below doesn't mark the freshly-opened show dirty. */
 let applyingShow = false;
 
-/** Loads `show` into the patch/library stores and its engine-owned data
- * (groups, presets, cuelists, tempo, pixel maps) into the engine. */
+/** Loads `show` into the patch store and its engine-owned data (groups,
+ * tempo) into the engine. */
 async function applyShow(show: ShowFile): Promise<void> {
   applyingShow = true;
   try {
     usePatchStore.getState().replaceAll(show.patch);
-    useLibraryStore.getState().replaceAll(legacyToAssets(show.legacyAssets));
   } finally {
     applyingShow = false;
   }
   savedEngineRevision = null;
-  await engineApi.loadShowData({
-    groups: show.groups,
-    presets: show.presets,
-    cuelists: show.cuelists,
-    bpm: show.bpm,
-    pixelMaps: show.pixelMaps,
-    playbacks: show.playbacks,
-    releaseOnPageChange: show.releaseOnPageChange,
-  });
+  await engineApi.loadShowData({ groups: show.groups, bpm: show.bpm });
   savedEngineRevision = await engineApi.showDataRevision();
 }
 
@@ -133,7 +116,7 @@ interface ShowState {
   saving: boolean;
   recent: RecentShowEntry[];
   /** Bumped every time a show is loaded, so views holding engine data they
-   * fetched once (cuelists, presets, groups) can remount and re-fetch. */
+   * fetched once (groups) can remount and re-fetch. */
   loadCount: number;
 
   init: () => Promise<void>;
@@ -315,12 +298,11 @@ usePatchStore.subscribe(() => {
   if (patchHydrated) markDirtyUnlessApplyingShow();
   syncEnginePatch();
 });
-useLibraryStore.subscribe(markDirtyUnlessApplyingShow);
 
 /** Pushes the current patch to the engine as (a) which channels are HTP
  * (a fixture's dimmer channel) for the merge, per universe, and (b) the
- * fixture-number -> attribute-channel index the command line's
- * `1 THRU 8 @ 50` and Phase 5's presets resolve against. */
+ * fixture-number -> attribute-channel index the engine resolves fixtures
+ * against. */
 function syncEnginePatch(): void {
   const fixtures = usePatchStore.getState().fixtures;
   const allFixtures = getAllFixtures();
@@ -369,8 +351,8 @@ function syncEnginePatch(): void {
   }
   // A universe with no patched dimmer channels still needs its HTP set
   // cleared (e.g. after unpatching the last fixture there).
-  if (!htpChannelsByUniverse.has(PRIMARY_UNIVERSE_ID)) {
-    void engineApi.setHtpChannels(PRIMARY_UNIVERSE_ID, []);
+  for (const universe of useShowStore.getState().meta?.universes ?? []) {
+    if (!htpChannelsByUniverse.has(universe.id)) void engineApi.setHtpChannels(universe.id, []);
   }
   void engineApi.setPatchIndex(patchIndex);
 }

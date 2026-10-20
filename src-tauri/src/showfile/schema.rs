@@ -1,26 +1,20 @@
 //! The `.lumen` show-file schema.
 //!
-//! Only fields backed by real functionality today are modelled here
-//! (universes, patch, workspaces, settings, legacy assets, since v4 the
-//! engine's groups/presets/cuelists, since v5 its tempo and pixel maps, since v6 stage positions, and since v7 its playback pages;
-//! effects live inside cues and Effect presets). Timelines and MIDI/OSC
-//! mappings are added to this schema — each with its own `schema_version` bump and migration step —
-//! by the phase that actually implements them (see `DECISIONS.md`). Designing
-//! their shape now, before any of that logic exists, would just mean
-//! redesigning it later.
+//! Format 9 is the node-graph rewrite: universes, the patch, groups and the
+//! tempo. Older development formats (1-8, built around cuelists and a
+//! programmer) aren't read at all — see `migrate.rs`.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::engine::groups::Group;
-use crate::engine::manager::{CuelistDto, PlaybackSlot};
-use crate::engine::pixelmap::PixelMap;
-use crate::engine::presets::Preset;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
 /// step in `migrate.rs` from the previous version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+/// The oldest format this app reads: the first node-graph format.
+pub const MIN_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -32,18 +26,6 @@ pub struct UniverseConfig {
     /// driver-tagged config supporting FTDI/Enttec Pro/Art-Net/sACN/none
     /// (see `migrate::upgrade_1_to_2`).
     pub driver: DriverConfig,
-}
-
-/// Where a fixture sits on the stage (v6), in metres: `x` left to right
-/// across the stage, `y` downstage (front of stage = 0) to upstage, `z`
-/// height above the floor. Shared by the 2D plot and the 3D visualizer.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct StagePosition {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -66,19 +48,6 @@ pub struct PatchedFixture {
     pub invert_pan: bool,
     pub invert_tilt: bool,
     pub swap_pan_tilt: bool,
-    /// v6: position on the stage plot / in the 3D view. Absent until the
-    /// fixture has been placed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub stage: Option<StagePosition>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct Workspace {
-    pub id: String,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -98,38 +67,6 @@ impl Default for ShowSettings {
     }
 }
 
-/// A single step in a pre-showfile Scene/Chase/FX asset (mirrors the frontend's
-/// `LightAsset`/`DmxStep` from `src/lib/types.ts`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct LegacyStep {
-    /// Channel (as a string, 1-512) -> value (0-255). Unlisted channels are
-    /// left untouched. Stored as a string-keyed map because that's how
-    /// `Record<number, number>` round-trips through JSON.
-    pub channels: std::collections::BTreeMap<String, u8>,
-    pub fade_time_ms: u32,
-    pub hold_time_ms: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct LegacyAsset {
-    pub id: String,
-    pub name: String,
-    /// "scene" | "chase" | "fx"
-    pub kind: String,
-    pub steps: Vec<LegacyStep>,
-    #[serde(rename = "loop")]
-    pub loop_: bool,
-    /// "ai" | "manual"
-    pub source: String,
-    /// Milliseconds since epoch (matches JS `Date.now()`); `f64` rather than
-    /// an integer type so ts-rs maps it to a plain `number`, not `bigint`.
-    pub created_at: f64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
@@ -142,28 +79,14 @@ pub struct ShowFile {
     pub modified_at: String,
     pub universes: Vec<UniverseConfig>,
     pub patch: Vec<PatchedFixture>,
-    pub workspaces: Vec<Workspace>,
     pub settings: ShowSettings,
-    /// Scene/Chase/FX assets carried over from the pre-showfile `localStorage`
-    /// library. Superseded once Phase 5's preset families and Phase 6's
-    /// cuelists exist; kept as plain data until then so nothing is lost.
-    pub legacy_assets: Vec<LegacyAsset>,
-    /// Engine-owned show data (v4+). Owned and edited by the Rust engine at
+    /// Engine-owned show data: owned and edited by the Rust engine at
     /// runtime; the frontend fetches it into the file on save
     /// (`engine_export_show_data`) and pushes it back on load
     /// (`engine_load_show_data`).
     pub groups: Vec<Group>,
-    pub presets: Vec<Preset>,
-    pub cuelists: Vec<CuelistDto>,
-    /// The global tempo (v5+).
+    /// The global tempo.
     pub bpm: f32,
-    /// Pixel maps (v5+), also engine-owned.
-    pub pixel_maps: Vec<PixelMap>,
-    /// Which cuelist sits on which playback page and column, with its fader
-    /// (v7+), also engine-owned.
-    pub playbacks: Vec<PlaybackSlot>,
-    /// Release a page's playbacks when the playback bar leaves that page (v7+).
-    pub release_on_page_change: bool,
 }
 
 impl ShowFile {
@@ -181,31 +104,11 @@ impl ShowFile {
                 driver: DriverConfig::default(),
             }],
             patch: Vec::new(),
-            workspaces: default_workspaces(),
             settings: ShowSettings::default(),
-            legacy_assets: Vec::new(),
             groups: Vec::new(),
-            presets: Vec::new(),
-            cuelists: Vec::new(),
             bpm: crate::engine::tempo::DEFAULT_BPM,
-            pixel_maps: Vec::new(),
-            playbacks: Vec::new(),
-            release_on_page_change: false,
         }
     }
-}
-
-/// The default workspace tabs from the target layout (BUILD_PLAN.md section 2).
-/// Each is just a named tab for now; the dockable window grid inside each one
-/// is built progressively as the window types it can hold are implemented.
-fn default_workspaces() -> Vec<Workspace> {
-    ["Programming", "Playback", "Live AI", "Patch/Setup"]
-        .iter()
-        .map(|name| Workspace {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_string(),
-        })
-        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

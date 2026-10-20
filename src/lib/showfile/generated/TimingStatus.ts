@@ -4,4 +4,4 @@ import type { MidiInputStatus } from "./MidiInputStatus";
 import type { TimecodeStatus } from "./TimecodeStatus";
 import type { TimingSettings } from "./TimingSettings";
 
-export type TimingStatus = { settings: TimingSettings, audio: AudioInputStatus, midi: MidiInputStatus, ltcRunning: boolean, ltcError: string | null, timecode: TimecodeStatus, timecodeLearn: boolean, };
+export type TimingStatus = { settings: TimingSettings, audio: AudioInputStatus, midi: MidiInputStatus, ltcRunning: boolean, ltcError: string | null, timecode: TimecodeStatus, };

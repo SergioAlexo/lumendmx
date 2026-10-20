@@ -1,9 +1,8 @@
-import { Power, RefreshCw } from "lucide-react";
-import { PRIMARY_UNIVERSE_ID, useDmxStore } from "../store/useDmxStore";
+import { Power } from "lucide-react";
+import { useDmxStore } from "../store/useDmxStore";
 import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
 import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
 import { Button } from "./ui/button";
-import { Select } from "./ui/input";
 import { cn } from "../lib/utils";
 import { ShowMenu } from "./ShowMenu";
 import { TempoControl } from "./TempoControl";
@@ -13,19 +12,15 @@ function statusColor(connected: boolean, hasDriver: boolean): string {
   return connected ? "bg-success" : "bg-destructive";
 }
 
-/** One dot per configured universe (green/amber-ish gray/red), per BUILD_PLAN
- * Phase 2's "per-universe status in the top bar". The primary universe's own
- * detailed connect/disconnect controls sit next to it; this row covers
- * whatever else Setup has added. */
+/** One dot per universe: green when its controller is sending, red when it
+ * failed, grey when it has no output. Controllers are set up in Setup. */
 function UniverseStatusDots() {
   const universes = useShowStore((s) => s.meta?.universes ?? EMPTY_UNIVERSES);
   const statuses = useUniverseStatusesStore((s) => s.statuses);
-  const extra = universes.filter((u) => u.id !== PRIMARY_UNIVERSE_ID);
-  if (extra.length === 0) return null;
 
   return (
     <div className="flex items-center gap-1.5">
-      {extra.map((universe) => {
+      {universes.map((universe) => {
         const status = statuses[universe.id];
         const hasDriver = universe.driver.kind !== "null";
         const title = `${universe.name} (${universe.driver.kind})${
@@ -43,12 +38,29 @@ function UniverseStatusDots() {
   );
 }
 
-export function TopBar() {
-  const { status, blackout, ports, connect, disconnect, toggleBlackout, refreshPorts } = useDmxStore();
-  const primaryDriver = useShowStore((s) =>
-    s.meta?.universes.find((u) => u.id === PRIMARY_UNIVERSE_ID)?.driver,
+function GrandMaster() {
+  const grandMaster = useDmxStore((s) => s.grandMaster);
+  const setGrandMaster = useDmxStore((s) => s.setGrandMaster);
+  return (
+    <label className="flex items-center gap-2 text-xs text-muted-foreground" title="Grand master: scales every intensity channel">
+      GM
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={grandMaster}
+        onChange={(e) => setGrandMaster(Number(e.target.value))}
+        className="w-24 accent-primary"
+        aria-label="Grand master"
+      />
+      <span className="w-8 tabular-nums text-foreground">{grandMaster}%</span>
+    </label>
   );
-  const primaryPort = primaryDriver?.kind === "ftdi" ? primaryDriver.port : null;
+}
+
+export function TopBar() {
+  const blackout = useDmxStore((s) => s.blackout);
+  const toggleBlackout = useDmxStore((s) => s.toggleBlackout);
 
   return (
     <header className="flex items-center gap-4 border-b border-border bg-card px-4 py-3">
@@ -59,50 +71,12 @@ export function TopBar() {
       <ShowMenu />
 
       <div className="flex flex-1 items-center gap-3">
-        <span
-          className={cn("h-2.5 w-2.5 rounded-full", status.connected ? "bg-success" : "bg-destructive")}
-          title={status.error ?? undefined}
-        />
-        <span className="text-sm text-muted-foreground">
-          {status.connected
-            ? `Connected: ${primaryPort ?? "Universe 1"}`
-            : status.error
-              ? `Error: ${status.error}`
-              : "Not connected"}
-        </span>
-
-        {!status.connected && (
-          <>
-            <Select
-              className="w-56"
-              onFocus={() => void refreshPorts()}
-              onChange={(e) => e.target.value && void connect(e.target.value)}
-              value=""
-            >
-              <option value="" disabled>
-                Select DMX interface…
-              </option>
-              {ports.map((port) => (
-                <option key={port.port_name} value={port.port_name}>
-                  {port.label}
-                </option>
-              ))}
-            </Select>
-            <Button variant="ghost" size="iconSm" onClick={() => void refreshPorts()} title="Refresh ports">
-              <RefreshCw />
-            </Button>
-          </>
-        )}
-        {status.connected && (
-          <Button variant="outline" size="sm" onClick={() => void disconnect()}>
-            Disconnect
-          </Button>
-        )}
-
         <UniverseStatusDots />
       </div>
 
       <TempoControl />
+
+      <GrandMaster />
 
       <Button
         variant={blackout ? "destructive" : "outline"}

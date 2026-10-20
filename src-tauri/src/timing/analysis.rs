@@ -1,4 +1,4 @@
-//! Audio analysis for the tempo and the audio-reactive triggers: a short-time
+//! Audio analysis for the tempo and the graph's Audio node: a short-time
 //! FFT feeds (a) low/mid/high band levels and (b) a spectral-flux onset
 //! signal, from which a BPM is tracked by autocorrelation.
 //!
@@ -7,7 +7,7 @@
 
 use std::f32::consts::PI;
 
-use crate::engine::audio_reactive::BandLevels;
+use crate::engine::audio::BandLevels;
 
 const FFT_SIZE: usize = 1024;
 const HOP: usize = 256;

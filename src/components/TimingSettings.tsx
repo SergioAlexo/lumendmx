@@ -1,31 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
-import * as engineApi from "../lib/engine";
 import * as timing from "../lib/timing";
-import type {
-  AudioDeviceInfo,
-  AudioTrigger,
-  Band,
-  EffectInstance,
-  MidiPortInfo,
-  PlaybackStatus,
-  TimingSettings,
-  TimingStatus,
-} from "../lib/showfile/generated";
+import type { AudioDeviceInfo, MidiPortInfo, TimingSettings, TimingStatus } from "../lib/showfile/generated";
 import { Button } from "./ui/button";
 import { Select } from "./ui/input";
-import { ValueSlider } from "./ui/value-slider";
 import { cn } from "../lib/utils";
 
 const STATUS_MS = 100;
-const BANDS: { id: Band; label: string }[] = [
-  { id: "low", label: "Low" },
-  { id: "mid", label: "Mid" },
-  { id: "high", label: "High" },
-  { id: "loudness", label: "Loudness (absolute)" },
-];
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
@@ -34,7 +16,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="grid grid-cols-[9rem_1fr] items-center gap-3 text-sm">
       <span className="text-muted-foreground">{label}</span>
@@ -54,105 +36,12 @@ function Meter({ label, value }: { label: string; value: number }) {
   );
 }
 
-function TriggerRow({
-  trigger,
-  playbacks,
-  effects,
-  onChange,
-  onDelete,
-}: {
-  trigger: AudioTrigger;
-  playbacks: PlaybackStatus[];
-  effects: EffectInstance[];
-  onChange: (t: AudioTrigger) => void;
-  onDelete: () => void;
-}) {
-  const targetValue = trigger.target.kind === "flash" ? `p${trigger.target.playbackId}` : `e${trigger.target.effectId}`;
-  return (
-    <div className="grid grid-cols-[auto_6rem_1fr_1fr_auto] items-center gap-3 rounded-md border border-border p-2 text-sm">
-      <input
-        type="checkbox"
-        aria-label="Enabled"
-        checked={trigger.enabled}
-        onChange={(e) => onChange({ ...trigger, enabled: e.target.checked })}
-      />
-      <Select value={trigger.band} onChange={(e) => onChange({ ...trigger, band: e.target.value as Band })}>
-        {BANDS.map((b) => (
-          <option key={b.id} value={b.id}>
-            {b.label}
-          </option>
-        ))}
-      </Select>
-      <Select
-        value={targetValue}
-        onChange={(e) => {
-          const v = e.target.value;
-          onChange({
-            ...trigger,
-            target:
-              v[0] === "p"
-                ? { kind: "flash", playbackId: Number(v.slice(1)) }
-                : { kind: "effectSize", effectId: Number(v.slice(1)) },
-          });
-        }}
-      >
-        <optgroup label="Flash playback">
-          {playbacks.map((p) => (
-            <option key={`p${p.id}`} value={`p${p.id}`}>
-              Playback {p.id + 1}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="Effect size">
-          {effects.map((e) => (
-            <option key={`e${e.id}`} value={`e${e.id}`}>
-              Effect #{e.id} {e.def.target.kind === "attribute" ? e.def.target.attribute : "position"}
-            </option>
-          ))}
-        </optgroup>
-      </Select>
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          Sens
-          <ValueSlider
-            value={Math.round(trigger.sensitivity * 100)}
-            max={100}
-            onChange={(v) => onChange({ ...trigger, sensitivity: v / 100 })}
-            title="Sensitivity"
-          />
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          Gate
-          <ValueSlider
-            value={Math.round(trigger.gate * 100)}
-            max={100}
-            onChange={(v) => onChange({ ...trigger, gate: v / 100 })}
-            title="Levels below the gate count as silence"
-          />
-        </div>
-      </div>
-      <Button size="iconSm" variant="ghost" title="Delete trigger" onClick={onDelete}>
-        <Trash2 />
-      </Button>
-    </div>
-  );
-}
-
-/** Timing sources (BUILD_PLAN Phase 8): where the tempo and timecode come
- * from, and audio-reactive triggers. */
-export function TimingPanel() {
+/** Where the tempo and timecode come from, and the audio/MIDI inputs the
+ * graph's Audio and MIDI nodes read. */
+export function TimingSettingsPanel() {
   const [status, setStatus] = useState<TimingStatus | null>(null);
   const [audioInputs, setAudioInputs] = useState<AudioDeviceInfo[]>([]);
   const [midiInputs, setMidiInputs] = useState<MidiPortInfo[]>([]);
-  const [triggers, setTriggers] = useState<AudioTrigger[]>([]);
-  const [playbacks, setPlaybacks] = useState<PlaybackStatus[]>([]);
-  const [effects, setEffects] = useState<EffectInstance[]>([]);
-
-  const refreshTargets = useCallback(() => {
-    void timing.listTriggers().then(setTriggers).catch(() => undefined);
-    void engineApi.listPlaybacks().then(setPlaybacks).catch(() => undefined);
-    void engineApi.listEffects().then(setEffects).catch(() => undefined);
-  }, []);
 
   const refreshDevices = useCallback(() => {
     void timing.listAudioInputs().then(setAudioInputs).catch(() => undefined);
@@ -161,12 +50,11 @@ export function TimingPanel() {
 
   useEffect(() => {
     refreshDevices();
-    refreshTargets();
     const poll = () => void timing.timingStatus().then(setStatus).catch(() => undefined);
     poll();
     const id = setInterval(poll, STATUS_MS);
     return () => clearInterval(id);
-  }, [refreshDevices, refreshTargets]);
+  }, [refreshDevices]);
 
   if (!status) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
   const s = status.settings;
@@ -174,26 +62,12 @@ export function TimingPanel() {
   const apply = (patch: Partial<TimingSettings>) =>
     void timing.timingConfigure({ ...s, ...patch }).then(setStatus).catch(() => undefined);
 
-  const saveTrigger = (t: AudioTrigger) => {
-    setTriggers((list) => list.map((x) => (x.id === t.id ? t : x)));
-    void timing.upsertTrigger(t).catch(() => undefined);
-  };
-
-  const addTrigger = () => {
-    const target: AudioTrigger["target"] = playbacks[0]
-      ? { kind: "flash", playbackId: playbacks[0].id }
-      : { kind: "effectSize", effectId: effects[0]?.id ?? 0 };
-    void timing
-      .upsertTrigger({ id: 0, band: "low", sensitivity: 0.5, gate: 0.3, releaseMs: 150, target, enabled: true })
-      .then(refreshTargets);
-  };
-
   const audioNeeded = s.audioAnalysis || s.tempoSource === "audio";
   const deviceLabel = (id: string | null, list: AudioDeviceInfo[]) => list.find((d) => d.id === id)?.name;
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <Section title="Tempo source">
+    <>
+      <Section title="Tempo & inputs">
         <Field label="Drive the BPM from">
           <Select value={s.tempoSource} onChange={(e) => apply({ tempoSource: e.target.value as TimingSettings["tempoSource"] })}>
             {timing.TEMPO_SOURCES.map((t) => (
@@ -203,17 +77,6 @@ export function TimingPanel() {
             ))}
           </Select>
         </Field>
-        <Field label="Chases">
-          <span className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={s.chasesFollowTempo}
-              onChange={(e) => apply({ chasesFollowTempo: e.target.checked })}
-            />
-            Run at the show tempo instead of their own BPM
-          </span>
-        </Field>
-
         <Field label="Audio input">
           <div className="flex gap-2">
             <Select
@@ -250,7 +113,7 @@ export function TimingPanel() {
               disabled={s.tempoSource === "audio"}
               onChange={(e) => apply({ audioAnalysis: e.target.checked })}
             />
-            Listen to the input (needed for audio triggers)
+            Listen to the input (needed by Audio nodes)
           </span>
         </Field>
         {audioNeeded && (
@@ -354,48 +217,11 @@ export function TimingPanel() {
         <div className="flex items-center gap-3 text-sm">
           <span className="font-mono text-lg tabular-nums">{timing.formatTimecode(status.timecode.positionMs, status.timecode.fps)}</span>
           <span className={cn("text-xs", status.timecode.active ? "text-success" : "text-muted-foreground")}>
-            {status.timecode.active ? "running" : s.timecodeSource === "internal" ? "stopped" : "no signal"}
+            {status.timecode.active ? "running" : s.timecodeSource === "none" ? "off" : "no signal"}
           </span>
         </div>
-        <Field label="Learn">
-          <span className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={status.timecodeLearn}
-              onChange={(e) => void timing.setTimecodeLearn(e.target.checked)}
-            />
-            GO on a Timecode cuelist records that cue&apos;s time from the running clock
-          </span>
-        </Field>
       </Section>
 
-      <Section title="Audio triggers">
-        {!audioNeeded && (
-          <p className="text-xs text-muted-foreground">Turn on Analysis above so the audio input is listened to.</p>
-        )}
-        {triggers.map((t) => (
-          <TriggerRow
-            key={t.id}
-            trigger={t}
-            playbacks={playbacks}
-            effects={effects}
-            onChange={saveTrigger}
-            onDelete={() => void timing.deleteTrigger(t.id).then(refreshTargets)}
-          />
-        ))}
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={addTrigger}>
-            <Plus /> Add trigger
-          </Button>
-          <Button size="sm" variant="ghost" onClick={refreshTargets}>
-            Refresh targets
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          A band&apos;s level above the gate flashes the playback or sets the effect&apos;s size. Playback and effect
-          ids belong to this session; triggers aren&apos;t saved with the show.
-        </p>
-      </Section>
-    </div>
+    </>
   );
 }

@@ -7,8 +7,8 @@ import { Progress, formatBytes } from "./ui/progress";
 
 /** App self-update (SRS 2.5), driven entirely by @tauri-apps/plugin-updater's
  * `check()` result -- no separate GitHub-polling command for the version badge.
- * The initial check runs once at app startup (see App.tsx) so the SystemPanel's
- * update dot can light up before this card is ever expanded/mounted. */
+ * The initial check runs once at app startup (see App.tsx), so the result is
+ * ready by the time Setup is opened. */
 export function AppUpdateCard() {
   const { currentVersion, update, checking, installing, progress, error, checked, checkNow, install } =
     useAppUpdateStore();

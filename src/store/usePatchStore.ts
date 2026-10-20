@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { StagePosition } from "../lib/showfile/generated";
 import { useUndoStore } from "./useUndoStore";
 
 /** One physical fixture in the user's rig: which library fixture it is, which of
@@ -12,15 +11,12 @@ export interface PatchedFixture {
   /** DMX start address, 1-512. */
   address: number;
   universe: number;
-  /** Stable, user-assignable number the command line's `1 THRU 8` etc. refers to. */
+  /** Stable, user-assignable fixture number. */
   fixtureNumber: number;
   name: string;
   invertPan: boolean;
   invertTilt: boolean;
   swapPanTilt: boolean;
-  /** Position on the stage plot / in the 3D view, in metres (show file v6).
-   * Absent until the fixture has been placed. */
-  stage?: StagePosition;
 }
 
 interface PatchState {
@@ -30,9 +26,6 @@ interface PatchState {
   /** Changes an existing fixture's address/universe/orientation without
    * unpatching and repatching it (keeps its id, fixture number and name). */
   repatch: (id: string, changes: Partial<Pick<PatchedFixture, "address" | "universe" | "invertPan" | "invertTilt" | "swapPanTilt">>) => void;
-  /** Places fixtures on the stage (metres). Not undoable: dragging in the plot
-   * is its own live feedback, and the positions don't affect DMX output. */
-  setStagePositions: (positions: Record<string, StagePosition>) => void;
   /** Replaces the whole patch list (e.g. loading a show file), bypassing undo. */
   replaceAll: (fixtures: PatchedFixture[]) => void;
   /** Next unused fixture number (max existing + 1, or 1 if empty). */
@@ -75,8 +68,6 @@ export const usePatchStore = create<PatchState>()(
           undo: () => set((s) => ({ fixtures: s.fixtures.map((f) => (f.id === id ? before : f)) })),
         });
       },
-      setStagePositions: (positions) =>
-        set((s) => ({ fixtures: s.fixtures.map((f) => (positions[f.id] ? { ...f, stage: positions[f.id] } : f)) })),
       replaceAll: (fixtures) => set({ fixtures }),
       nextFixtureNumber: () => get().fixtures.reduce((max, f) => Math.max(max, f.fixtureNumber), 0) + 1,
     }),
