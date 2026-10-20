@@ -99,6 +99,9 @@ impl TickShared {
 pub struct EngineManager {
     shared: TickShared,
     tick_started: AtomicBool,
+    /// Shared with `OutputManager`, which zeroes the wire; here it zeroes
+    /// what the views and MCP read, so they show what's actually sent.
+    blackout: Arc<AtomicBool>,
 }
 
 /// What `crate::timing` needs from the engine to feed it.
@@ -130,7 +133,13 @@ impl EngineManager {
                 runtime: Arc::new(Mutex::new(GraphRuntime::default())),
             },
             tick_started: AtomicBool::new(false),
+            blackout: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The blackout flag, for `OutputManager` to share.
+    pub fn blackout_flag(&self) -> Arc<AtomicBool> {
+        self.blackout.clone()
     }
 
     pub fn timing_handles(&self) -> TimingHandles {
@@ -157,6 +166,7 @@ impl EngineManager {
 
         let shared = self.shared.clone();
         let state = self.shared.state.clone();
+        let blackout = self.blackout.clone();
 
         thread::spawn(move || {
             let tick_interval = Duration::from_secs_f64(1.0 / TICK_HZ);
@@ -183,9 +193,10 @@ impl EngineManager {
                     let _ = output.set_universe_data(universe_id, frame);
 
                     if show_display {
+                        let channels = if blackout.load(Ordering::Relaxed) { vec![0; UNIVERSE_SIZE] } else { frame.to_vec() };
                         let _ = app.emit(
                             "engine://universe-frame",
-                            EngineFrame { universe_id, channels: frame.to_vec() },
+                            EngineFrame { universe_id, channels },
                         );
                     }
                 }
@@ -217,6 +228,9 @@ impl EngineManager {
     }
 
     pub fn get_universe_data(&self, universe: u32) -> [u8; UNIVERSE_SIZE] {
+        if self.blackout.load(Ordering::Relaxed) {
+            return [0; UNIVERSE_SIZE];
+        }
         let state = self.shared.state.lock().unwrap();
         merge_universe(&state, universe)
     }
@@ -336,5 +350,11 @@ mod tests {
         engine.set_grand_master(50.0);
         engine.step(10.0);
         assert_eq!(engine.get_universe_data(1)[0], 128); // fader wins HTP, then halved by the GM
+
+        // Blackout reads as all zeros, and releasing it brings the show back.
+        engine.blackout_flag().store(true, Ordering::Relaxed);
+        assert!(engine.get_universe_data(1).iter().all(|&v| v == 0));
+        engine.blackout_flag().store(false, Ordering::Relaxed);
+        assert_eq!(engine.get_universe_data(1)[0], 128);
     }
 }

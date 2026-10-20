@@ -28,11 +28,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let manager = OutputManager::new(app.handle().clone());
+            let engine = Arc::new(EngineManager::new());
+            let manager = OutputManager::new(app.handle().clone(), engine.blackout_flag());
             app.manage(manager);
             app.manage(DmxInputManager::new());
 
-            let engine = Arc::new(EngineManager::new());
             engine.start_tick(app.handle().clone());
             app.manage(TimingManager::new(engine.timing_handles()));
             app.manage(engine.clone());

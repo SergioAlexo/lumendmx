@@ -25,10 +25,11 @@ pub struct OutputManager {
 }
 
 impl OutputManager {
-    pub fn new(app: AppHandle) -> Self {
+    /// `blackout` is the engine's flag, so both halves agree on it.
+    pub fn new(app: AppHandle, blackout: Arc<AtomicBool>) -> Self {
         Self {
             app,
-            blackout: Arc::new(AtomicBool::new(false)),
+            blackout,
             universes: Mutex::new(HashMap::new()),
         }
     }
