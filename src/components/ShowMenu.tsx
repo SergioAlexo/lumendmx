@@ -1,29 +1,52 @@
+import { useEffect } from "react";
 import { FilePlus, FolderOpen, Redo2, Save, Undo2 } from "lucide-react";
+import * as showApi from "../lib/show";
 import { useShowStore } from "../store/useShowStore";
-import { useUndoStore } from "../store/useUndoStore";
 import { Button } from "./ui/button";
 import { Select } from "./ui/input";
 
-/** File (New/Open/Save/Save As/Recent) and Undo/Redo controls for the top bar. */
+function isEditable(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+}
+
+/** Cmd/Ctrl+S saves, Cmd/Ctrl+Z / Shift+Cmd/Ctrl+Z undo and redo. Used by
+ * every window, popped-out tabs included. */
+export function useShowShortcuts() {
+  const run = useShowStore((s) => s.run);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "s") {
+        e.preventDefault();
+        void run(() => showApi.saveShow(e.shiftKey));
+      } else if (key === "z" && !isEditable(e.target)) {
+        e.preventDefault();
+        void run(e.shiftKey ? showApi.redo : showApi.undo);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [run]);
+}
+
+/** File (New/Open/Save/Save As/Recent) and Undo/Redo controls for the top
+ * bar. */
 export function ShowMenu() {
-  const { meta, dirty, saving, recent, newShow, openShow, save, saveAs } = useShowStore();
-  const { canUndo, canRedo, undoLabel, redoLabel, undo, redo } = useUndoStore();
+  const show = useShowStore((s) => s.show);
+  const recent = useShowStore((s) => s.recent);
+  const run = useShowStore((s) => s.run);
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="ghost" size="iconSm" title="New show" onClick={() => void newShow()}>
+      <Button variant="ghost" size="iconSm" title="New show" onClick={() => void run(showApi.newShow)}>
         <FilePlus />
       </Button>
-      <Button variant="ghost" size="iconSm" title="Open show…" onClick={() => void openShow()}>
+      <Button variant="ghost" size="iconSm" title="Open show…" onClick={() => void run(() => showApi.openShow())}>
         <FolderOpen />
       </Button>
-      <Button
-        variant="ghost"
-        size="iconSm"
-        title="Save"
-        disabled={saving}
-        onClick={() => void save()}
-      >
+      <Button variant="ghost" size="iconSm" title="Save (⌘S)" onClick={() => void run(() => showApi.saveShow())}>
         <Save />
       </Button>
       {recent.length > 0 && (
@@ -32,7 +55,8 @@ export function ShowMenu() {
           title="Recent shows"
           value=""
           onChange={(e) => {
-            if (e.target.value) void openShow(e.target.value);
+            const path = e.target.value;
+            if (path) void run(() => showApi.openShow(path));
           }}
         >
           <option value="" disabled>
@@ -51,28 +75,28 @@ export function ShowMenu() {
       <Button
         variant="ghost"
         size="iconSm"
-        title={undoLabel ? `Undo ${undoLabel}` : "Undo"}
-        disabled={!canUndo}
-        onClick={() => undo()}
+        title={show?.undoLabel ? `Undo ${show.undoLabel} (⌘Z)` : "Undo"}
+        disabled={!show?.undoLabel}
+        onClick={() => void run(showApi.undo)}
       >
         <Undo2 />
       </Button>
       <Button
         variant="ghost"
         size="iconSm"
-        title={redoLabel ? `Redo ${redoLabel}` : "Redo"}
-        disabled={!canRedo}
-        onClick={() => redo()}
+        title={show?.redoLabel ? `Redo ${show.redoLabel} (⇧⌘Z)` : "Redo"}
+        disabled={!show?.redoLabel}
+        onClick={() => void run(showApi.redo)}
       >
         <Redo2 />
       </Button>
 
-      <span className="text-sm text-muted-foreground">
-        {meta?.name ?? "Untitled Show"}
-        {dirty ? " •" : ""}
+      <span className="text-sm text-muted-foreground" title={show?.path ?? "Not saved yet"}>
+        {show?.name ?? "Untitled Show"}
+        {show?.dirty ? " •" : ""}
       </span>
 
-      <Button variant="ghost" size="sm" onClick={() => void saveAs()}>
+      <Button variant="ghost" size="sm" onClick={() => void run(() => showApi.saveShow(true))}>
         Save As…
       </Button>
     </div>

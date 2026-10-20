@@ -5,6 +5,38 @@ physical rig (see `FIXTURES.md`), or because they need the actual built
 desktop app rather than the browser-only dev preview this environment can
 drive. Check these off by hand; each entry says which phase added it.
 
+## Node-graph redesign (2026-10-20)
+
+Items further down about the command line, cuelists, presets, effects,
+pixel maps, the timeline, audio triggers and the 3D view refer to features
+that were removed; skip them.
+
+- [ ] **Detect controllers finds the rig.** With the FTDI widget (and/or an
+      Enttec Pro, an Art-Net node) connected, Setup → Detect lists each one
+      once (macOS: the `cu.` port, not `tty.`), and "Add as universe" makes
+      it output.
+- [ ] **A graph drives the real pars.** Group the 4 pars, then Fixture Output
+      (the group) ← Color + Number 1: all four show the colour at full. Add
+      Fan → LFO → intensity: a wave visibly travels across them in group
+      order, and dragging members in the Groups panel changes the order.
+- [ ] **RGBW/UV mixing looks right.** On the 6-colour pars, white, pastel
+      and saturated colours from a Color node look right (white LED takes
+      the shared part, amber/UV stay off unless driven via "More
+      attributes").
+- [ ] **Function channels stay in DMX mode.** Freshly patched fixtures with
+      a function/mode channel don't start a built-in program with an empty
+      graph.
+- [ ] **No stutter while editing.** Drag nodes, scrub numbers and rewire
+      while an LFO runs: the output doesn't glitch (compiles happen off the
+      tick, and the tick swaps plans atomically).
+- [ ] **MIDI Learn and the playback bar.** A MIDI CC node learns a knob on
+      the real controller and drives intensity; a Fader node's playback-bar
+      fader does the same; a flash Button blinks the rig while held.
+- [ ] **An agent over MCP.** `claude mcp add --transport http lumendmx
+      http://127.0.0.1:7410/mcp`, ask Claude Code for "a red/blue alternating
+      chase on the beat across the pars": the nodes appear in the editor, the
+      rig does it, and Cmd+Z undoes it.
+
 ## Phase 1 — Foundations
 
 - [ ] **New/Open/Save/Save As dialogs.** These use native file dialogs (`rfd`

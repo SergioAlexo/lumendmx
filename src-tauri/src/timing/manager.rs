@@ -3,7 +3,6 @@
 //! settings are applied through `configure`, which starts and stops inputs
 //! to match.
 
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,7 @@ use super::audio_input::{self, AudioCapture};
 use super::ltc::LtcDecoder;
 use super::mixxx::MixxxDecoder;
 use super::mtc::{ClockEvent, MidiClockTracker, MtcDecoder};
-use crate::engine::audio_reactive::{AudioTrigger, BandLevels};
+use crate::engine::audio::BandLevels;
 use crate::engine::manager::TimingHandles;
 use crate::engine::timecode::{parts_to_ms, TimecodeSource, TimecodeStatus};
 use crate::io::midi::{self, MidiInputHandle};
@@ -42,7 +41,7 @@ pub enum TempoSource {
 pub struct TimingSettings {
     pub tempo_source: TempoSource,
     pub timecode_source: TimecodeSource,
-    /// Run audio analysis (band levels for triggers, beat detection) even
+    /// Run audio analysis (band levels for the graph's Audio node) even
     /// when the tempo source isn't Audio.
     pub audio_analysis: bool,
     /// `None`: the system default input.
@@ -50,24 +49,21 @@ pub struct TimingSettings {
     pub audio_channel: u32,
     pub ltc_device: Option<String>,
     pub ltc_channel: u32,
-    /// The MIDI port MIDI clock and MTC are read from.
+    /// The MIDI port MIDI clock, MTC and the graph's MIDI nodes read.
     pub midi_port: Option<String>,
-    /// Chases run at the show tempo instead of their own BPM.
-    pub chases_follow_tempo: bool,
 }
 
 impl Default for TimingSettings {
     fn default() -> Self {
         Self {
             tempo_source: TempoSource::Manual,
-            timecode_source: TimecodeSource::Internal,
+            timecode_source: TimecodeSource::None,
             audio_analysis: false,
             audio_device: None,
             audio_channel: 0,
             ltc_device: None,
             ltc_channel: 0,
             midi_port: None,
-            chases_follow_tempo: false,
         }
     }
 }
@@ -104,7 +100,6 @@ pub struct TimingStatus {
     pub ltc_running: bool,
     pub ltc_error: Option<String>,
     pub timecode: TimecodeStatus,
-    pub timecode_learn: bool,
 }
 
 /// State the input callbacks and `status` share.
@@ -143,7 +138,6 @@ impl TimingManager {
     pub fn configure(&self, settings: TimingSettings) {
         let mut inputs = self.inputs.lock().unwrap();
         let old = inputs.settings.clone();
-        self.handles.chases_follow_tempo.store(settings.chases_follow_tempo, Ordering::Relaxed);
         self.shared.lock().unwrap().tempo_source = Some(settings.tempo_source);
         self.handles.timecode.lock().unwrap().set_source(settings.timecode_source);
 
@@ -176,21 +170,18 @@ impl TimingManager {
             }
         }
 
-        let want_midi = matches!(settings.tempo_source, TempoSource::MidiClock | TempoSource::Mixxx) || settings.timecode_source == TimecodeSource::Mtc;
-        if !want_midi || old.midi_port != settings.midi_port {
+        // Open whenever a port is chosen: MIDI nodes read it too.
+        if old.midi_port != settings.midi_port {
             inputs.midi = None;
             self.shared.lock().unwrap().midi = MidiInputStatus::default();
         }
-        if want_midi && inputs.midi.is_none() {
-            match &settings.midi_port {
-                None => self.shared.lock().unwrap().midi.error = Some("Choose a MIDI port".to_string()),
-                Some(port) => match self.start_midi(port) {
-                    Ok(handle) => {
-                        inputs.midi = Some(handle);
-                        self.shared.lock().unwrap().midi = MidiInputStatus { connected: true, ..Default::default() };
-                    }
-                    Err(e) => self.shared.lock().unwrap().midi.error = Some(e),
-                },
+        if let (Some(port), None) = (&settings.midi_port, &inputs.midi) {
+            match self.start_midi(port) {
+                Ok(handle) => {
+                    inputs.midi = Some(handle);
+                    self.shared.lock().unwrap().midi = MidiInputStatus { connected: true, ..Default::default() };
+                }
+                Err(e) => self.shared.lock().unwrap().midi.error = Some(e),
             }
         }
 
@@ -199,7 +190,7 @@ impl TimingManager {
 
     fn stop_audio_status(&self) {
         self.shared.lock().unwrap().audio = AudioInputStatus::default();
-        self.handles.audio.lock().unwrap().levels = BandLevels::default();
+        *self.handles.audio.lock().unwrap() = BandLevels::default();
     }
 
     fn start_audio(&self, settings: &TimingSettings) -> Result<AudioCapture, String> {
@@ -212,7 +203,7 @@ impl TimingManager {
             analyzer.push(block);
             let levels = analyzer.levels();
             let estimate = analyzer.tempo();
-            reactive.lock().unwrap().levels = levels;
+            *reactive.lock().unwrap() = levels;
             let mut shared = shared.lock().unwrap();
             shared.audio.levels = levels;
             shared.audio.bpm = estimate.bpm;
@@ -248,10 +239,12 @@ impl TimingManager {
         let shared = self.shared.clone();
         let tempo = self.handles.tempo.clone();
         let clock = self.handles.timecode.clone();
+        let control = self.handles.midi.clone();
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
         let mut mixxx = MixxxDecoder::new();
         midi::open_input(port, move |stamp_us, msg| {
+            control.lock().unwrap().feed(msg);
             if let Some(pos) = mtc.feed(msg) {
                 clock.lock().unwrap().set_external(TimecodeSource::Mtc, pos.ms, pos.fps);
             }
@@ -290,44 +283,7 @@ impl TimingManager {
             ltc_running,
             ltc_error: shared.ltc_error.clone(),
             timecode: self.handles.timecode.lock().unwrap().status(),
-            timecode_learn: self.handles.timecode_learn.load(Ordering::Relaxed),
         }
-    }
-
-    // --- Audio-reactive triggers ---
-
-    pub fn list_triggers(&self) -> Vec<AudioTrigger> {
-        self.handles.audio.lock().unwrap().triggers().to_vec()
-    }
-
-    pub fn upsert_trigger(&self, trigger: AudioTrigger) -> u32 {
-        self.handles.audio.lock().unwrap().upsert(trigger)
-    }
-
-    pub fn delete_trigger(&self, id: u32) {
-        self.handles.audio.lock().unwrap().delete(id);
-    }
-
-    // --- Timecode transport (internal clock) ---
-
-    pub fn set_timecode_learn(&self, on: bool) {
-        self.handles.timecode_learn.store(on, Ordering::Relaxed);
-    }
-
-    pub fn timecode_play(&self) {
-        self.handles.timecode.lock().unwrap().play();
-    }
-
-    pub fn timecode_pause(&self) {
-        self.handles.timecode.lock().unwrap().pause();
-    }
-
-    pub fn timecode_stop(&self) {
-        self.handles.timecode.lock().unwrap().stop();
-    }
-
-    pub fn timecode_seek(&self, ms: f64) {
-        self.handles.timecode.lock().unwrap().seek(ms);
     }
 }
 

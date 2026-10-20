@@ -4,7 +4,7 @@ import type { TimecodeSource } from "./TimecodeSource";
 
 export type TimingSettings = { tempoSource: TempoSource, timecodeSource: TimecodeSource, 
 /**
- * Run audio analysis (band levels for triggers, beat detection) even
+ * Run audio analysis (band levels for the graph's Audio node) even
  * when the tempo source isn't Audio.
  */
 audioAnalysis: boolean, 
@@ -13,10 +13,6 @@ audioAnalysis: boolean,
  */
 audioDevice: string | null, audioChannel: number, ltcDevice: string | null, ltcChannel: number, 
 /**
- * The MIDI port MIDI clock and MTC are read from.
+ * The MIDI port MIDI clock, MTC and the graph's MIDI nodes read.
  */
-midiPort: string | null, 
-/**
- * Chases run at the show tempo instead of their own BPM.
- */
-chasesFollowTempo: boolean, };
+midiPort: string | null, };

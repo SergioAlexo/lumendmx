@@ -3,6 +3,6 @@ import type { TimecodeSource } from "./TimecodeSource";
 
 export type TimecodeStatus = { source: TimecodeSource, positionMs: number, 
 /**
- * Internal: the transport is playing. External: positions are arriving.
+ * Positions are arriving.
  */
 active: boolean, fps: number, };

@@ -8,7 +8,7 @@ use super::config::{DriverConfig, DEFAULT_NETWORK_RATE_HZ, DEFAULT_SERIAL_RATE_H
 use super::input::DmxInputManager;
 use super::manager::OutputManager;
 use super::runner::UniverseStatus;
-use super::{artnet, UNIVERSE_SIZE};
+use super::artnet;
 
 #[derive(Serialize)]
 pub struct SerialPortDescriptor {
@@ -19,8 +19,9 @@ pub struct SerialPortDescriptor {
     pub label: String,
 }
 
+/// Async so the IOKit scan doesn't block the UI thread.
 #[tauri::command]
-pub fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
+pub async fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
     serialport::available_ports()
         .map(|ports| {
             ports
@@ -47,40 +48,6 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
                 .collect()
         })
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn output_configure_universe(
-    manager: State<OutputManager>,
-    universe_id: u32,
-    driver: DriverConfig,
-) -> Result<(), String> {
-    manager.configure(universe_id, driver)
-}
-
-#[tauri::command]
-pub fn output_remove_universe(manager: State<OutputManager>, universe_id: u32) -> Result<(), String> {
-    manager.remove(universe_id);
-    Ok(())
-}
-
-/// Overwrites all 512 channels of `universe_id`. Errors if that universe has
-/// no driver configured (call `output_configure_universe` first).
-#[tauri::command]
-pub fn output_update_universe_data(
-    manager: State<OutputManager>,
-    universe_id: u32,
-    channels: Vec<u8>,
-) -> Result<(), String> {
-    if channels.len() != UNIVERSE_SIZE {
-        return Err(format!(
-            "Expected {UNIVERSE_SIZE} channels, got {}",
-            channels.len()
-        ));
-    }
-    let mut data = [0u8; UNIVERSE_SIZE];
-    data.copy_from_slice(&channels);
-    manager.set_universe_data(universe_id, data)
 }
 
 #[tauri::command]
@@ -169,6 +136,56 @@ pub fn output_discover_artnet_nodes() -> Result<Vec<ArtNetNode>, String> {
         .collect())
 }
 
+/// A DMX controller found on this machine or network, with the driver
+/// settings to use it as a universe's output.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct DetectedController {
+    pub label: String,
+    pub driver: DriverConfig,
+}
+
+/// What a USB serial device is as a DMX controller, if anything. Enttec's
+/// Pro announces itself in its product string; any other FTDI-chip device
+/// (vendor 0x0403) is taken to be an Open DMX-style widget.
+fn classify_serial(port_name: &str, vid: u16, product: Option<&str>) -> Option<DriverConfig> {
+    // macOS lists every serial device twice; the call-out (`cu.`) node is
+    // the one to open.
+    if port_name.starts_with("/dev/tty.") {
+        return None;
+    }
+    let product = product.unwrap_or_default().to_ascii_lowercase();
+    if product.contains("dmx usb pro") || product.contains("enttec pro") {
+        return Some(DriverConfig::EnttecPro { port: Some(port_name.to_string()), universe_index: 0, rate_hz: DEFAULT_SERIAL_RATE_HZ });
+    }
+    (vid == 0x0403).then(|| DriverConfig::Ftdi { port: Some(port_name.to_string()), rate_hz: DEFAULT_SERIAL_RATE_HZ })
+}
+
+/// USB DMX widgets plugged in now, plus Art-Net nodes answering a poll
+/// (~2s). Async so the poll doesn't block the UI thread.
+#[tauri::command]
+pub async fn output_detect_controllers() -> Vec<DetectedController> {
+    let mut found = Vec::new();
+    for port in serialport::available_ports().unwrap_or_default() {
+        if let serialport::SerialPortType::UsbPort(info) = &port.port_type {
+            if let Some(driver) = classify_serial(&port.port_name, info.vid, info.product.as_deref()) {
+                let name = info.product.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "USB DMX".to_string());
+                found.push(DetectedController { label: format!("{name} — {}", port.port_name), driver });
+            }
+        }
+    }
+    for node in artnet::discover_nodes(Duration::from_secs(2)).unwrap_or_default() {
+        let ip = format!("{}.{}.{}.{}", node.ip[0], node.ip[1], node.ip[2], node.ip[3]);
+        let name = if node.long_name.is_empty() { node.short_name.clone() } else { node.long_name.clone() };
+        found.push(DetectedController {
+            label: format!("Art-Net: {} — {ip}", if name.is_empty() { "node".to_string() } else { name }),
+            driver: DriverConfig::ArtNet { destination: ip, net: 0, subnet: 0, universe: 0, rate_hz: DEFAULT_NETWORK_RATE_HZ },
+        });
+    }
+    found
+}
+
 // --- DMX input (see output::input's scope note: decode-only for now, not yet
 // merged into any universe's output) ---
 
@@ -200,4 +217,17 @@ pub fn input_stop_sacn(manager: State<DmxInputManager>, universe: u16) {
 #[tauri::command]
 pub fn input_get_sacn_frame(manager: State<DmxInputManager>, universe: u16) -> Option<Vec<u8>> {
     manager.sacn_frame(universe).map(|d| d.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serial_devices_are_classified_by_chip_and_product() {
+        assert!(matches!(classify_serial("/dev/cu.usbserial-1", 0x0403, Some("DMX USB PRO")), Some(DriverConfig::EnttecPro { .. })));
+        assert!(matches!(classify_serial("/dev/cu.usbserial-2", 0x0403, Some("FT232R USB UART")), Some(DriverConfig::Ftdi { .. })));
+        assert_eq!(classify_serial("/dev/tty.usbserial-2", 0x0403, None), None);
+        assert_eq!(classify_serial("/dev/cu.usbmodem1", 0x2341, Some("Arduino Uno")), None);
+    }
 }

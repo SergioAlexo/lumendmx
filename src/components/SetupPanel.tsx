@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Trash2, Wifi } from "lucide-react";
+import { Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import * as dmx from "../lib/dmx";
-import type { ArtNetNode, DriverConfig } from "../lib/showfile/generated";
+import * as showApi from "../lib/show";
+import type { DetectedController, DriverConfig } from "../lib/showfile/generated";
 import { cn } from "../lib/utils";
 import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
 import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
 import { Button } from "./ui/button";
 import { Input, Select } from "./ui/input";
+import { Section } from "./ui/section";
+import { AppUpdateCard } from "./AppUpdateCard";
+import { TimingSettingsPanel } from "./TimingSettings";
+import { McpSettingsPanel } from "./McpSettings";
 
 type DriverKind = DriverConfig["kind"];
 
@@ -43,75 +48,98 @@ function statusColor(connected: boolean, hasDriver: boolean): string {
   return connected ? "bg-success" : "bg-destructive";
 }
 
-/** The universe -> output mapping table (BUILD_PLAN Phase 2): add/remove
- * universes, pick a driver per universe and its driver-specific settings, see
- * live status, and run Art-Net node discovery. */
+/** Two drivers that would drive the same physical output. */
+function sameController(a: DriverConfig, b: DriverConfig): boolean {
+  if ((a.kind === "ftdi" || a.kind === "enttecPro") && (b.kind === "ftdi" || b.kind === "enttecPro")) {
+    return a.port !== null && a.port === b.port;
+  }
+  if (a.kind === "artNet" && b.kind === "artNet") return a.destination === b.destination;
+  return false;
+}
+
+/** The Setup tab: universes and the controller each one outputs through,
+ * controller detection, then the tempo and input sources and app updates.
+ * One universe is one controller output, so fixtures on different
+ * controllers live in different universes. */
 export function SetupPanel() {
-  const universes = useShowStore((s) => s.meta?.universes ?? EMPTY_UNIVERSES);
-  const setUniverseDriver = useShowStore((s) => s.setUniverseDriver);
-  const addUniverse = useShowStore((s) => s.addUniverse);
-  const removeUniverseEntirely = useShowStore((s) => s.removeUniverseEntirely);
+  const universes = useShowStore((s) => s.show?.universes ?? EMPTY_UNIVERSES);
+  const patch = useShowStore((s) => s.show?.patch);
+  const run = useShowStore((s) => s.run);
   const statuses = useUniverseStatusesStore((s) => s.statuses);
 
   const [ports, setPorts] = useState<dmx.SerialPortDescriptor[]>([]);
   const [rates, setRates] = useState({ serial: 30, network: 40 });
-  const [nodes, setNodes] = useState<ArtNetNode[] | null>(null);
-  const [discovering, setDiscovering] = useState(false);
+  const [detected, setDetected] = useState<DetectedController[] | null>(null);
+  const [detecting, setDetecting] = useState(false);
 
-  useEffect(() => {
+  const refreshPorts = () =>
     void dmx
       .listSerialPorts()
       .then(setPorts)
       .catch(() => undefined);
+
+  useEffect(() => {
+    refreshPorts();
     void dmx
       .getDriverDefaults()
       .then((d) => setRates({ serial: d.serialRateHz, network: d.networkRateHz }))
       .catch(() => undefined);
   }, []);
 
-  const discover = async () => {
-    setDiscovering(true);
+  const detect = async () => {
+    setDetecting(true);
     try {
-      setNodes(await dmx.discoverArtNetNodes());
+      setDetected(await dmx.detectControllers());
+      refreshPorts();
     } catch (err) {
-      console.warn("Art-Net discovery failed:", err);
-      setNodes([]);
+      console.warn("Controller detection failed:", err);
+      setDetected([]);
     } finally {
-      setDiscovering(false);
+      setDetecting(false);
     }
   };
 
+  const setDriver = (id: number, driver: DriverConfig) => void run(() => showApi.updateUniverse(id, { driver }));
+  const unused = (detected ?? []).filter((c) => !universes.some((u) => sameController(u.driver, c.driver)));
+
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Universes &amp; Output
-        </h2>
-        <Button size="sm" onClick={() => addUniverse(`Universe ${universes.length + 1}`)}>
-          <Plus />
-          Add universe
-        </Button>
-      </div>
-
-      <div className="flex flex-col gap-3">
+      <Section
+        title="Universes & controllers"
+        actions={
+          <Button size="sm" onClick={() => void run(() => showApi.addUniverse({ kind: "null" }))}>
+            <Plus />
+            Add universe
+          </Button>
+        }
+      >
         {universes.map((universe) => {
           const status = statuses[universe.id];
           const hasDriver = universe.driver.kind !== "null";
+          const fixtureCount = patch?.filter((f) => f.universe === universe.id).length ?? 0;
           return (
-            <div key={universe.id} className="rounded-md border border-border bg-card p-3">
+            <div key={universe.id} className="rounded-md border border-border p-3">
               <div className="flex flex-wrap items-center gap-3">
                 <span
                   className={cn("h-2.5 w-2.5 shrink-0 rounded-full", statusColor(status?.connected ?? false, hasDriver))}
                   title={status?.error ?? undefined}
                 />
-                <span className="w-28 shrink-0 truncate text-sm font-medium">{universe.name}</span>
+                <span className="w-8 shrink-0 text-xs text-muted-foreground">U{universe.id}</span>
+                <Input
+                  className="w-40"
+                  defaultValue={universe.name}
+                  key={universe.name}
+                  aria-label="Universe name"
+                  onBlur={(e) => {
+                    const name = e.target.value.trim();
+                    if (name && name !== universe.name) void run(() => showApi.updateUniverse(universe.id, { name }));
+                  }}
+                />
 
                 <Select
                   className="w-40"
                   value={universe.driver.kind}
-                  onChange={(e) =>
-                    void setUniverseDriver(universe.id, defaultDriverFor(e.target.value as DriverKind, rates))
-                  }
+                  onChange={(e) => setDriver(universe.id, defaultDriverFor(e.target.value as DriverKind, rates))}
                 >
                   <option value="null">No output</option>
                   <option value="ftdi">FTDI Open DMX</option>
@@ -120,11 +148,7 @@ export function SetupPanel() {
                   <option value="sacn">sACN</option>
                 </Select>
 
-                <DriverFields
-                  driver={universe.driver}
-                  ports={ports}
-                  onChange={(driver) => void setUniverseDriver(universe.id, driver)}
-                />
+                <DriverFields driver={universe.driver} ports={ports} onChange={(driver) => setDriver(universe.id, driver)} />
 
                 {status && (
                   <span className="text-xs text-muted-foreground">
@@ -133,11 +157,13 @@ export function SetupPanel() {
                 )}
 
                 <div className="flex-1" />
+                <span className="text-xs text-muted-foreground">{fixtureCount} fixtures</span>
                 <Button
                   variant="ghost"
                   size="iconSm"
-                  title="Remove universe"
-                  onClick={() => removeUniverseEntirely(universe.id)}
+                  title={fixtureCount > 0 ? "Move or remove its fixtures first" : "Remove universe"}
+                  disabled={fixtureCount > 0}
+                  onClick={() => void run(() => showApi.removeUniverse(universe.id))}
                 >
                   <Trash2 />
                 </Button>
@@ -145,28 +171,46 @@ export function SetupPanel() {
             </div>
           );
         })}
-        {universes.length === 0 && <p className="text-sm text-muted-foreground">No universes yet — add one above.</p>}
-      </div>
+        {universes.length === 0 && <p className="text-sm text-muted-foreground">No universes yet — add one or detect your controllers.</p>}
+      </Section>
 
-      <div className="rounded-md border border-border bg-card p-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Art-Net node discovery</h3>
-          <Button size="sm" variant="outline" onClick={() => void discover()} disabled={discovering}>
-            {discovering ? <RefreshCw className="animate-spin" /> : <Wifi />}
-            {discovering ? "Discovering…" : "Discover"}
+      <Section
+        title="Detect controllers"
+        actions={
+          <Button size="sm" variant="outline" onClick={() => void detect()} disabled={detecting}>
+            {detecting ? <RefreshCw className="animate-spin" /> : <Search />}
+            {detecting ? "Looking…" : "Detect"}
           </Button>
-        </div>
-        {nodes && (
-          <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-            {nodes.length === 0 && <li>No nodes replied.</li>}
-            {nodes.map((n) => (
-              <li key={n.ip}>
-                {n.ip} — {n.longName || n.shortName || "Unnamed node"}
+        }
+      >
+        <p className="text-xs text-muted-foreground">
+          Finds USB DMX interfaces (Enttec Pro, FTDI Open DMX) and Art-Net nodes on the network. Each controller becomes
+          its own universe.
+        </p>
+        {detected && (
+          <ul className="flex flex-col gap-1.5 text-sm">
+            {detected.length === 0 && <li className="text-muted-foreground">Nothing found.</li>}
+            {detected.length > 0 && unused.length === 0 && (
+              <li className="text-muted-foreground">Every controller found already has a universe.</li>
+            )}
+            {unused.map((c) => (
+              <li key={c.label} className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2">
+                <span className="truncate">{c.label}</span>
+                <Button size="sm" variant="secondary" onClick={() => void run(() => showApi.addUniverse(c.driver))}>
+                  <Plus />
+                  Add as universe
+                </Button>
               </li>
             ))}
           </ul>
         )}
-      </div>
+      </Section>
+
+      <TimingSettingsPanel />
+
+      <McpSettingsPanel />
+
+      <AppUpdateCard />
     </div>
   );
 }
