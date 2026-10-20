@@ -19,6 +19,8 @@ export * from "./Graph";
 export * from "./GraphIssue";
 export * from "./GraphView";
 export * from "./Group";
+export * from "./McpSettings";
+export * from "./McpStatus";
 export * from "./MidiInputStatus";
 export * from "./MidiPortInfo";
 export * from "./Node";

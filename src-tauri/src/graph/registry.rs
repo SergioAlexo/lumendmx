@@ -4,12 +4,13 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::model::ParamValue;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub enum NodeKind {
@@ -587,9 +588,71 @@ pub fn node_types() -> Vec<NodeTypeInfo> {
     NodeKind::ALL.iter().map(|&k| node_type(k)).collect()
 }
 
+/// docs/NODES.md: the node reference, rendered from this registry.
+#[cfg(test)]
+fn nodes_markdown() -> String {
+    let value = |v: &ParamValue| match v {
+        ParamValue::Bool(b) => b.to_string(),
+        ParamValue::Number(n) => n.to_string(),
+        ParamValue::Text(t) if t.is_empty() => "(empty)".to_string(),
+        ParamValue::Text(t) => format!("`{t}`"),
+    };
+    let ty = |t: SocketType| format!("{t:?}").to_lowercase();
+    let mut out = String::from(
+        "# Node reference\n\nGenerated from `src-tauri/src/graph/registry.rs` by `cargo test` (run `UPDATE_DOCS=1 cargo test nodes_doc` after changing a node). \
+         Values are 0-1 unless noted. An unconnected input takes its value from a param with the input's id, else the default shown.\n",
+    );
+    let mut category = String::new();
+    for info in node_types() {
+        if info.category != category {
+            category = info.category.clone();
+            out.push_str(&format!("\n## {category}\n"));
+        }
+        out.push_str(&format!("\n### {} (`{}`)\n\n{}\n", info.label, serde_json::to_value(info.kind).unwrap().as_str().unwrap(), info.description));
+        let sockets = |label: &str, list: &[SocketInfo], out: &mut String| {
+            if list.is_empty() {
+                return;
+            }
+            out.push_str(&format!("\n{label}:\n"));
+            for s in list {
+                let default = s.default.as_ref().map(|d| format!(", default {}", value(d))).unwrap_or_default();
+                out.push_str(&format!("- `{}` {} ({}{default})\n", s.id, s.label, ty(s.ty)));
+            }
+        };
+        sockets("Inputs", &info.inputs, &mut out);
+        sockets("Outputs", &info.outputs, &mut out);
+        if !info.params.is_empty() {
+            out.push_str("\nParams:\n");
+            for p in &info.params {
+                let kind = match &p.kind {
+                    ParamKind::Number { min, max, .. } => format!("number {min} to {max}"),
+                    ParamKind::Bool => "on/off".to_string(),
+                    ParamKind::Text { hint } => format!("text: {hint}"),
+                    ParamKind::Choice { options } => options.join(" / "),
+                    ParamKind::Color => "colour".to_string(),
+                    ParamKind::Group => "group id (0 = none)".to_string(),
+                };
+                out.push_str(&format!("- `{}` {}: {kind}, default {}\n", p.id, p.label, value(&p.default)));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nodes_doc_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/NODES.md");
+        let rendered = nodes_markdown();
+        if std::env::var("UPDATE_DOCS").is_ok() {
+            std::fs::write(&path, &rendered).unwrap();
+        }
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(current == rendered, "docs/NODES.md is out of date: run `UPDATE_DOCS=1 cargo test nodes_doc`");
+    }
 
     #[test]
     fn every_node_type_is_described_and_fits_the_output_limit() {

@@ -1,18 +1,21 @@
 mod engine;
 mod graph;
 mod io;
+mod mcp;
 mod output;
 mod show;
 mod showfile;
 mod timing;
 
 use engine::manager::EngineManager;
+use mcp::McpServer;
 use output::input::DmxInputManager;
 use output::manager::OutputManager;
 use show::commands::AppSink;
 use show::service::ShowService;
 use showfile::store::ShowStore;
 use timing::manager::TimingManager;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -29,20 +32,27 @@ pub fn run() {
             app.manage(manager);
             app.manage(DmxInputManager::new());
 
-            let engine = EngineManager::new();
+            let engine = Arc::new(EngineManager::new());
             engine.start_tick(app.handle().clone());
             app.manage(TimingManager::new(engine.timing_handles()));
-            app.manage(engine);
+            app.manage(engine.clone());
 
             // After the engine and outputs: loading the last session
             // configures universes and hands the engine its patch.
-            let store = app.path().app_data_dir().ok().map(ShowStore::new);
-            app.manage(ShowService::new(Box::new(AppSink { app: app.handle().clone() }), store));
+            let data_dir = app.path().app_data_dir().ok();
+            let store = data_dir.clone().map(ShowStore::new);
+            let sink = AppSink { app: app.handle().clone(), engine: engine.clone() };
+            let show = Arc::new(ShowService::new(Box::new(sink), store));
+            app.manage(show.clone());
 
-            let handle = app.handle().clone();
+            let mcp = Arc::new(McpServer::new(show.clone(), engine.clone(), data_dir));
+            mcp.apply();
+            app.manage(mcp);
+
+            let autosaved = show.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(AUTOSAVE_INTERVAL);
-                handle.state::<ShowService>().autosave_if_dirty();
+                autosaved.autosave_if_dirty();
             });
 
             Ok(())
@@ -104,6 +114,8 @@ pub fn run() {
             show::commands::graph_set_control,
             show::commands::graph_controls,
             show::commands::graph_last_midi,
+            mcp::mcp_status,
+            mcp::mcp_configure,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

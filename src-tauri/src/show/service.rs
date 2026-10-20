@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -87,7 +88,7 @@ pub struct GraphView {
 }
 
 /// Patch one or more fixtures of one type.
-#[derive(Debug, Clone, Deserialize, TS)]
+#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct AddFixtures {
@@ -117,7 +118,7 @@ pub struct AddFixtures {
 }
 
 /// Changes to one fixture; omitted fields stay as they are.
-#[derive(Debug, Clone, Default, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct FixtureUpdate {
@@ -786,10 +787,15 @@ pub mod tests {
     /// and no file store.
     pub fn service() -> (ShowService, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
-        let service = ShowService::new(Box::new(sink.clone()), None);
+        (service_with(Box::new(sink.clone())), sink)
+    }
+
+    /// The same, reporting to `sink`.
+    pub fn service_with(sink: Box<dyn ShowSink>) -> ShowService {
+        let service = ShowService::new(sink, None);
         service.set_library(vec![json(&rgb_par()), json(&rgb_bar())]);
         service.add_universe(None, DriverConfig::Null).unwrap();
-        (service, sink)
+        service
     }
 
     fn add(service: &ShowService, universe: u32, address: Option<u16>, count: u32) -> Result<Vec<PatchedFixture>, String> {

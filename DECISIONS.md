@@ -548,3 +548,44 @@ are not built.
   fractional bit lengths and low levels; it does not handle reverse play or
   29.97 drop-frame labelling (30 fps is assumed).
 
+## Node-graph redesign (2026-10-20)
+
+- **Three tabs, no programmer.** The UI had grown one tab per engine phase
+  (13 tabs plus a sidebar), which made it clunky to use. The show is now a node graph. The command line,
+  cuelists, presets, the effects engine, pixel maps, the timeline, audio
+  triggers, stage plot, 3D view, DMX monitor and the built-in AI chat were
+  removed, front and back. The playback bar stays as faders and buttons
+  that are graph inputs, and looks are switched inside the graph
+  (Switch/Mix nodes) rather than by cues.
+- **Rust owns the show.** Patch, groups, universes and the graph moved from
+  frontend stores into `show::ShowService`, because the MCP server and the UI
+  must edit the same thing with one undo history. Undo is a snapshot stack
+  over patch + groups + graph (they're small). Universes aren't undoable:
+  they reconfigure hardware.
+- **The frontend still owns the fixture library** and pushes it to Rust:
+  imports (OFL, QLC+) and the fixture editor are TypeScript, and Rust only
+  needs channel offsets, attributes, defaults and capabilities.
+- **Per-fixture, shader-style evaluation** instead of an effects engine with
+  spread/groups/blocks/wings parameters: nodes upstream of an Output run once
+  per target with that target's index, so Fan (which keeps the old
+  groups/blocks/wings maths) or Fixture Index feeding an LFO's phase gives
+  the same fanned effects, and composes with everything else.
+  Fixture-independent nodes run once per tick.
+- **One registry for node types** (`graph/registry.rs`). The editor renders
+  generic nodes from it, MCP clients read it via `list_node_types`, and
+  docs/NODES.md is generated from it. Nothing about a node is duplicated in
+  TypeScript.
+- **Only connected Output inputs are written.** An Output with just a colour
+  linked leaves intensity to other outputs. That's what makes layering
+  several outputs on the same fixtures useful.
+- **Show format 9 starts fresh**; older development formats are refused with
+  a clear message rather than migrated (backward compatibility wasn't needed).
+- **MCP over streamable HTTP inside the app**, not a stdio sidecar: the
+  server has to reach the live show, and HTTP lets any number of clients
+  connect to the running app. rmcp's default Host allowlist (localhost) is
+  the DNS-rebinding protection. It's on by default, since that's the point
+  of having it built in.
+- **MIDI moved to Rust** (midir): the graph's MIDI nodes read the same port
+  as MIDI clock and MTC. The Web MIDI note→asset mapping went with the
+  legacy assets.
+

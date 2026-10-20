@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -11,7 +12,7 @@ use super::registry::NodeKind;
 
 /// A parameter value. Numbers, switches and text cover every node's
 /// settings (colours are "#rrggbb" text, fixture lists "1-4, 7").
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(untagged)]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub enum ParamValue {
@@ -45,14 +46,14 @@ impl ParamValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct NodePosition {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct Node {
@@ -66,7 +67,7 @@ pub struct Node {
     pub params: BTreeMap<String, ParamValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct Edge {
@@ -76,7 +77,7 @@ pub struct Edge {
     pub to_socket: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub struct Graph {
     pub nodes: Vec<Node>,

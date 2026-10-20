@@ -11,6 +11,7 @@ import { Input, Select } from "./ui/input";
 import { Section } from "./ui/section";
 import { AppUpdateCard } from "./AppUpdateCard";
 import { TimingSettingsPanel } from "./TimingSettings";
+import { McpSettingsPanel } from "./McpSettings";
 
 type DriverKind = DriverConfig["kind"];
 
@@ -206,6 +207,8 @@ export function SetupPanel() {
       </Section>
 
       <TimingSettingsPanel />
+
+      <McpSettingsPanel />
 
       <AppUpdateCard />
     </div>
