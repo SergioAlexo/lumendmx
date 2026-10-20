@@ -12,9 +12,9 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use super::model::{Graph, Node, ParamValue};
-use super::registry::{self, NodeKind, SocketInfo, SocketType, MAX_SWITCH_INPUTS};
+use super::registry::{self, NodeKind, SocketInfo, SocketType, DEFAULT_CURVE, MAX_SWITCH_INPUTS};
 use super::write::{parse_hex, TargetItem};
-use crate::engine::waves::{Fan, PositionShape, Waveform};
+use crate::engine::waves::{Curve, CurveMode, Fan, PositionShape, Waveform};
 use crate::show::resolve::ResolvedPatch;
 use crate::showfile::schema::Group;
 
@@ -55,7 +55,8 @@ pub enum Rate {
 pub enum Config {
     None,
     Value(Val),
-    Lfo { waveform: Waveform, rate: Rate, width: f32 },
+    /// `curve` is read once here and only used by `Waveform::Custom`.
+    Lfo { waveform: Waveform, rate: Rate, width: f32, curve: Curve },
     Gain(f32),
     Midi { channel: u8, number: u8 },
     Fan(Fan),
@@ -169,7 +170,16 @@ fn waveform(name: &str) -> Waveform {
         "random" => Waveform::Random,
         "step" => Waveform::Step,
         "pulse" => Waveform::Pulse,
+        "custom" => Waveform::Custom,
         _ => Waveform::Sine,
+    }
+}
+
+fn curve_mode(name: &str) -> CurveMode {
+    match name {
+        "smooth" => CurveMode::Smooth,
+        "step" => CurveMode::Step,
+        _ => CurveMode::Linear,
     }
 }
 
@@ -240,6 +250,7 @@ fn config(node: &Node) -> Config {
             waveform: waveform(text(node, "waveform", "sine")),
             rate: rate(node),
             width: number(node, "width", 50.0),
+            curve: Curve::parse(text(node, "curve", DEFAULT_CURVE), curve_mode(text(node, "curveMode", "linear"))),
         },
         NodeKind::Audio => Config::Gain(number(node, "gain", 1.0)),
         NodeKind::MidiCc => Config::Midi { channel: number(node, "channel", 0.0) as u8, number: number(node, "controller", 1.0) as u8 },

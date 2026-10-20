@@ -37,7 +37,7 @@ Outputs:
 
 ### LFO (`lfo`)
 
-A repeating wave from 0 to 1, at a rate in cycles per beat (follows the BPM) or per second. Phase shifts it, in cycles: feed a Fan into it to make the wave travel across fixtures.
+A repeating wave from 0 to 1, at a rate in cycles per beat (follows the BPM) or per second. Phase shifts it, in cycles: feed a Fan into it to make the wave travel across fixtures. Wave Custom plays the drawn Curve: points "x:y" (x across one cycle, y the value, both 0-1), joined by Between points.
 
 Inputs:
 - `phase` Phase (number, default 0)
@@ -46,10 +46,12 @@ Outputs:
 - `value` Value (number)
 
 Params:
-- `waveform` Wave: sine / square / saw / ramp / random / step / pulse, default `sine`
+- `waveform` Wave: sine / square / saw / ramp / random / step / pulse / custom, default `sine`
 - `rate` Rate: number 0 to 64, default 1
 - `unit` Per: beats / hz, default `beats`
 - `width` Width %: number 1 to 100, default 50
+- `curve` Curve: points `x:y`, comma-separated, default `0:0, 0.5:1, 1:0`
+- `curveMode` Between points: linear / smooth / step, default `linear`
 
 ### Audio (`audio`)
 

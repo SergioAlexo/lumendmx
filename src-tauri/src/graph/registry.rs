@@ -132,6 +132,8 @@ pub enum ParamKind {
     Color,
     /// A group id (0: none).
     Group,
+    /// A drawn wave: points `"x:y, x:y"`, each 0-1.
+    Curve,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -161,7 +163,10 @@ pub struct NodeTypeInfo {
     pub params: Vec<ParamInfo>,
 }
 
-pub const WAVEFORMS: [&str; 7] = ["sine", "square", "saw", "ramp", "random", "step", "pulse"];
+pub const WAVEFORMS: [&str; 8] = ["sine", "square", "saw", "ramp", "random", "step", "pulse", "custom"];
+pub const CURVE_MODES: [&str; 3] = ["linear", "smooth", "step"];
+/// A Custom LFO's wave until it's drawn: a triangle.
+pub const DEFAULT_CURVE: &str = "0:0, 0.5:1, 1:0";
 pub const SHAPES: [&str; 5] = ["circle", "figure8", "ballyhoo", "panSaw", "tiltSaw"];
 pub const MATH_OPS: [&str; 10] = ["add", "subtract", "multiply", "divide", "min", "max", "power", "modulo", "invert", "abs"];
 pub const COMPARE_OPS: [&str; 3] = ["greater", "less", "equal"];
@@ -272,13 +277,17 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Lfo => (
             "LFO",
             "Input",
-            "A repeating wave from 0 to 1, at a rate in cycles per beat (follows the BPM) or per second. Phase shifts it, in cycles: feed a Fan into it to make the wave travel across fixtures.",
+            "A repeating wave from 0 to 1, at a rate in cycles per beat (follows the BPM) or per second. Phase shifts it, in cycles: feed a Fan into it to make the wave travel across fixtures. Wave Custom plays the drawn Curve: points \"x:y\" (x across one cycle, y the value, both 0-1), joined by Between points.",
             vec![input("phase", "Phase", Number, n(0.0))],
             vec![output("value", "Value", Number)],
             [
                 vec![choice("waveform", "Wave", &WAVEFORMS, "sine")],
                 rate_params(),
-                vec![number("width", "Width %", 1.0, 100.0, 1.0, 50.0)],
+                vec![
+                    number("width", "Width %", 1.0, 100.0, 1.0, 50.0),
+                    ParamInfo { id: "curve".into(), label: "Curve".into(), kind: ParamKind::Curve, default: text(DEFAULT_CURVE) },
+                    choice("curveMode", "Between points", &CURVE_MODES, "linear"),
+                ],
             ]
             .concat(),
         ),
@@ -631,6 +640,7 @@ fn nodes_markdown() -> String {
                     ParamKind::Choice { options } => options.join(" / "),
                     ParamKind::Color => "colour".to_string(),
                     ParamKind::Group => "group id (0 = none)".to_string(),
+                    ParamKind::Curve => "points `x:y`, comma-separated".to_string(),
                 };
                 out.push_str(&format!("- `{}` {}: {kind}, default {}\n", p.id, p.label, value(&p.default)));
             }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { curveValue, formatCurve, parseCurve, type CurveMode, type CurvePoint } from "../../lib/curve";
 import type { Group, ParamInfo, ParamValue } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 
@@ -124,6 +125,104 @@ export function ColorField({ value, onCommit }: { value: string; onCommit: (v: s
   );
 }
 
+const CURVE_W = 184;
+const CURVE_H = 64;
+/** How near (px) a press must land to grab a point. */
+const CURVE_GRAB = 7;
+
+/** A drawn LFO wave: drag points, press empty space to add one, double- or
+ * right-click a point to remove it. A whole drag commits once (one undo). */
+export function CurveEditor({
+  value,
+  mode,
+  playhead,
+  onCommit,
+}: {
+  value: string;
+  mode: CurveMode;
+  /** Where in the cycle the LFO is (0-1), from its live preview. */
+  playhead?: number;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState<CurvePoint[] | null>(null);
+  const drag = useRef<{ index: number; moved: boolean } | null>(null);
+  const points = draft ?? parseCurve(value);
+  const sorted = [...points].sort((a, b) => a[0] - b[0]);
+
+  // Pointer position in curve space (0-1), whatever the editor's zoom.
+  const at = (e: React.PointerEvent | React.MouseEvent): CurvePoint => {
+    const r = (e.currentTarget as SVGElement).getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const y = Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height));
+    return [x, y];
+  };
+  const hit = (e: React.PointerEvent | React.MouseEvent, list: CurvePoint[]) => {
+    const r = (e.currentTarget as SVGElement).getBoundingClientRect();
+    const scale = r.width / CURVE_W;
+    return list.findIndex(
+      ([x, y]) => Math.hypot(r.left + x * r.width - e.clientX, r.top + (1 - y) * r.height - e.clientY) <= CURVE_GRAB * scale,
+    );
+  };
+  const remove = (e: React.MouseEvent) => {
+    const list = parseCurve(value);
+    const i = hit(e, list);
+    if (i >= 0 && list.length > 1) onCommit(formatCurve(list.filter((_, j) => j !== i)));
+  };
+
+  const line = Array.from({ length: CURVE_W + 1 }, (_, i) => {
+    const y = curveValue(sorted, mode, Math.min(i / CURVE_W, 1 - 1e-9));
+    return `${i},${((1 - y) * CURVE_H).toFixed(1)}`;
+  }).join(" L");
+
+  return (
+    <svg
+      width={CURVE_W}
+      height={CURVE_H}
+      className="nodrag nowheel cursor-crosshair rounded bg-muted"
+      aria-label="Curve: drag points, click to add, double-click to remove"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const list = parseCurve(value);
+        const i = hit(e, list);
+        if (i >= 0) {
+          drag.current = { index: i, moved: false };
+          setDraft(list);
+        } else {
+          drag.current = { index: list.length, moved: true };
+          setDraft([...list, at(e)]);
+        }
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || !draft) return;
+        d.moved = true;
+        setDraft(draft.map((p, j) => (j === d.index ? at(e) : p)));
+      }}
+      onPointerUp={() => {
+        const d = drag.current;
+        drag.current = null;
+        if (d?.moved && draft) onCommit(formatCurve(draft));
+        setDraft(null);
+      }}
+      onDoubleClick={remove}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        remove(e);
+      }}
+    >
+      <path d={`M0,${CURVE_H} L${line} L${CURVE_W},${CURVE_H} Z`} className="fill-primary/15" />
+      <path d={`M${line}`} className="fill-none stroke-primary" strokeWidth={1.5} />
+      {playhead !== undefined && (
+        <line x1={playhead * CURVE_W} x2={playhead * CURVE_W} y1={0} y2={CURVE_H} className="stroke-foreground/50" strokeWidth={1} />
+      )}
+      {points.map(([x, y], i) => (
+        <circle key={i} cx={x * CURVE_W} cy={(1 - y) * CURVE_H} r={3.5} className="fill-background stroke-primary" strokeWidth={1.5} />
+      ))}
+    </svg>
+  );
+}
+
 /** The editor for one node param. */
 export function ParamControl({
   info,
@@ -183,5 +282,8 @@ export function ParamControl({
       );
     case "text":
       return <CommitText value={String(v)} placeholder={info.hint} onCommit={onCommit} />;
+    case "curve":
+      // Drawn by `CurveEditor`, which needs the node's mode and playhead; see GraphNode.
+      return <CommitText value={String(v)} placeholder="x:y, x:y" onCommit={onCommit} />;
   }
 }

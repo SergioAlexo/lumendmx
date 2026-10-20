@@ -7,7 +7,18 @@ import type { Group, NodeTypeInfo, NodeView, ParamValue, SocketInfo } from "../.
 import { cn } from "../../lib/utils";
 import { useGraphStore } from "../../store/useGraphStore";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
-import { ColorField, ParamControl, ScrubNumber } from "./controls";
+import { ColorField, CurveEditor, ParamControl, ScrubNumber } from "./controls";
+import type { CurveMode } from "../../lib/curve";
+
+/** Params that only matter for some settings of the node: an LFO's curve
+ * for Wave Custom, its width for the waves that use one. */
+function paramShown(view: NodeView, id: string): boolean {
+  if (view.kind !== "lfo") return true;
+  const wave = String(view.params.waveform ?? "sine");
+  if (id === "curve" || id === "curveMode") return wave === "custom";
+  if (id === "width") return wave === "square" || wave === "pulse";
+  return true;
+}
 
 export type GraphNodeData = {
   view: NodeView;
@@ -147,9 +158,21 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
 
         {info && info.params.length > 0 && (
           <div className="flex flex-col gap-1 px-3">
-            {info.params.map((p) => (
-              <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
-            ))}
+            {info.params
+              .filter((p) => paramShown(view, p.id))
+              .map((p) =>
+                p.kind === "curve" ? (
+                  <CurveEditor
+                    key={p.id}
+                    value={String(view.params[p.id] ?? p.default)}
+                    mode={String(view.params.curveMode ?? "linear") as CurveMode}
+                    playhead={values?.[1]?.[0]}
+                    onCommit={(v) => setParam(p.id, v)}
+                  />
+                ) : (
+                  <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
+                ),
+              )}
             {(view.kind === "midiCc" || view.kind === "midiNote") && <MidiLearn nodeId={view.id} isNote={view.kind === "midiNote"} />}
           </div>
         )}

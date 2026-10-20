@@ -15,7 +15,7 @@ use super::registry::{NodeKind, MAX_OUTPUTS};
 use super::write::{hsv_to_rgb, write_item, ItemValues};
 use crate::engine::audio::BandLevels;
 use crate::engine::state::Layer;
-use crate::engine::waves::{fan_position, shape_value, waveform_value};
+use crate::engine::waves::{fan_position, shape_value, waveform_value, Waveform};
 
 const LAYER_PREFIX: &str = "graph-out-";
 
@@ -175,11 +175,16 @@ impl GraphRuntime {
                 out[3][0] = inputs.bpm;
                 out[4][0] = inputs.seconds as f32;
             }
-            (NodeKind::Lfo, Config::Lfo { waveform, rate, width }) => {
+            (NodeKind::Lfo, Config::Lfo { waveform, rate, width, curve }) => {
                 let cycles = rate_cycles(*rate, inputs) + num(0) as f64;
                 let cycle = cycles.floor();
-                let wave = waveform_value(*waveform, cycles - cycle, *width, cycle as i64, ctx.key);
-                out[0][0] = (wave + 1.0) / 2.0;
+                let p = cycles - cycle;
+                out[0][0] = match waveform {
+                    Waveform::Custom => curve.value(p),
+                    _ => (waveform_value(*waveform, p, *width, cycle as i64, ctx.key) + 1.0) / 2.0,
+                };
+                // Not a socket: where in the cycle it is, for the curve editor's playhead.
+                out[1][0] = p as f32;
             }
             (NodeKind::Audio, Config::Gain(gain)) => {
                 let a = inputs.audio;
@@ -521,6 +526,33 @@ mod tests {
         assert_eq!(dimmers, vec![0.0, 191.0, 128.0, 64.0]);
         // Uniform nodes are evaluated once; the varying LFO previews fixture 1.
         assert!(rig.runtime.preview().contains_key("lfo"));
+    }
+
+    #[test]
+    fn a_custom_lfo_plays_its_drawn_curve_across_the_fan() {
+        let graph = Graph {
+            nodes: vec![
+                node("fan", NodeKind::Fan, &[]),
+                node(
+                    "lfo",
+                    NodeKind::Lfo,
+                    &[
+                        ("waveform", ParamValue::Text("custom".into())),
+                        ("curve", ParamValue::Text("0:0.2, 0.5:0.8".into())),
+                        ("curveMode", ParamValue::Text("step".into())),
+                    ],
+                ),
+                output("out"),
+            ],
+            edges: vec![edge("fan", "phase", "lfo", "phase"), edge("lfo", "value", "out", "intensity")],
+        };
+        let mut rig = Rig::new(&graph, 4);
+        rig.at(0.0);
+        // Phases 0, .75, .5, .25 of the curve: low for the first half, high after.
+        let dimmers: Vec<f32> = (0..4).map(|i| rig.channel("out", 1 + i * 6).round()).collect();
+        assert_eq!(dimmers, vec![51.0, 204.0, 204.0, 51.0]);
+        // The playhead rides along in the preview, past the node's one socket.
+        assert_eq!(rig.runtime.preview()["lfo"][1][0], 0.0);
     }
 
     #[test]

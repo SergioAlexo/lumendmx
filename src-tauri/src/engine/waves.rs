@@ -24,6 +24,66 @@ pub enum Waveform {
     Step,
     /// A smooth bump over the first `width`% of the cycle, low for the rest.
     Pulse,
+    /// Drawn by the user: a `Curve`, evaluated by the LFO itself.
+    Custom,
+}
+
+/// How a `Curve` gets from one point to the next.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CurveMode {
+    Linear,
+    /// Eases in and out of every point, never overshooting.
+    Smooth,
+    /// Holds each point's value until the next.
+    Step,
+}
+
+/// A drawn wave: points `(x, y)` in [0,1], one cycle wide, looping from the
+/// last point round to the first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Curve {
+    points: Vec<(f32, f32)>,
+    mode: CurveMode,
+}
+
+impl Curve {
+    /// Reads `"x:y, x:y"`, clamping into [0,1] and sorting by x; unreadable
+    /// pairs are skipped.
+    pub fn parse(text: &str, mode: CurveMode) -> Self {
+        let mut points: Vec<(f32, f32)> = text
+            .split(',')
+            .filter_map(|pair| {
+                let (x, y) = pair.split_once(':')?;
+                let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+                (x.is_finite() && y.is_finite()).then(|| (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+            })
+            .collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Self { points, mode }
+    }
+
+    /// The value in [0,1] at phase `p` in [0,1). No points reads as 0.
+    pub fn value(&self, p: f64) -> f32 {
+        let (Some(&first), Some(&last)) = (self.points.first(), self.points.last()) else {
+            return 0.0;
+        };
+        let p = p as f32;
+        // The segment around p, wrapping past the ends into the next cycle.
+        let next = self.points.iter().position(|&(x, _)| x > p);
+        let (a, b) = match next {
+            Some(0) => ((last.0 - 1.0, last.1), first),
+            Some(i) => (self.points[i - 1], self.points[i]),
+            None => (last, (first.0 + 1.0, first.1)),
+        };
+        let span = b.0 - a.0;
+        let t = if span <= 0.0 { 1.0 } else { (p - a.0) / span };
+        let t = match self.mode {
+            CurveMode::Linear => t,
+            CurveMode::Smooth => (1.0 - (std::f32::consts::PI * t).cos()) / 2.0,
+            CurveMode::Step => 0.0,
+        };
+        a.1 + (b.1 - a.1) * t
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
@@ -109,6 +169,8 @@ pub fn waveform_value(waveform: Waveform, p: f64, width: f32, cycle: i64, seed: 
                 -1.0
             }
         }
+        // Drawn waves need their points; the LFO reads its `Curve` instead.
+        Waveform::Custom => 0.0,
     };
     v as f32
 }
@@ -143,6 +205,34 @@ mod tests {
         assert_eq!(waveform_value(Waveform::Step, 0.99, 50.0, 0, 0), 1.0);
         assert!((waveform_value(Waveform::Pulse, 0.05, 10.0, 0, 0) - 1.0).abs() < 1e-6); // peak mid-pulse
         assert_eq!(waveform_value(Waveform::Pulse, 0.5, 10.0, 0, 0), -1.0);
+    }
+
+    #[test]
+    fn a_curve_interpolates_between_points_and_loops_round() {
+        let tri = Curve::parse("0:0, 0.5:1, 1:0", CurveMode::Linear);
+        assert_eq!(tri.value(0.0), 0.0);
+        assert_eq!(tri.value(0.25), 0.5);
+        assert_eq!(tri.value(0.5), 1.0);
+        assert_eq!(tri.value(0.75), 0.5);
+
+        // Points inside the cycle wrap: 0.75 -> 1.25 runs from 1 back down to 0.
+        let inner = Curve::parse(" 0.75 : 1 ,0.25:0, junk, 2:x", CurveMode::Linear);
+        assert_eq!(inner.value(0.25), 0.0);
+        assert_eq!(inner.value(0.5), 0.5);
+        assert_eq!(inner.value(1.0 - 1e-9), 0.5);
+        assert_eq!(inner.value(0.0), 0.5);
+
+        let step = Curve::parse("0:0.2, 0.5:0.8", CurveMode::Step);
+        assert_eq!(step.value(0.1), 0.2);
+        assert_eq!(step.value(0.6), 0.8);
+
+        let smooth = Curve::parse("0:0, 0.5:1", CurveMode::Smooth);
+        assert!((smooth.value(0.25) - 0.5).abs() < 1e-6);
+        assert!(smooth.value(0.05) < 0.05); // eases out of the point
+        assert!((0.0..=1.0).contains(&smooth.value(0.9)));
+
+        assert_eq!(Curve::parse("", CurveMode::Linear).value(0.3), 0.0);
+        assert_eq!(Curve::parse("0.4:0.7", CurveMode::Linear).value(0.9), 0.7); // one point: flat
     }
 
     #[test]
