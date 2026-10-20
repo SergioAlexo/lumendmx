@@ -2,6 +2,7 @@
 //! MCP clients edit the same thing. See `service`.
 
 pub mod commands;
+pub mod graph_ops;
 pub mod library;
 pub mod resolve;
 pub mod service;

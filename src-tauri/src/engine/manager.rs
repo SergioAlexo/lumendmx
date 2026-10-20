@@ -1,7 +1,8 @@
 //! Ties the engine's pieces together as Tauri-managed state: live merge
-//! state, the fixture index layers resolve against, the global clocks, and
-//! the 44Hz tick thread.
+//! state, the compiled node graph and what it reads (clocks, audio, MIDI,
+//! playback-bar controls), and the 44Hz tick thread.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,9 +17,11 @@ use super::merge::merge_universe;
 use super::state::{EngineState, Layer};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::TimecodeClock;
+use crate::graph::compile::{GraphPlan, Val};
+use crate::graph::eval::{GraphRuntime, Inputs, MidiState};
 use crate::output::manager::OutputManager;
-use crate::show::resolve::ResolvedPatch;
 use crate::output::UNIVERSE_SIZE;
+use crate::show::resolve::ResolvedPatch;
 
 const TICK_HZ: f64 = 44.0;
 const DISPLAY_HZ: f64 = 20.0;
@@ -35,31 +38,67 @@ pub struct EngineFrame {
     pub channels: Vec<u8>,
 }
 
+/// Live values the editor shows on each node's outputs, by node id.
+pub type GraphValues = HashMap<String, Vec<Val>>;
+
 /// Everything one engine tick reads and writes — shared (by `Arc`) between
 /// `EngineManager` and its tick thread, and steppable directly in tests.
+#[derive(Clone)]
 struct TickShared {
+    state: Arc<Mutex<EngineState>>,
     tempo: Arc<Mutex<Tempo>>,
     timecode: Arc<Mutex<TimecodeClock>>,
+    audio: Arc<Mutex<BandLevels>>,
+    midi: Arc<Mutex<MidiState>>,
+    controls: Arc<Mutex<HashMap<String, f32>>>,
+    plan: Arc<Mutex<Arc<GraphPlan>>>,
+    runtime: Arc<Mutex<GraphRuntime>>,
 }
 
 impl TickShared {
-    /// Advances the clocks by `dt_ms`. Output is the caller's job: merge
-    /// and send.
+    /// Advances the clocks by `dt_ms` and re-evaluates the graph into its
+    /// output layers. Output is the caller's job: merge and send.
     fn advance(&self, dt_ms: f64) {
-        self.tempo.lock().unwrap().advance(dt_ms);
-        self.timecode.lock().unwrap().advance(dt_ms);
+        let (prev_beats, beats, seconds, bpm) = {
+            let mut tempo = self.tempo.lock().unwrap();
+            let prev = tempo.beat();
+            tempo.advance(dt_ms);
+            (prev, tempo.beat(), tempo.seconds(), tempo.bpm())
+        };
+        let (timecode_seconds, timecode_running) = {
+            let mut tc = self.timecode.lock().unwrap();
+            tc.advance(dt_ms);
+            (tc.position_ms() / 1000.0, tc.active())
+        };
+        let audio = *self.audio.lock().unwrap();
+        let plan = self.plan.lock().unwrap().clone();
+        let midi = self.midi.lock().unwrap();
+        let controls = self.controls.lock().unwrap();
+        let inputs = Inputs {
+            beats,
+            prev_beats,
+            seconds,
+            bpm,
+            dt_ms,
+            audio,
+            midi: &midi,
+            controls: &controls,
+            timecode_seconds,
+            timecode_running,
+        };
+        let mut runtime = self.runtime.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        runtime.run(&plan, &inputs, &mut state.layers);
+    }
+
+    fn graph_values(&self) -> GraphValues {
+        self.runtime.lock().unwrap().preview().iter().map(|(id, v)| (id.to_string(), v.clone())).collect()
     }
 }
 
 pub struct EngineManager {
-    state: Arc<Mutex<EngineState>>,
-    /// The current patch, resolved to DMX addresses.
-    patch: Arc<Mutex<Arc<ResolvedPatch>>>,
+    shared: TickShared,
     tick_started: AtomicBool,
-    tempo: Arc<Mutex<Tempo>>,
-    /// Timing inputs: the `crate::timing` sources write into these.
-    timecode: Arc<Mutex<TimecodeClock>>,
-    audio: Arc<Mutex<BandLevels>>,
 }
 
 /// What `crate::timing` needs from the engine to feed it.
@@ -68,6 +107,7 @@ pub struct TimingHandles {
     pub tempo: Arc<Mutex<Tempo>>,
     pub timecode: Arc<Mutex<TimecodeClock>>,
     pub audio: Arc<Mutex<BandLevels>>,
+    pub midi: Arc<Mutex<MidiState>>,
 }
 
 impl Default for EngineManager {
@@ -79,21 +119,33 @@ impl Default for EngineManager {
 impl EngineManager {
     pub fn new() -> Self {
         Self {
-            state: Arc::new(Mutex::new(EngineState::new())),
-            patch: Arc::new(Mutex::new(Arc::new(ResolvedPatch::default()))),
+            shared: TickShared {
+                state: Arc::new(Mutex::new(EngineState::new())),
+                tempo: Arc::new(Mutex::new(Tempo::new())),
+                timecode: Arc::new(Mutex::new(TimecodeClock::new())),
+                audio: Arc::new(Mutex::new(BandLevels::default())),
+                midi: Arc::new(Mutex::new(MidiState::default())),
+                controls: Arc::new(Mutex::new(HashMap::new())),
+                plan: Arc::new(Mutex::new(Arc::new(GraphPlan::default()))),
+                runtime: Arc::new(Mutex::new(GraphRuntime::default())),
+            },
             tick_started: AtomicBool::new(false),
-            tempo: Arc::new(Mutex::new(Tempo::new())),
-            timecode: Arc::new(Mutex::new(TimecodeClock::new())),
-            audio: Arc::new(Mutex::new(BandLevels::default())),
         }
     }
 
-    fn tick_shared(&self) -> TickShared {
-        TickShared { tempo: self.tempo.clone(), timecode: self.timecode.clone() }
+    pub fn timing_handles(&self) -> TimingHandles {
+        TimingHandles {
+            tempo: self.shared.tempo.clone(),
+            timecode: self.shared.timecode.clone(),
+            audio: self.shared.audio.clone(),
+            midi: self.shared.midi.clone(),
+        }
     }
 
-    pub fn timing_handles(&self) -> TimingHandles {
-        TimingHandles { tempo: self.tempo.clone(), timecode: self.timecode.clone(), audio: self.audio.clone() }
+    /// One tick without the output half — for tests.
+    #[cfg(test)]
+    pub fn step(&self, dt_ms: f64) {
+        self.shared.advance(dt_ms);
     }
 
     /// Starts the 44Hz tick thread (idempotent — safe to call from `setup`
@@ -103,8 +155,8 @@ impl EngineManager {
             return;
         }
 
-        let shared = self.tick_shared();
-        let state = self.state.clone();
+        let shared = self.shared.clone();
+        let state = self.shared.state.clone();
 
         thread::spawn(move || {
             let tick_interval = Duration::from_secs_f64(1.0 / TICK_HZ);
@@ -138,6 +190,7 @@ impl EngineManager {
                     }
                 }
                 if show_display {
+                    let _ = app.emit("graph://values", shared.graph_values());
                     last_display = now;
                 }
 
@@ -151,47 +204,137 @@ impl EngineManager {
 
     /// Takes a newly resolved patch: which channels merge HTP, and the
     /// layer holding every channel's rest value.
-    pub fn set_patch(&self, patch: Arc<ResolvedPatch>) {
-        {
-            let mut state = self.state.lock().unwrap();
-            state.htp_channels = patch.htp.clone();
-            let defaults = Layer { values: patch.defaults.clone(), ..Layer::default() };
-            state.layers.insert(DEFAULTS_LAYER.to_string(), (DEFAULTS_PRIORITY, defaults));
-        }
-        *self.patch.lock().unwrap() = patch;
+    pub fn set_patch(&self, patch: &ResolvedPatch) {
+        let mut state = self.shared.state.lock().unwrap();
+        state.htp_channels = patch.htp.clone();
+        let defaults = Layer { values: patch.defaults.clone(), ..Layer::default() };
+        state.layers.insert(DEFAULTS_LAYER.to_string(), (DEFAULTS_PRIORITY, defaults));
+    }
+
+    /// Swaps in a newly compiled graph; it runs from the next tick.
+    pub fn set_graph(&self, plan: Arc<GraphPlan>) {
+        *self.shared.plan.lock().unwrap() = plan;
     }
 
     pub fn get_universe_data(&self, universe: u32) -> [u8; UNIVERSE_SIZE] {
-        let state = self.state.lock().unwrap();
+        let state = self.shared.state.lock().unwrap();
         merge_universe(&state, universe)
     }
 
     pub fn set_grand_master(&self, percent: f32) {
-        self.state.lock().unwrap().grand_master = percent.clamp(0.0, 100.0) / 100.0;
+        self.shared.state.lock().unwrap().grand_master = percent.clamp(0.0, 100.0) / 100.0;
     }
 
     pub fn grand_master(&self) -> f32 {
-        self.state.lock().unwrap().grand_master * 100.0
+        self.shared.state.lock().unwrap().grand_master * 100.0
+    }
+
+    // --- Playback bar controls and MIDI ---
+
+    /// A Fader's or Button's live value (0-1), by node id.
+    pub fn set_control(&self, node_id: &str, value: f32) {
+        self.shared.controls.lock().unwrap().insert(node_id.to_string(), value.clamp(0.0, 1.0));
+    }
+
+    pub fn controls(&self) -> HashMap<String, f32> {
+        self.shared.controls.lock().unwrap().clone()
+    }
+
+    pub fn set_controls(&self, controls: HashMap<String, f32>) {
+        *self.shared.controls.lock().unwrap() = controls;
+    }
+
+    /// The last MIDI controller or note received: (is_note, channel 1-16,
+    /// number). For MIDI learn.
+    pub fn last_midi(&self) -> Option<(bool, u8, u8)> {
+        self.shared.midi.lock().unwrap().last
     }
 
     // --- Tempo ---
 
     pub fn tempo_status(&self) -> TempoStatus {
-        self.tempo.lock().unwrap().status()
+        self.shared.tempo.lock().unwrap().status()
     }
 
     pub fn bpm(&self) -> f32 {
-        self.tempo.lock().unwrap().bpm()
+        self.shared.tempo.lock().unwrap().bpm()
     }
 
     pub fn set_bpm(&self, bpm: f32) {
-        self.tempo.lock().unwrap().set_bpm(bpm);
+        self.shared.tempo.lock().unwrap().set_bpm(bpm);
     }
 
     /// `now_ms`: the caller's timestamp for the tap (the frontend's
     /// `performance.now()`), so network/IPC jitter doesn't skew the
     /// measured interval.
     pub fn tap_tempo(&self, now_ms: f64) -> f32 {
-        self.tempo.lock().unwrap().tap(now_ms)
+        self.shared.tempo.lock().unwrap().tap(now_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::compile::compile;
+    use crate::graph::model::{Edge, Graph, Node, NodePosition, ParamValue};
+    use crate::graph::registry::NodeKind;
+    use crate::show::library::test_fixtures::library;
+    use crate::show::resolve::resolve;
+    use crate::showfile::schema::PatchedFixture;
+
+    fn node(id: &str, kind: NodeKind, params: &[(&str, ParamValue)]) -> Node {
+        Node { id: id.into(), kind, position: NodePosition::default(), params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect() }
+    }
+
+    fn edge(from: &str, fs: &str, to: &str, ts: &str) -> Edge {
+        Edge { from_node: from.into(), from_socket: fs.into(), to_node: to.into(), to_socket: ts.into() }
+    }
+
+    #[test]
+    fn patch_and_graph_reach_the_dmx_frame_with_htp_and_grand_master() {
+        let engine = EngineManager::new();
+        let par = PatchedFixture {
+            id: "p".into(),
+            fixture_id: "par".into(),
+            mode_index: 0,
+            address: 1,
+            name: "Par".into(),
+            universe: 1,
+            fixture_number: 1,
+            invert_pan: false,
+            invert_tilt: false,
+            swap_pan_tilt: false,
+        };
+        let patch = resolve(&[par], &library());
+        engine.set_patch(&patch);
+        let fixtures = ParamValue::Text("1".into());
+        let graph = Graph {
+            nodes: vec![
+                node("half", NodeKind::Number, &[("value", ParamValue::Number(0.5))]),
+                node("fader", NodeKind::Fader, &[]),
+                node("red", NodeKind::Color, &[("color", ParamValue::Text("#ff0000".into()))]),
+                node("a", NodeKind::Output, &[("fixtures", fixtures.clone())]),
+                node("b", NodeKind::Output, &[("fixtures", fixtures), ("priority", ParamValue::Number(5.0))]),
+            ],
+            edges: vec![
+                edge("half", "value", "a", "intensity"),
+                edge("fader", "value", "b", "intensity"),
+                edge("red", "color", "b", "color"),
+            ],
+        };
+        let (plan, issues) = compile(&graph, &patch, &[]);
+        assert!(issues.is_empty(), "{issues:?}");
+        engine.set_graph(Arc::new(plan));
+
+        engine.step(10.0);
+        let frame = engine.get_universe_data(1);
+        assert_eq!(frame[0], 128); // dimmer: HTP of 0.5 and the fader at 0
+        assert_eq!(frame[1], 255); // red from the higher-priority output
+        assert_eq!(frame[5], 10); // the function channel's rest value
+
+        engine.set_control("fader", 1.0);
+        engine.set_grand_master(50.0);
+        engine.step(10.0);
+        assert_eq!(engine.get_universe_data(1)[0], 128); // fader wins HTP, then halved by the GM
     }
 }

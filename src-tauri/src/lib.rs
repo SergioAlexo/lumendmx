@@ -1,4 +1,5 @@
 mod engine;
+mod graph;
 mod io;
 mod output;
 mod show;
@@ -92,6 +93,17 @@ pub fn run() {
             show::commands::show_open,
             show::commands::show_save,
             show::commands::show_recent,
+            show::commands::graph_node_types,
+            show::commands::graph_add_node,
+            show::commands::graph_remove_nodes,
+            show::commands::graph_connect,
+            show::commands::graph_disconnect,
+            show::commands::graph_set_params,
+            show::commands::graph_move_nodes,
+            show::commands::graph_replace,
+            show::commands::graph_set_control,
+            show::commands::graph_controls,
+            show::commands::graph_last_midi,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

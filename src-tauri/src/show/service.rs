@@ -6,7 +6,7 @@
 //! Side effects outside the show itself (engine, output drivers, events)
 //! go through `ShowSink`, so the service runs in tests without Tauri.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +15,9 @@ use ts_rs::TS;
 
 use super::library::{FixtureLibrary, FixtureTypeSummary};
 use super::resolve::{resolve, ResolvedPatch};
+use crate::graph::compile::{compile, GraphIssue, GraphPlan};
+use crate::graph::model::{Edge, Graph, Node};
+use crate::graph::registry::{node_sockets, SocketInfo};
 use crate::output::config::DriverConfig;
 use crate::output::UNIVERSE_SIZE;
 use crate::showfile::schema::{Group, PatchedFixture, RecentShowEntry, ShowFile, UniverseConfig, CURRENT_SCHEMA_VERSION};
@@ -24,7 +27,12 @@ const UNDO_LIMIT: usize = 100;
 
 /// Everything the show does to the world outside itself.
 pub trait ShowSink: Send + Sync {
-    fn patch_resolved(&self, patch: Arc<ResolvedPatch>);
+    fn patch_resolved(&self, patch: &ResolvedPatch);
+    fn graph_compiled(&self, plan: Arc<GraphPlan>);
+    /// Playback-bar control values by node id.
+    fn controls(&self) -> HashMap<String, f32>;
+    fn set_controls(&self, controls: HashMap<String, f32>);
+    fn set_control(&self, id: &str, value: f32);
     fn configure_universe(&self, id: u32, driver: &DriverConfig) -> Result<(), String>;
     fn remove_universe(&self, id: u32);
     fn bpm(&self) -> f32;
@@ -54,6 +62,28 @@ pub struct ShowSnapshot {
     pub redo_label: Option<String>,
     /// Patched fixtures whose type or mode isn't in the fixture library.
     pub unresolved: Vec<u32>,
+    pub graph: GraphView,
+}
+
+/// A graph node as the editor shows it: the node, its actual sockets, and
+/// what's wrong with it, if anything.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct NodeView {
+    #[serde(flatten)]
+    pub node: Node,
+    pub inputs: Vec<SocketInfo>,
+    pub outputs: Vec<SocketInfo>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct GraphView {
+    pub nodes: Vec<NodeView>,
+    pub edges: Vec<Edge>,
 }
 
 /// Patch one or more fixtures of one type.
@@ -113,13 +143,15 @@ struct Snapshot {
     label: String,
     patch: Vec<PatchedFixture>,
     groups: Vec<Group>,
+    graph: Graph,
 }
 
-struct Inner {
-    show: ShowFile,
+pub(super) struct Inner {
+    pub(super) show: ShowFile,
     path: Option<String>,
     library: FixtureLibrary,
     resolved: Arc<ResolvedPatch>,
+    issues: Vec<GraphIssue>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     revision: u64,
@@ -128,12 +160,38 @@ struct Inner {
 
 impl Inner {
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { label: label.to_string(), patch: self.show.patch.clone(), groups: self.show.groups.clone() }
+        Snapshot {
+            label: label.to_string(),
+            patch: self.show.patch.clone(),
+            groups: self.show.groups.clone(),
+            graph: self.show.graph.clone(),
+        }
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
         self.show.patch = snapshot.patch;
         self.show.groups = snapshot.groups;
+        self.show.graph = snapshot.graph;
+    }
+
+    fn graph_view(&self) -> GraphView {
+        let mut issues: HashMap<&str, Vec<String>> = HashMap::new();
+        for issue in &self.issues {
+            issues.entry(issue.node.as_str()).or_default().push(issue.message.clone());
+        }
+        GraphView {
+            nodes: self
+                .show
+                .graph
+                .nodes
+                .iter()
+                .map(|node| {
+                    let (inputs, outputs) = node_sockets(node.kind, &node.params);
+                    NodeView { node: node.clone(), inputs, outputs, issues: issues.remove(node.id.as_str()).unwrap_or_default() }
+                })
+                .collect(),
+            edges: self.show.graph.edges.clone(),
+        }
     }
 
     fn channel_count(&self, fixture: &PatchedFixture) -> u16 {
@@ -210,8 +268,8 @@ impl Inner {
 }
 
 pub struct ShowService {
-    inner: Mutex<Inner>,
-    sink: Box<dyn ShowSink>,
+    pub(super) inner: Mutex<Inner>,
+    pub(super) sink: Box<dyn ShowSink>,
     store: Option<ShowStore>,
 }
 
@@ -229,6 +287,7 @@ impl ShowService {
                 path: None,
                 library: FixtureLibrary::default(),
                 resolved: Arc::new(ResolvedPatch::default()),
+                issues: Vec::new(),
                 undo: Vec::new(),
                 redo: Vec::new(),
                 revision: 0,
@@ -261,7 +320,12 @@ impl ShowService {
             undo_label: inner.undo.last().map(|s| s.label.clone()),
             redo_label: inner.redo.last().map(|s| s.label.clone()),
             unresolved: inner.resolved.unresolved.clone(),
+            graph: inner.graph_view(),
         }
+    }
+
+    pub fn graph_issues(&self) -> Vec<GraphIssue> {
+        self.inner.lock().unwrap().issues.clone()
     }
 
     pub fn fixture_types(&self) -> Vec<FixtureTypeSummary> {
@@ -278,19 +342,23 @@ impl ShowService {
 
     // --- Internals ---
 
-    /// Re-resolves the patch, hands it to the engine, and announces the change.
-    fn after_change(&self, inner: &mut Inner, patch_changed: bool) {
+    /// Re-resolves the patch and recompiles the graph for the engine, and
+    /// announces the change.
+    fn after_change(&self, inner: &mut Inner, show_changed: bool) {
         inner.revision += 1;
-        if patch_changed {
+        if show_changed {
             inner.resolved = Arc::new(resolve(&inner.show.patch, &inner.library));
-            self.sink.patch_resolved(inner.resolved.clone());
+            self.sink.patch_resolved(&inner.resolved);
+            let (plan, issues) = compile(&inner.show.graph, &inner.resolved, &inner.show.groups);
+            inner.issues = issues;
+            self.sink.graph_compiled(Arc::new(plan));
         }
         self.sink.changed(inner.revision);
     }
 
-    /// An undoable edit of the patch and/or groups. `f` either succeeds and
-    /// leaves the show edited, or fails and leaves it as it was.
-    fn edit<R>(&self, label: &str, f: impl FnOnce(&mut Inner) -> Result<R, String>) -> Result<R, String> {
+    /// An undoable edit of the patch, groups and/or graph. `f` either
+    /// succeeds and leaves the show edited, or fails and leaves it as it was.
+    pub(super) fn edit<R>(&self, label: &str, f: impl FnOnce(&mut Inner) -> Result<R, String>) -> Result<R, String> {
         let mut inner = self.inner.lock().unwrap();
         let before = inner.snapshot(label);
         match f(&mut inner) {
@@ -326,6 +394,7 @@ impl ShowService {
             }
         }
         self.sink.set_bpm(show.bpm);
+        self.sink.set_controls(show.controls.iter().map(|(k, v)| (k.clone(), *v)).collect());
         inner.show = show;
         inner.path = path;
         inner.undo.clear();
@@ -620,6 +689,8 @@ impl ShowService {
         let mut show = inner.show.clone();
         show.schema_version = CURRENT_SCHEMA_VERSION;
         show.bpm = self.sink.bpm();
+        let ids: HashSet<&str> = show.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+        show.controls = self.sink.controls().into_iter().filter(|(k, _)| ids.contains(k.as_str())).collect::<BTreeMap<_, _>>();
         show
     }
 
@@ -663,11 +734,25 @@ pub mod tests {
     pub struct RecordingSink {
         pub patches: Mutex<Vec<Arc<ResolvedPatch>>>,
         pub configured: Mutex<Vec<u32>>,
+        pub plan: Mutex<Arc<GraphPlan>>,
+        pub controls: Mutex<HashMap<String, f32>>,
     }
 
     impl ShowSink for Arc<RecordingSink> {
-        fn patch_resolved(&self, patch: Arc<ResolvedPatch>) {
-            self.patches.lock().unwrap().push(patch);
+        fn patch_resolved(&self, patch: &ResolvedPatch) {
+            self.patches.lock().unwrap().push(Arc::new(patch.clone()));
+        }
+        fn graph_compiled(&self, plan: Arc<GraphPlan>) {
+            *self.plan.lock().unwrap() = plan;
+        }
+        fn controls(&self) -> HashMap<String, f32> {
+            self.controls.lock().unwrap().clone()
+        }
+        fn set_controls(&self, controls: HashMap<String, f32>) {
+            *self.controls.lock().unwrap() = controls;
+        }
+        fn set_control(&self, id: &str, value: f32) {
+            self.controls.lock().unwrap().insert(id.to_string(), value);
         }
         fn configure_universe(&self, id: u32, _driver: &DriverConfig) -> Result<(), String> {
             self.configured.lock().unwrap().push(id);

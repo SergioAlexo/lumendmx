@@ -38,16 +38,6 @@ pub enum PositionShape {
     TiltSaw,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub enum Direction {
-    Forward,
-    Backward,
-    /// Runs the cycle forward then back.
-    Bounce,
-}
-
 /// How a fan of fixtures is split before the phase spread runs over it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Fan {
@@ -86,21 +76,6 @@ pub fn fan_position(fan: Fan, index: usize, count: usize) -> (usize, usize) {
     (index.min(count - 1), count)
 }
 
-/// Applies direction to a phase in [0,1).
-pub fn directed(direction: Direction, p: f64) -> f64 {
-    match direction {
-        Direction::Forward => p,
-        Direction::Backward => 1.0 - p,
-        Direction::Bounce => {
-            if p < 0.5 {
-                p * 2.0
-            } else {
-                2.0 - p * 2.0
-            }
-        }
-    }
-}
-
 /// A deterministic pseudo-random value in [-1,1] for (cycle, seed).
 fn hash_unit(cycle: i64, seed: u64) -> f32 {
     let mut x = (cycle as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
@@ -108,12 +83,6 @@ fn hash_unit(cycle: i64, seed: u64) -> f32 {
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
     x ^= x >> 33;
     (x as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-}
-
-/// A stable per-attribute seed (FNV-1a), so Random effects on red, green
-/// and blue of the same fixture don't all draw the same value (grey).
-pub fn attribute_seed(attribute: &str) -> u64 {
-    attribute.bytes().fold(0xCBF2_9CE4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3))
 }
 
 /// The waveform's value in [-1,1] at phase `p` in [0,1). `cycle` and `seed`
@@ -184,13 +153,6 @@ mod tests {
         let others: Vec<f32> = (0..8).map(|c| waveform_value(Waveform::Random, 0.0, 50.0, c, 1)).collect();
         assert!(others.windows(2).any(|w| w[0] != w[1]));
         assert_ne!(a, waveform_value(Waveform::Random, 0.1, 50.0, 7, 2));
-    }
-
-    #[test]
-    fn bounce_runs_forward_then_back() {
-        assert_eq!(directed(Direction::Bounce, 0.25), 0.5);
-        assert_eq!(directed(Direction::Bounce, 0.75), 0.5);
-        assert_eq!(directed(Direction::Backward, 0.25), 0.75);
     }
 
     #[test]

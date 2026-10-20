@@ -49,7 +49,7 @@ pub struct TimingSettings {
     pub audio_channel: u32,
     pub ltc_device: Option<String>,
     pub ltc_channel: u32,
-    /// The MIDI port MIDI clock and MTC are read from.
+    /// The MIDI port MIDI clock, MTC and the graph's MIDI nodes read.
     pub midi_port: Option<String>,
 }
 
@@ -170,21 +170,18 @@ impl TimingManager {
             }
         }
 
-        let want_midi = matches!(settings.tempo_source, TempoSource::MidiClock | TempoSource::Mixxx) || settings.timecode_source == TimecodeSource::Mtc;
-        if !want_midi || old.midi_port != settings.midi_port {
+        // Open whenever a port is chosen: MIDI nodes read it too.
+        if old.midi_port != settings.midi_port {
             inputs.midi = None;
             self.shared.lock().unwrap().midi = MidiInputStatus::default();
         }
-        if want_midi && inputs.midi.is_none() {
-            match &settings.midi_port {
-                None => self.shared.lock().unwrap().midi.error = Some("Choose a MIDI port".to_string()),
-                Some(port) => match self.start_midi(port) {
-                    Ok(handle) => {
-                        inputs.midi = Some(handle);
-                        self.shared.lock().unwrap().midi = MidiInputStatus { connected: true, ..Default::default() };
-                    }
-                    Err(e) => self.shared.lock().unwrap().midi.error = Some(e),
-                },
+        if let (Some(port), None) = (&settings.midi_port, &inputs.midi) {
+            match self.start_midi(port) {
+                Ok(handle) => {
+                    inputs.midi = Some(handle);
+                    self.shared.lock().unwrap().midi = MidiInputStatus { connected: true, ..Default::default() };
+                }
+                Err(e) => self.shared.lock().unwrap().midi.error = Some(e),
             }
         }
 
@@ -242,10 +239,12 @@ impl TimingManager {
         let shared = self.shared.clone();
         let tempo = self.handles.tempo.clone();
         let clock = self.handles.timecode.clone();
+        let control = self.handles.midi.clone();
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
         let mut mixxx = MixxxDecoder::new();
         midi::open_input(port, move |stamp_us, msg| {
+            control.lock().unwrap().feed(msg);
             if let Some(pos) = mtc.feed(msg) {
                 clock.lock().unwrap().set_external(TimecodeSource::Mtc, pos.ms, pos.fps);
             }

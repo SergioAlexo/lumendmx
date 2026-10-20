@@ -4,15 +4,20 @@
 //! Open/Save dialogs run natively via `rfd` in these (synchronous, so
 //! main-thread) commands.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use super::graph_ops::{NodeMove, ParamChanges};
 use super::library::FixtureTypeSummary;
 use super::resolve::ResolvedPatch;
 use super::service::{AddFixtures, FixtureUpdate, ShowService, ShowSink, ShowSnapshot};
 use crate::engine::manager::EngineManager;
+use crate::graph::compile::GraphPlan;
+use crate::graph::model::{Edge, Graph, Node, NodePosition};
+use crate::graph::registry::{node_types, NodeKind, NodeTypeInfo};
 use crate::output::config::DriverConfig;
 use crate::output::manager::OutputManager;
 use crate::showfile::schema::{Group, PatchedFixture, RecentShowEntry, UniverseConfig};
@@ -26,8 +31,24 @@ pub struct AppSink {
 }
 
 impl ShowSink for AppSink {
-    fn patch_resolved(&self, patch: Arc<ResolvedPatch>) {
+    fn patch_resolved(&self, patch: &ResolvedPatch) {
         self.app.state::<EngineManager>().set_patch(patch);
+    }
+
+    fn graph_compiled(&self, plan: Arc<GraphPlan>) {
+        self.app.state::<EngineManager>().set_graph(plan);
+    }
+
+    fn controls(&self) -> HashMap<String, f32> {
+        self.app.state::<EngineManager>().controls()
+    }
+
+    fn set_controls(&self, controls: HashMap<String, f32>) {
+        self.app.state::<EngineManager>().set_controls(controls);
+    }
+
+    fn set_control(&self, id: &str, value: f32) {
+        self.app.state::<EngineManager>().set_control(id, value);
     }
 
     fn configure_universe(&self, id: u32, driver: &DriverConfig) -> Result<(), String> {
@@ -173,4 +194,63 @@ pub fn show_save(show: State<ShowService>, save_as: bool) -> Result<bool, String
 #[tauri::command]
 pub fn show_recent(show: State<ShowService>) -> Vec<RecentShowEntry> {
     show.recent()
+}
+
+// --- Graph ---
+
+#[tauri::command]
+pub fn graph_node_types() -> Vec<NodeTypeInfo> {
+    node_types()
+}
+
+#[tauri::command]
+pub fn graph_add_node(show: State<ShowService>, kind: NodeKind, position: NodePosition, params: Option<ParamChanges>) -> Result<Node, String> {
+    show.add_node(kind, position, params.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn graph_remove_nodes(show: State<ShowService>, ids: Vec<String>) -> Result<(), String> {
+    show.remove_nodes(&ids)
+}
+
+#[tauri::command]
+pub fn graph_connect(show: State<ShowService>, edge: Edge) -> Result<(), String> {
+    show.connect(edge)
+}
+
+#[tauri::command]
+pub fn graph_disconnect(show: State<ShowService>, to_node: String, to_socket: String) -> Result<(), String> {
+    show.disconnect(&to_node, &to_socket)
+}
+
+#[tauri::command]
+pub fn graph_set_params(show: State<ShowService>, id: String, params: ParamChanges) -> Result<Node, String> {
+    show.set_params(&id, params)
+}
+
+#[tauri::command]
+pub fn graph_move_nodes(show: State<ShowService>, moves: Vec<NodeMove>) -> Result<(), String> {
+    show.move_nodes(&moves)
+}
+
+#[tauri::command]
+pub fn graph_replace(show: State<ShowService>, graph: Graph) -> Result<(), String> {
+    show.replace_graph(graph)
+}
+
+#[tauri::command]
+pub fn graph_set_control(show: State<ShowService>, id: String, value: f32) -> Result<(), String> {
+    show.set_control(&id, value)
+}
+
+#[tauri::command]
+pub fn graph_controls(engine: State<EngineManager>) -> HashMap<String, f32> {
+    engine.controls()
+}
+
+/// The last MIDI controller/note received, for MIDI learn:
+/// `[isNote, channel 1-16, number]`.
+#[tauri::command]
+pub fn graph_last_midi(engine: State<EngineManager>) -> Option<(bool, u8, u8)> {
+    engine.last_midi()
 }

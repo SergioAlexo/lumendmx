@@ -1,12 +1,15 @@
 //! The `.lumen` show-file schema.
 //!
-//! Format 9 is the node-graph rewrite: universes, the patch, groups and the
-//! tempo. Older development formats (1-8, built around cuelists and a
+//! Format 9 is the node-graph rewrite: universes, the patch, groups, the
+//! graph and the tempo. Older development formats (1-8, built around cuelists and a
 //! programmer) aren't read at all — see `migrate.rs`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::graph::model::Graph;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
@@ -87,6 +90,12 @@ pub struct ShowFile {
     pub patch: Vec<PatchedFixture>,
     pub settings: ShowSettings,
     pub groups: Vec<Group>,
+    /// What the show plays.
+    #[serde(default)]
+    pub graph: Graph,
+    /// Playback-bar Fader/Button values by node id, as last left.
+    #[serde(default)]
+    pub controls: BTreeMap<String, f32>,
     /// The global tempo.
     pub bpm: f32,
 }
@@ -108,6 +117,8 @@ impl ShowFile {
             patch: Vec::new(),
             settings: ShowSettings::default(),
             groups: Vec::new(),
+            graph: Graph::default(),
+            controls: BTreeMap::new(),
             bpm: crate::engine::tempo::DEFAULT_BPM,
         }
     }

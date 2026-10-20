@@ -13,6 +13,6 @@ audioAnalysis: boolean,
  */
 audioDevice: string | null, audioChannel: number, ltcDevice: string | null, ltcChannel: number, 
 /**
- * The MIDI port MIDI clock and MTC are read from.
+ * The MIDI port MIDI clock, MTC and the graph's MIDI nodes read.
  */
 midiPort: string | null, };

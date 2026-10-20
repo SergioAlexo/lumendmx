@@ -21,8 +21,7 @@ pub struct AttributeChannel {
 pub struct ResolvedFixture {
     pub fixture_number: u32,
     pub universe: u32,
-    /// Whole-fixture attributes. For a multi-cell fixture with no
-    /// whole-fixture channel for an attribute, its first cell's channel.
+    /// Whole-fixture attributes (not those of individual cells).
     pub attributes: HashMap<String, AttributeChannel>,
     /// Each cell's attributes, in cell order. Empty for a single-cell fixture.
     pub cells: Vec<HashMap<String, AttributeChannel>>,
@@ -32,8 +31,11 @@ pub struct ResolvedFixture {
 }
 
 impl ResolvedFixture {
+    /// The fixture's channel for `attribute`; for a multi-cell fixture
+    /// without a whole-fixture channel for it, its first cell's.
+    #[cfg(test)]
     pub fn channel(&self, attribute: &str) -> Option<u16> {
-        self.attributes.get(attribute).map(|a| a.coarse)
+        self.attributes.get(attribute).or_else(|| self.cells.first()?.get(attribute)).map(|a| a.coarse)
     }
 }
 
@@ -97,11 +99,6 @@ pub fn resolve(patch: &[PatchedFixture], library: &FixtureLibrary) -> ResolvedPa
         cell_numbers.sort_unstable();
         let cells: Vec<HashMap<String, AttributeChannel>> =
             cell_numbers.into_iter().map(|n| cells.remove(&n).unwrap_or_default()).collect();
-        if let Some(first) = cells.first() {
-            for (attribute, channel) in first {
-                attributes.entry(attribute.clone()).or_insert_with(|| channel.clone());
-            }
-        }
         out.fixtures.push(ResolvedFixture {
             fixture_number: instance.fixture_number,
             universe: instance.universe,
