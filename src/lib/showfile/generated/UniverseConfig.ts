@@ -3,8 +3,6 @@ import type { DriverConfig } from "./DriverConfig";
 
 export type UniverseConfig = { id: number, name: string, 
 /**
- * v2: replaced the single FTDI-only `outputPort: Option<String>` with a
- * driver-tagged config supporting FTDI/Enttec Pro/Art-Net/sACN/none
- * (see `migrate::upgrade_1_to_2`).
+ * The controller this universe is sent through.
  */
 driver: DriverConfig, };

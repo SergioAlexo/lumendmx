@@ -3,10 +3,9 @@
 
 pub mod audio;
 pub mod commands;
-pub mod effects;
-pub mod groups;
 pub mod manager;
 pub mod merge;
 pub mod state;
 pub mod tempo;
 pub mod timecode;
+pub mod waves;

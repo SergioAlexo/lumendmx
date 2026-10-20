@@ -6,13 +6,11 @@ export type PatchedFixture = { id: string, fixtureId: string, modeIndex: number,
  */
 address: number, name: string, 
 /**
- * v3: which universe this fixture is patched into. Every fixture was
- * implicitly universe 1 before Setup could manage more than one (see
- * `migrate::upgrade_2_to_3`).
+ * Which universe (and so which controller) this fixture is patched into.
  */
 universe: number, 
 /**
- * v3: a stable, user-assignable number for the command line's `1 THRU 8`
- * etc. to reference — replaces Phase 3's "just patch order" placeholder.
+ * A stable, user-assignable number, unique across the show. Groups and
+ * the graph refer to fixtures by it.
  */
 fixtureNumber: number, invertPan: boolean, invertTilt: boolean, swapPanTilt: boolean, };

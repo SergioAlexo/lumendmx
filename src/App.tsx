@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
-import { FixturePatchPanel } from "./components/FixturePatchPanel";
+import { FixturesPanel } from "./components/fixtures/FixturesPanel";
 import { SetupPanel } from "./components/SetupPanel";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
@@ -23,6 +23,7 @@ function App() {
   const checkForAppUpdate = useAppUpdateStore((s) => s.checkNow);
   const initShow = useShowStore((s) => s.init);
   const showLoadCount = useShowStore((s) => s.loadCount);
+  const error = useShowStore((s) => s.error);
   const initUniverseStatuses = useUniverseStatusesStore((s) => s.init);
   const initUniverseChannels = useUniverseChannelsStore((s) => s.init);
   const [mainView, setMainView] = useState<MainView>("fixtures");
@@ -52,13 +53,21 @@ function App() {
             </Button>
           ))}
         </div>
-        {/* Keyed on show loads: panels fetch engine data (groups) on mount,
-            so remount them when a different show loads. */}
+        {error && (
+          <div className="flex items-center justify-between gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-1.5 text-xs text-destructive">
+            <span>{error}</span>
+            <button className="underline-offset-2 hover:underline" onClick={() => useShowStore.setState({ error: null })}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {/* Keyed on show loads, so panels drop local state (selection,
+            drafts) belonging to the previous show. */}
         <div key={showLoadCount} className="flex-1 overflow-hidden">
           {mainView === "setup" ? (
             <SetupPanel />
           ) : mainView === "fixtures" ? (
-            <FixturePatchPanel />
+            <FixturesPanel />
           ) : (
             <div className="p-8 text-sm text-muted-foreground">The node editor is coming next.</div>
           )}

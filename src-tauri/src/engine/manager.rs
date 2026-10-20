@@ -2,52 +2,30 @@
 //! state, the fixture index layers resolve against, the global clocks, and
 //! the 44Hz tick thread.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use super::audio::BandLevels;
-use super::groups::{Group, GroupStore};
 use super::merge::merge_universe;
 use super::state::{EngineState, Layer};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::TimecodeClock;
 use crate::output::manager::OutputManager;
+use crate::show::resolve::ResolvedPatch;
 use crate::output::UNIVERSE_SIZE;
 
 const TICK_HZ: f64 = 44.0;
 const DISPLAY_HZ: f64 = 20.0;
-/// The layer direct channel sets (the Fixtures panel's sliders) land in.
-const MANUAL_LAYER: &str = "manual";
-const MANUAL_PRIORITY: i64 = i64::MAX;
-
-/// A patched fixture resolved to DMX addresses: which channel each of its
-/// attributes lives on. Pushed from the frontend whenever the patch changes
-/// (see docs/ENGINE.md).
-#[derive(Debug, Clone, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct PatchIndexEntry {
-    pub fixture_number: u32,
-    pub universe: u32,
-    /// The fixture's (first) dimmer channel, if it has one.
-    pub intensity_channel: Option<u16>,
-    /// Every attribute name (e.g. "red", "pan", "gobo") this fixture has,
-    /// mapped to its channel.
-    #[serde(default)]
-    pub attribute_channels: HashMap<String, u16>,
-    /// For a multi-cell fixture (an LED bar, a pixel batten): each cell's
-    /// attribute → channel map, in cell order (cell 1 first). Empty for a
-    /// single-cell fixture.
-    #[serde(default)]
-    pub cells: Vec<HashMap<String, u16>>,
-}
+/// Channel rest values (the fixture library's `defaultValue`s) sit in their
+/// own layer below everything else.
+const DEFAULTS_LAYER: &str = "defaults";
+const DEFAULTS_PRIORITY: i64 = i64::MIN;
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -55,16 +33,6 @@ pub struct PatchIndexEntry {
 pub struct EngineFrame {
     pub universe_id: u32,
     pub channels: Vec<u8>,
-}
-
-/// The engine-owned part of a show.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct ShowEngineData {
-    pub groups: Vec<Group>,
-    /// The global tempo.
-    pub bpm: f32,
 }
 
 /// Everything one engine tick reads and writes — shared (by `Arc`) between
@@ -85,13 +53,10 @@ impl TickShared {
 
 pub struct EngineManager {
     state: Arc<Mutex<EngineState>>,
-    patch_index: Arc<Mutex<Vec<PatchIndexEntry>>>,
-    groups: Mutex<GroupStore>,
+    /// The current patch, resolved to DMX addresses.
+    patch: Arc<Mutex<Arc<ResolvedPatch>>>,
     tick_started: AtomicBool,
     tempo: Arc<Mutex<Tempo>>,
-    /// Bumped by every change to engine-owned show data, so the frontend
-    /// can tell the show has unsaved engine-side edits.
-    data_revision: AtomicU64,
     /// Timing inputs: the `crate::timing` sources write into these.
     timecode: Arc<Mutex<TimecodeClock>>,
     audio: Arc<Mutex<BandLevels>>,
@@ -115,11 +80,9 @@ impl EngineManager {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(EngineState::new())),
-            patch_index: Arc::new(Mutex::new(Vec::new())),
-            groups: Mutex::new(GroupStore::new()),
+            patch: Arc::new(Mutex::new(Arc::new(ResolvedPatch::default()))),
             tick_started: AtomicBool::new(false),
             tempo: Arc::new(Mutex::new(Tempo::new())),
-            data_revision: AtomicU64::new(0),
             timecode: Arc::new(Mutex::new(TimecodeClock::new())),
             audio: Arc::new(Mutex::new(BandLevels::default())),
         }
@@ -186,25 +149,16 @@ impl EngineManager {
         });
     }
 
-    pub fn set_htp_channels(&self, universe: u32, channels: Vec<u16>) {
-        let mut state = self.state.lock().unwrap();
-        state.htp_channels.insert(universe, channels.into_iter().collect());
-    }
-
-    pub fn set_patch_index(&self, entries: Vec<PatchIndexEntry>) {
-        *self.patch_index.lock().unwrap() = entries;
-    }
-
-    /// Immediate set into the manual layer (the Fixtures panel's sliders).
-    pub fn set_channels(&self, universe: u32, values: &HashMap<u16, u8>) {
-        let mut state = self.state.lock().unwrap();
-        let (_, layer) = state
-            .layers
-            .entry(MANUAL_LAYER.to_string())
-            .or_insert_with(|| (MANUAL_PRIORITY, Layer::default()));
-        for (&channel, &value) in values {
-            layer.values.insert((universe, channel), value as f32);
+    /// Takes a newly resolved patch: which channels merge HTP, and the
+    /// layer holding every channel's rest value.
+    pub fn set_patch(&self, patch: Arc<ResolvedPatch>) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.htp_channels = patch.htp.clone();
+            let defaults = Layer { values: patch.defaults.clone(), ..Layer::default() };
+            state.layers.insert(DEFAULTS_LAYER.to_string(), (DEFAULTS_PRIORITY, defaults));
         }
+        *self.patch.lock().unwrap() = patch;
     }
 
     pub fn get_universe_data(&self, universe: u32) -> [u8; UNIVERSE_SIZE] {
@@ -220,59 +174,17 @@ impl EngineManager {
         self.state.lock().unwrap().grand_master * 100.0
     }
 
-    // --- Groups ---
-
-    pub fn record_group(&self, name: String, fixture_numbers: Vec<u32>) -> u32 {
-        self.mark_data_changed();
-        self.groups.lock().unwrap().record(name, fixture_numbers)
-    }
-
-    pub fn list_groups(&self) -> Vec<Group> {
-        self.groups.lock().unwrap().list()
-    }
-
-    pub fn rename_group(&self, id: u32, name: String) -> Result<(), String> {
-        self.mark_data_changed();
-        self.groups.lock().unwrap().rename(id, name)
-    }
-
-    pub fn delete_group(&self, id: u32) {
-        self.mark_data_changed();
-        self.groups.lock().unwrap().delete(id);
-    }
-
-    // --- Show data ---
-
-    fn mark_data_changed(&self) {
-        self.data_revision.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Changes whenever engine-owned show data changes; compare against the
-    /// value at the last save/load to know whether there's unsaved work.
-    pub fn show_data_revision(&self) -> u64 {
-        self.data_revision.load(Ordering::SeqCst)
-    }
-
-    pub fn export_show_data(&self) -> ShowEngineData {
-        ShowEngineData { groups: self.list_groups(), bpm: self.tempo.lock().unwrap().bpm() }
-    }
-
-    /// Replaces the engine-owned data with a show's (open/new/restore).
-    pub fn load_show_data(&self, data: ShowEngineData) {
-        self.tempo.lock().unwrap().set_bpm(data.bpm);
-        self.groups.lock().unwrap().replace_all(data.groups);
-        self.state.lock().unwrap().layers.clear();
-        self.mark_data_changed();
-    }
-
     // --- Tempo ---
 
     pub fn tempo_status(&self) -> TempoStatus {
         self.tempo.lock().unwrap().status()
     }
 
+    pub fn bpm(&self) -> f32 {
+        self.tempo.lock().unwrap().bpm()
+    }
+
     pub fn set_bpm(&self, bpm: f32) {
-        self.mark_data_changed();
         self.tempo.lock().unwrap().set_bpm(bpm);
     }
 
@@ -280,7 +192,6 @@ impl EngineManager {
     /// `performance.now()`), so network/IPC jitter doesn't skew the
     /// measured interval.
     pub fn tap_tempo(&self, now_ms: f64) -> f32 {
-        self.mark_data_changed();
         self.tempo.lock().unwrap().tap(now_ms)
     }
 }

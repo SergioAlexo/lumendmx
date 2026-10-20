@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::engine::groups::Group;
 use crate::output::config::DriverConfig;
 
 /// Bump this whenever `ShowFile`'s on-disk shape changes, and add an upgrade
@@ -22,9 +21,7 @@ pub const MIN_SCHEMA_VERSION: u32 = 9;
 pub struct UniverseConfig {
     pub id: u32,
     pub name: String,
-    /// v2: replaced the single FTDI-only `outputPort: Option<String>` with a
-    /// driver-tagged config supporting FTDI/Enttec Pro/Art-Net/sACN/none
-    /// (see `migrate::upgrade_1_to_2`).
+    /// The controller this universe is sent through.
     pub driver: DriverConfig,
 }
 
@@ -38,16 +35,25 @@ pub struct PatchedFixture {
     /// DMX start address, 1-512.
     pub address: u16,
     pub name: String,
-    /// v3: which universe this fixture is patched into. Every fixture was
-    /// implicitly universe 1 before Setup could manage more than one (see
-    /// `migrate::upgrade_2_to_3`).
+    /// Which universe (and so which controller) this fixture is patched into.
     pub universe: u32,
-    /// v3: a stable, user-assignable number for the command line's `1 THRU 8`
-    /// etc. to reference — replaces Phase 3's "just patch order" placeholder.
+    /// A stable, user-assignable number, unique across the show. Groups and
+    /// the graph refer to fixtures by it.
     pub fixture_number: u32,
     pub invert_pan: bool,
     pub invert_tilt: bool,
     pub swap_pan_tilt: bool,
+}
+
+/// A named, ordered set of fixtures. The order is the fan order: effects
+/// that spread across a group run from its first fixture to its last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct Group {
+    pub id: u32,
+    pub name: String,
+    pub fixture_numbers: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -80,10 +86,6 @@ pub struct ShowFile {
     pub universes: Vec<UniverseConfig>,
     pub patch: Vec<PatchedFixture>,
     pub settings: ShowSettings,
-    /// Engine-owned show data: owned and edited by the Rust engine at
-    /// runtime; the frontend fetches it into the file on save
-    /// (`engine_export_show_data`) and pushes it back on load
-    /// (`engine_load_show_data`).
     pub groups: Vec<Group>,
     /// The global tempo.
     pub bpm: f32,
@@ -118,18 +120,4 @@ pub struct RecentShowEntry {
     pub path: String,
     pub name: String,
     pub opened_at: String,
-}
-
-/// What `showfile_restore_session` brings back on launch.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct RestoredSession {
-    pub show: ShowFile,
-    /// The show's file on disk, if it has one (a recovered autosave of a
-    /// never-saved show has none).
-    pub path: Option<String>,
-    /// True when `show` came from an autosave holding changes newer than the
-    /// last open/save, i.e. it has unsaved work.
-    pub recovered: bool,
 }

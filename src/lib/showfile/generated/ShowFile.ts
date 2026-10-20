@@ -8,14 +8,7 @@ export type ShowFile = { schemaVersion: number, id: string, name: string,
 /**
  * RFC 3339 timestamps.
  */
-createdAt: string, modifiedAt: string, universes: Array<UniverseConfig>, patch: Array<PatchedFixture>, settings: ShowSettings, 
-/**
- * Engine-owned show data: owned and edited by the Rust engine at
- * runtime; the frontend fetches it into the file on save
- * (`engine_export_show_data`) and pushes it back on load
- * (`engine_load_show_data`).
- */
-groups: Array<Group>, 
+createdAt: string, modifiedAt: string, universes: Array<UniverseConfig>, patch: Array<PatchedFixture>, settings: ShowSettings, groups: Array<Group>, 
 /**
  * The global tempo.
  */

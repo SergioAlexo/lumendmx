@@ -3,20 +3,12 @@ import * as timing from "../lib/timing";
 import type { AudioDeviceInfo, MidiPortInfo, TimingSettings, TimingStatus } from "../lib/showfile/generated";
 import { Button } from "./ui/button";
 import { Select } from "./ui/input";
+import { Section } from "./ui/section";
 import { cn } from "../lib/utils";
 
 const STATUS_MS = 100;
 
-export function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-md border border-border bg-card p-4">
-      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
-      <div className="flex flex-col gap-3">{children}</div>
-    </section>
-  );
-}
-
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="grid grid-cols-[9rem_1fr] items-center gap-3 text-sm">
       <span className="text-muted-foreground">{label}</span>

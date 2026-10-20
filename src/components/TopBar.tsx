@@ -15,7 +15,7 @@ function statusColor(connected: boolean, hasDriver: boolean): string {
 /** One dot per universe: green when its controller is sending, red when it
  * failed, grey when it has no output. Controllers are set up in Setup. */
 function UniverseStatusDots() {
-  const universes = useShowStore((s) => s.meta?.universes ?? EMPTY_UNIVERSES);
+  const universes = useShowStore((s) => s.show?.universes ?? EMPTY_UNIVERSES);
   const statuses = useUniverseStatusesStore((s) => s.statuses);
 
   return (
