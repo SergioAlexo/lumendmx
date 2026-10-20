@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { FixturesPanel } from "./components/fixtures/FixturesPanel";
 import { SetupPanel } from "./components/SetupPanel";
+import { NodeEditor } from "./components/nodes/NodeEditor";
+import { PlaybackBar } from "./components/PlaybackBar";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
 import { useDmxStore } from "./store/useDmxStore";
 import { useAppUpdateStore } from "./store/useAppUpdateStore";
+import { useGraphStore } from "./store/useGraphStore";
 import { useShowStore } from "./store/useShowStore";
 import { useUniverseStatusesStore } from "./store/useUniverseStatusesStore";
 import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
@@ -22,19 +25,21 @@ function App() {
   const init = useDmxStore((s) => s.init);
   const checkForAppUpdate = useAppUpdateStore((s) => s.checkNow);
   const initShow = useShowStore((s) => s.init);
+  const initGraph = useGraphStore((s) => s.init);
   const showLoadCount = useShowStore((s) => s.loadCount);
   const error = useShowStore((s) => s.error);
   const initUniverseStatuses = useUniverseStatusesStore((s) => s.init);
   const initUniverseChannels = useUniverseChannelsStore((s) => s.init);
-  const [mainView, setMainView] = useState<MainView>("fixtures");
+  const [mainView, setMainView] = useState<MainView>("nodes");
 
   useEffect(() => {
     void init();
     void checkForAppUpdate();
     void initShow();
+    void initGraph();
     void initUniverseStatuses();
     void initUniverseChannels();
-  }, [init, checkForAppUpdate, initShow, initUniverseStatuses, initUniverseChannels]);
+  }, [init, checkForAppUpdate, initShow, initGraph, initUniverseStatuses, initUniverseChannels]);
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -69,9 +74,10 @@ function App() {
           ) : mainView === "fixtures" ? (
             <FixturesPanel />
           ) : (
-            <div className="p-8 text-sm text-muted-foreground">The node editor is coming next.</div>
+            <NodeEditor />
           )}
         </div>
+        <PlaybackBar />
       </main>
     </div>
   );
