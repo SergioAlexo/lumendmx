@@ -5,7 +5,7 @@
 - Port: **COM9**
 - Genuine FTDI USB-to-DMX widget (Device Manager: Driver Provider "FTDI",
   `ftser2k.sys`), dedicated DMX/XLR output -- not a bare TTL adapter.
-- Requires the real-hardware-break output path in `src-tauri/src/dmx.rs`
+- Requires the real-hardware-break output path in `src-tauri/src/output/ftdi.rs`
   (`set_break`/`clear_break`, 110us break / 16us MAB, 30Hz pacing, time-critical
   thread priority). Do not switch this back to a baud-rate-faked break -- that was
   tried and caused intermittent flicker on this exact adapter.
