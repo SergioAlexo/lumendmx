@@ -17,12 +17,14 @@ pub fn timing_configure(timing: State<TimingManager>, settings: TimingSettings) 
     timing.status()
 }
 
+/// Async so the slow first CoreAudio enumeration doesn't block the UI thread.
 #[tauri::command]
-pub fn timing_list_audio_inputs() -> Vec<AudioDeviceInfo> {
+pub async fn timing_list_audio_inputs() -> Vec<AudioDeviceInfo> {
     list_audio_inputs()
 }
 
+/// Async: creating the first CoreMIDI client is slow, like audio above.
 #[tauri::command]
-pub fn timing_list_midi_inputs() -> Vec<MidiPortInfo> {
+pub async fn timing_list_midi_inputs() -> Vec<MidiPortInfo> {
     midi::list_input_ports()
 }

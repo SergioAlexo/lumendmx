@@ -19,8 +19,9 @@ pub struct SerialPortDescriptor {
     pub label: String,
 }
 
+/// Async so the IOKit scan doesn't block the UI thread.
 #[tauri::command]
-pub fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
+pub async fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
     serialport::available_ports()
         .map(|ports| {
             ports
