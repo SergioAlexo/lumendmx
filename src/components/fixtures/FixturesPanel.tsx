@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
 import { controllerLabel } from "../../lib/dmx";
 import * as showApi from "../../lib/show";
 import type { FixtureDefinition, FixtureMode } from "../../lib/fixtures/types";
@@ -16,6 +16,29 @@ import { GroupsPanel } from "./GroupsPanel";
 import { channelValues, findMode, hasAttribute, swatchColor } from "./fixtureLook";
 
 type View = "patch" | "values" | "dmx";
+
+const GROUPS_HIDDEN_KEY = "lumendmx-groups-hidden";
+
+/** Whether the groups sidebar is hidden, remembered across launches (and
+ * shared with popped-out windows). */
+function useGroupsHidden(): [boolean, (hidden: boolean) => void] {
+  const [hidden, setHidden] = useState(() => {
+    try {
+      return localStorage.getItem(GROUPS_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const set = (next: boolean) => {
+    setHidden(next);
+    try {
+      localStorage.setItem(GROUPS_HIDDEN_KEY, next ? "1" : "0");
+    } catch {
+      // Not remembered; still toggles for this session.
+    }
+  };
+  return [hidden, set];
+}
 
 const VIEW_LABELS: Record<View, string> = { patch: "Patch", values: "Values", dmx: "Raw DMX" };
 
@@ -44,6 +67,7 @@ export function FixturesPanel() {
   const [selected, setSelected] = useState<number[]>([]);
   const [anchor, setAnchor] = useState<number | null>(null);
   const [adding, setAdding] = useState<{ universe?: number } | null>(null);
+  const [groupsHidden, setGroupsHidden] = useGroupsHidden();
 
   // Display order, for shift-click ranges.
   const ordered = useMemo(() => universes.flatMap((u) => fixturesIn(patch, u.id)), [universes, patch]);
@@ -121,6 +145,15 @@ export function FixturesPanel() {
             <Plus />
             Add fixtures
           </Button>
+          <Button
+            size="iconSm"
+            variant="ghost"
+            title={groupsHidden ? "Show groups" : "Hide groups"}
+            className="text-muted-foreground"
+            onClick={() => setGroupsHidden(!groupsHidden)}
+          >
+            {groupsHidden ? <PanelRightOpen /> : <PanelRightClose />}
+          </Button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
@@ -168,7 +201,7 @@ export function FixturesPanel() {
         </div>
       </div>
 
-      <GroupsPanel selected={selected} onSelect={setSelected} />
+      {!groupsHidden && <GroupsPanel selected={selected} onSelect={setSelected} />}
 
       {adding && <AddFixturesDialog initialUniverse={adding.universe} onClose={() => setAdding(null)} />}
     </div>
