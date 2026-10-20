@@ -9,11 +9,9 @@ function isEditable(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-/** File (New/Open/Save/Save As/Recent) and Undo/Redo controls for the top
- * bar. Cmd/Ctrl+S saves, Cmd/Ctrl+Z / Shift+Cmd/Ctrl+Z undo and redo. */
-export function ShowMenu() {
-  const show = useShowStore((s) => s.show);
-  const recent = useShowStore((s) => s.recent);
+/** Cmd/Ctrl+S saves, Cmd/Ctrl+Z / Shift+Cmd/Ctrl+Z undo and redo. Used by
+ * every window, popped-out tabs included. */
+export function useShowShortcuts() {
   const run = useShowStore((s) => s.run);
 
   useEffect(() => {
@@ -31,6 +29,14 @@ export function ShowMenu() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [run]);
+}
+
+/** File (New/Open/Save/Save As/Recent) and Undo/Redo controls for the top
+ * bar. */
+export function ShowMenu() {
+  const show = useShowStore((s) => s.show);
+  const recent = useShowStore((s) => s.recent);
+  const run = useShowStore((s) => s.run);
 
   return (
     <div className="flex items-center gap-2">

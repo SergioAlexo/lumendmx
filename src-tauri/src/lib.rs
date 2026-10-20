@@ -57,6 +57,12 @@ pub fn run() {
 
             Ok(())
         })
+        // Popped-out tabs belong to the main window: closing it quits.
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                window.app_handle().exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             output::commands::list_serial_ports,
             output::commands::output_get_universe_data,
