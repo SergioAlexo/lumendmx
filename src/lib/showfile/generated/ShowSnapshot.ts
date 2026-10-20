@@ -23,4 +23,4 @@ dirty: boolean, universes: Array<UniverseConfig>, patch: Array<PatchedFixture>, 
 /**
  * Patched fixtures whose type or mode isn't in the fixture library.
  */
-unresolved: Array<number>, graph: GraphView, };
+unresolved: Array<number>, graph: GraphView, beatOffsetMs: number, };

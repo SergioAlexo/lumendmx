@@ -36,7 +36,9 @@ or filesystem plugin capability is needed.
   (`fromNode`/`fromSocket` → `toNode`/`toSocket`). See docs/NODES.md for
   each kind's sockets and params.
 - `controls`: each Fader/Button node's value as last left, by node id.
-- `bpm`, `settings`.
+- `bpm`, `settings`. `settings.beatOffsetMs` (±500) shifts every
+  beat-synced effect earlier (negative: later) to make up for output delay;
+  it lives in the show because it belongs to the rig the show is patched for.
 
 Machine settings (tempo source, audio/MIDI devices, timecode source, the MCP
 server) aren't in the show: device ids differ between machines.

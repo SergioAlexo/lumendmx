@@ -81,6 +81,11 @@ export function renameShow(name: string): Promise<void> {
   return invoke("show_rename", { name });
 }
 
+/** Shifts beat-synced effects earlier (negative: later), ±500 ms. */
+export function setBeatOffset(ms: number): Promise<void> {
+  return invoke("show_set_beat_offset", { ms });
+}
+
 export function newShow(): Promise<void> {
   return invoke("show_new");
 }

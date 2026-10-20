@@ -99,6 +99,7 @@ pub fn run() {
             show::commands::show_update_universe,
             show::commands::show_remove_universe,
             show::commands::show_rename,
+            show::commands::show_set_beat_offset,
             show::commands::show_new,
             show::commands::show_open,
             show::commands::show_save,

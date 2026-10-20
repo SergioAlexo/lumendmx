@@ -169,8 +169,9 @@ impl GraphRuntime {
         match (&node.kind, &node.config) {
             (NodeKind::Number | NodeKind::Color, Config::Value(v)) => out[0] = *v,
             (NodeKind::Time, _) => {
-                out[0][0] = inputs.beats.fract() as f32;
-                out[1][0] = (inputs.beats / 4.0).fract() as f32;
+                // rem_euclid, not fract: a negative beat offset can put the beat below 0.
+                out[0][0] = inputs.beats.rem_euclid(1.0) as f32;
+                out[1][0] = (inputs.beats / 4.0).rem_euclid(1.0) as f32;
                 out[2] = bool_val(inputs.beats.floor() != inputs.prev_beats.floor());
                 out[3][0] = inputs.bpm;
                 out[4][0] = inputs.seconds as f32;

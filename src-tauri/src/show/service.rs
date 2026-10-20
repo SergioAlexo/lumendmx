@@ -25,6 +25,8 @@ use crate::showfile::schema::{Group, PatchedFixture, RecentShowEntry, ShowFile, 
 use crate::showfile::store::{read_show_file, write_show_file, ShowStore};
 
 const UNDO_LIMIT: usize = 100;
+/// The largest beat offset either way: past this it's a different beat, not latency.
+pub const MAX_BEAT_OFFSET_MS: f32 = 500.0;
 
 /// Everything the show does to the world outside itself.
 pub trait ShowSink: Send + Sync {
@@ -38,6 +40,7 @@ pub trait ShowSink: Send + Sync {
     fn remove_universe(&self, id: u32);
     fn bpm(&self) -> f32;
     fn set_bpm(&self, bpm: f32);
+    fn set_beat_offset(&self, ms: f32);
     /// The show changed; `revision` is its new revision.
     fn changed(&self, revision: u64);
 }
@@ -64,6 +67,7 @@ pub struct ShowSnapshot {
     /// Patched fixtures whose type or mode isn't in the fixture library.
     pub unresolved: Vec<u32>,
     pub graph: GraphView,
+    pub beat_offset_ms: f32,
 }
 
 /// A graph node as the editor shows it: the node, its actual sockets, and
@@ -322,6 +326,7 @@ impl ShowService {
             redo_label: inner.redo.last().map(|s| s.label.clone()),
             unresolved: inner.resolved.unresolved.clone(),
             graph: inner.graph_view(),
+            beat_offset_ms: inner.show.settings.beat_offset_ms,
         }
     }
 
@@ -395,6 +400,7 @@ impl ShowService {
             }
         }
         self.sink.set_bpm(show.bpm);
+        self.sink.set_beat_offset(show.settings.beat_offset_ms);
         self.sink.set_controls(show.controls.iter().map(|(k, v)| (k.clone(), *v)).collect());
         inner.show = show;
         inner.path = path;
@@ -663,6 +669,15 @@ impl ShowService {
         self.after_change(&mut inner, false);
     }
 
+    /// Clamped to ±`MAX_BEAT_OFFSET_MS`.
+    pub fn set_beat_offset(&self, ms: f32) {
+        let ms = if ms.is_finite() { ms.clamp(-MAX_BEAT_OFFSET_MS, MAX_BEAT_OFFSET_MS) } else { 0.0 };
+        let mut inner = self.inner.lock().unwrap();
+        inner.show.settings.beat_offset_ms = ms;
+        self.sink.set_beat_offset(ms);
+        self.after_change(&mut inner, false);
+    }
+
     pub fn new_show(&self) {
         self.load(ShowFile::new_default("Untitled Show"), None);
     }
@@ -764,6 +779,7 @@ pub mod tests {
             120.0
         }
         fn set_bpm(&self, _bpm: f32) {}
+        fn set_beat_offset(&self, _ms: f32) {}
         fn changed(&self, _revision: u64) {}
     }
 

@@ -198,6 +198,9 @@ mod tests {
         fn set_bpm(&self, bpm: f32) {
             self.0.set_bpm(bpm);
         }
+        fn set_beat_offset(&self, ms: f32) {
+            self.0.set_beat_offset(ms);
+        }
         fn changed(&self, _revision: u64) {}
     }
 

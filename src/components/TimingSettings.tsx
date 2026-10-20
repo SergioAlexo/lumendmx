@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import * as showApi from "../lib/show";
 import * as timing from "../lib/timing";
+import { useShowStore } from "../store/useShowStore";
 import type { AudioDeviceInfo, MidiPortInfo, TimingSettings, TimingStatus } from "../lib/showfile/generated";
 import { Button } from "./ui/button";
-import { Select } from "./ui/input";
+import { Input, Select } from "./ui/input";
 import { Section } from "./ui/section";
 import { cn } from "../lib/utils";
 
@@ -14,6 +16,44 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="text-muted-foreground">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** The show's beat offset in ms; commits on blur or Enter. */
+function BeatOffset() {
+  const offset = useShowStore((s) => s.show?.beatOffsetMs ?? 0);
+  const run = useShowStore((s) => s.run);
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const ms = Number(draft);
+    if (draft.trim() !== "" && Number.isFinite(ms) && ms !== offset) void run(() => showApi.setBeatOffset(ms));
+    setDraft(null);
+  };
+  return (
+    <span className="flex items-center gap-2">
+      <Input
+        type="text"
+        inputMode="decimal"
+        aria-label="Beat offset in milliseconds"
+        className="w-20 text-right tabular-nums"
+        value={draft ?? String(offset)}
+        onFocus={(e) => {
+          setDraft(String(offset));
+          e.currentTarget.select();
+        }}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          else if (e.key === "Escape") {
+            setDraft(null);
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <span className="text-muted-foreground">ms — positive fires effects earlier, to make up for output delay</span>
+    </span>
   );
 }
 
@@ -68,6 +108,9 @@ export function TimingSettingsPanel() {
               </option>
             ))}
           </Select>
+        </Field>
+        <Field label="Beat offset">
+          <BeatOffset />
         </Field>
         <Field label="Audio input">
           <div className="flex gap-2">

@@ -53,6 +53,8 @@ struct TickShared {
     controls: Arc<Mutex<HashMap<String, f32>>>,
     plan: Arc<Mutex<Arc<GraphPlan>>>,
     runtime: Arc<Mutex<GraphRuntime>>,
+    /// The show's beat offset: the graph sees the beat this far ahead.
+    beat_offset_ms: Arc<Mutex<f32>>,
 }
 
 impl TickShared {
@@ -63,7 +65,9 @@ impl TickShared {
             let mut tempo = self.tempo.lock().unwrap();
             let prev = tempo.beat();
             tempo.advance(dt_ms);
-            (prev, tempo.beat(), tempo.seconds(), tempo.bpm())
+            // Only the graph's view of the beat moves; tap and sync keep the real one.
+            let shift = *self.beat_offset_ms.lock().unwrap() as f64 / 60_000.0 * tempo.bpm() as f64;
+            (prev + shift, tempo.beat() + shift, tempo.seconds(), tempo.bpm())
         };
         let (timecode_seconds, timecode_running) = {
             let mut tc = self.timecode.lock().unwrap();
@@ -131,6 +135,7 @@ impl EngineManager {
                 controls: Arc::new(Mutex::new(HashMap::new())),
                 plan: Arc::new(Mutex::new(Arc::new(GraphPlan::default()))),
                 runtime: Arc::new(Mutex::new(GraphRuntime::default())),
+                beat_offset_ms: Arc::new(Mutex::new(0.0)),
             },
             tick_started: AtomicBool::new(false),
             blackout: Arc::new(AtomicBool::new(false)),
@@ -278,6 +283,10 @@ impl EngineManager {
         self.shared.tempo.lock().unwrap().set_bpm(bpm);
     }
 
+    pub fn set_beat_offset(&self, ms: f32) {
+        *self.shared.beat_offset_ms.lock().unwrap() = ms;
+    }
+
     /// `now_ms`: the caller's timestamp for the tap (the frontend's
     /// `performance.now()`), so network/IPC jitter doesn't skew the
     /// measured interval.
@@ -304,10 +313,8 @@ mod tests {
         Edge { from_node: from.into(), from_socket: fs.into(), to_node: to.into(), to_socket: ts.into() }
     }
 
-    #[test]
-    fn patch_and_graph_reach_the_dmx_frame_with_htp_and_grand_master() {
-        let engine = EngineManager::new();
-        let par = PatchedFixture {
+    fn par() -> PatchedFixture {
+        PatchedFixture {
             id: "p".into(),
             fixture_id: "par".into(),
             mode_index: 0,
@@ -318,8 +325,35 @@ mod tests {
             invert_pan: false,
             invert_tilt: false,
             swap_pan_tilt: false,
+        }
+    }
+
+    #[test]
+    fn the_beat_offset_shifts_what_the_graph_sees_of_the_beat() {
+        let engine = EngineManager::new();
+        let patch = resolve(&[par()], &library());
+        engine.set_patch(&patch);
+        let graph = Graph {
+            nodes: vec![node("time", NodeKind::Time, &[]), node("out", NodeKind::Output, &[("fixtures", ParamValue::Text("1".into()))])],
+            edges: vec![edge("time", "beat", "out", "intensity")],
         };
-        let patch = resolve(&[par], &library());
+        let (plan, _) = compile(&graph, &patch, &[]);
+        engine.set_graph(Arc::new(plan));
+
+        // 120 BPM: 250ms is half a beat ahead.
+        engine.set_beat_offset(250.0);
+        engine.step(0.0);
+        assert_eq!(engine.get_universe_data(1)[0], 128);
+        engine.set_beat_offset(-250.0);
+        engine.step(0.0);
+        assert_eq!(engine.get_universe_data(1)[0], 128); // -0.5 wraps to the same half beat
+        assert_eq!(engine.tempo_status().beat, 0.0); // the real beat doesn't move
+    }
+
+    #[test]
+    fn patch_and_graph_reach_the_dmx_frame_with_htp_and_grand_master() {
+        let engine = EngineManager::new();
+        let patch = resolve(&[par()], &library());
         engine.set_patch(&patch);
         let fixtures = ParamValue::Text("1".into());
         let graph = Graph {

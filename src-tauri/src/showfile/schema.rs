@@ -65,6 +65,10 @@ pub struct Group {
 pub struct ShowSettings {
     pub output_rate_hz: u32,
     pub default_fade_ms: u32,
+    /// Shifts every beat-synced effect this much earlier (negative: later),
+    /// to make up for delay in the DMX interface, the lights or the sound.
+    #[serde(default)]
+    pub beat_offset_ms: f32,
 }
 
 impl Default for ShowSettings {
@@ -72,6 +76,7 @@ impl Default for ShowSettings {
         Self {
             output_rate_hz: 30,
             default_fade_ms: 0,
+            beat_offset_ms: 0.0,
         }
     }
 }

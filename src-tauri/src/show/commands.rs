@@ -68,6 +68,10 @@ impl ShowSink for AppSink {
         self.engine.set_bpm(bpm);
     }
 
+    fn set_beat_offset(&self, ms: f32) {
+        self.engine.set_beat_offset(ms);
+    }
+
     fn changed(&self, revision: u64) {
         let _ = self.app.emit(CHANGED_EVENT, revision);
     }
@@ -157,6 +161,11 @@ pub fn show_remove_universe(show: State<Arc<ShowService>>, id: u32) -> Result<()
 #[tauri::command]
 pub fn show_rename(show: State<Arc<ShowService>>, name: String) {
     show.rename_show(name);
+}
+
+#[tauri::command]
+pub fn show_set_beat_offset(show: State<Arc<ShowService>>, ms: f32) {
+    show.set_beat_offset(ms);
 }
 
 #[tauri::command]
