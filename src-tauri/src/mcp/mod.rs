@@ -1,8 +1,10 @@
 //! The built-in MCP server: lets an AI agent (Claude Code, Claude Desktop,
 //! any MCP client) patch fixtures and build the node graph through the same
-//! operations as the UI. Streamable HTTP on 127.0.0.1 only; requests whose
+//! operations as the UI. Streamable HTTP on 127.0.0.1 only. Requests whose
 //! Host isn't localhost are refused (DNS-rebinding protection, rmcp's
-//! default). Settings live in the app data dir, not the show.
+//! default), and so is anything carrying an `Origin` header: MCP clients
+//! don't send one, browsers always do, so no web page can drive the lights.
+//! Settings live in the app data dir, not the show.
 
 pub mod tools;
 
@@ -63,7 +65,9 @@ pub struct McpServer {
 
 /// Serves MCP on `listener` until `cancel` fires.
 pub async fn serve(listener: tokio::net::TcpListener, show: Arc<ShowService>, engine: Arc<EngineManager>, cancel: CancellationToken) {
-    let config = StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token());
+    let config = StreamableHttpServerConfig::default()
+        .enforce_origin_validation()
+        .with_cancellation_token(cancel.child_token());
     let service: StreamableHttpService<LumenMcp, LocalSessionManager> = StreamableHttpService::new(
         move || Ok(LumenMcp::new(show.clone(), engine.clone())),
         Default::default(),
@@ -293,6 +297,19 @@ mod tests {
         assert_eq!(bad["result"]["isError"], true, "{bad}");
 
         assert!(show.snapshot().undo_label.is_some());
+
+        // A web page's request (it always carries an Origin) is refused.
+        let from_page = client
+            .http
+            .post(&client.url)
+            .header("Origin", "https://evil.example")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(serde_json::json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/list" }).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(from_page.status(), 403);
         cancel.cancel();
     }
 }

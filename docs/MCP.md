@@ -22,10 +22,11 @@ Settings are per machine (`mcp.json` in the app data folder), not per show.
 
 ## Security
 
-It listens on 127.0.0.1 only, and refuses requests whose `Host` header isn't
-localhost. That protects against DNS rebinding: a web page can't drive your
-lights through your browser. There is no authentication beyond that: any
-program on this machine can connect while the server is on.
+It listens on 127.0.0.1 only, so other machines can't reach it. It refuses
+requests whose `Host` header isn't localhost (DNS rebinding) and any request
+with an `Origin` header. Browsers always send one and MCP clients don't, so
+no web page can drive your lights. There is no authentication beyond that:
+any program on this machine can connect while the server is on.
 
 ## Tools
 
