@@ -4,5 +4,6 @@
 pub mod commands;
 pub mod graph_ops;
 pub mod library;
+pub mod presets;
 pub mod resolve;
 pub mod service;

@@ -3,6 +3,7 @@
 //! settings are applied through `configure`, which starts and stops inputs
 //! to match.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -28,10 +29,10 @@ pub enum TempoSource {
     Tap,
     /// Beat detection on the audio input.
     Audio,
-    /// MIDI clock from the selected MIDI port.
+    /// MIDI clock from the clock port.
     MidiClock,
     /// BPM and beats from the Mixxx script (see `timing::mixxx`), over the
-    /// selected MIDI port.
+    /// clock port.
     Mixxx,
 }
 
@@ -49,8 +50,11 @@ pub struct TimingSettings {
     pub audio_channel: u32,
     pub ltc_device: Option<String>,
     pub ltc_channel: u32,
-    /// The MIDI port MIDI clock, MTC and the graph's MIDI nodes read.
-    pub midi_port: Option<String>,
+    /// The MIDI port MIDI clock, MTC and Mixxx are read from.
+    pub clock_port: Option<String>,
+    /// The MIDI ports the graph's MIDI CC / Note nodes read, all merged.
+    /// May include the clock port.
+    pub controller_ports: Vec<String>,
 }
 
 impl Default for TimingSettings {
@@ -63,7 +67,8 @@ impl Default for TimingSettings {
             audio_channel: 0,
             ltc_device: None,
             ltc_channel: 0,
-            midi_port: None,
+            clock_port: None,
+            controller_ports: Vec::new(),
         }
     }
 }
@@ -84,9 +89,18 @@ pub struct AudioInputStatus {
 #[derive(Debug, Clone, Default, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct MidiInputStatus {
+pub struct MidiClockStatus {
     pub connected: bool,
     pub clock_bpm: Option<f32>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct MidiPortStatus {
+    pub port: String,
+    pub connected: bool,
     pub error: Option<String>,
 }
 
@@ -96,7 +110,9 @@ pub struct MidiInputStatus {
 pub struct TimingStatus {
     pub settings: TimingSettings,
     pub audio: AudioInputStatus,
-    pub midi: MidiInputStatus,
+    pub midi_clock: MidiClockStatus,
+    /// One per controller port, in `controller_ports` order.
+    pub midi_controllers: Vec<MidiPortStatus>,
     pub ltc_running: bool,
     pub ltc_error: Option<String>,
     pub timecode: TimecodeStatus,
@@ -107,15 +123,25 @@ pub struct TimingStatus {
 struct Shared {
     tempo_source: Option<TempoSource>,
     audio: AudioInputStatus,
-    midi: MidiInputStatus,
+    midi_clock: MidiClockStatus,
+    /// Why each MIDI port that failed to open didn't.
+    midi_errors: BTreeMap<String, String>,
     ltc_error: Option<String>,
+}
+
+/// What a MIDI port is open for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MidiRoles {
+    clock: bool,
+    controllers: bool,
 }
 
 struct Inputs {
     settings: TimingSettings,
     audio: Option<AudioCapture>,
     ltc: Option<AudioCapture>,
-    midi: Option<MidiInputHandle>,
+    /// Open MIDI ports by id. Each port is opened once, whatever it's for.
+    midi: HashMap<String, (MidiRoles, MidiInputHandle)>,
 }
 
 pub struct TimingManager {
@@ -129,7 +155,7 @@ impl TimingManager {
         Self {
             handles,
             shared: Arc::new(Mutex::new(Shared { tempo_source: Some(TempoSource::Manual), ..Default::default() })),
-            inputs: Mutex::new(Inputs { settings: TimingSettings::default(), audio: None, ltc: None, midi: None }),
+            inputs: Mutex::new(Inputs { settings: TimingSettings::default(), audio: None, ltc: None, midi: HashMap::new() }),
         }
     }
 
@@ -170,19 +196,40 @@ impl TimingManager {
             }
         }
 
-        // Open whenever a port is chosen: MIDI nodes read it too.
-        if old.midi_port != settings.midi_port {
-            inputs.midi = None;
-            self.shared.lock().unwrap().midi = MidiInputStatus::default();
+        // Each chosen port is open whenever it's chosen; one that changes
+        // role is reopened.
+        let mut wanted: BTreeMap<&str, MidiRoles> = BTreeMap::new();
+        if let Some(port) = &settings.clock_port {
+            wanted.entry(port).or_insert(MidiRoles { clock: false, controllers: false }).clock = true;
         }
-        if let (Some(port), None) = (&settings.midi_port, &inputs.midi) {
-            match self.start_midi(port) {
-                Ok(handle) => {
-                    inputs.midi = Some(handle);
-                    self.shared.lock().unwrap().midi = MidiInputStatus { connected: true, ..Default::default() };
-                }
-                Err(e) => self.shared.lock().unwrap().midi.error = Some(e),
+        for port in &settings.controller_ports {
+            wanted.entry(port).or_insert(MidiRoles { clock: false, controllers: false }).controllers = true;
+        }
+        inputs.midi.retain(|port, (roles, _)| wanted.get(port.as_str()) == Some(roles));
+        if old.clock_port != settings.clock_port {
+            self.shared.lock().unwrap().midi_clock = MidiClockStatus::default();
+        }
+        let mut errors = BTreeMap::new();
+        for (port, roles) in wanted {
+            if inputs.midi.contains_key(port) {
+                continue;
             }
+            match self.start_midi(port, roles) {
+                Ok(handle) => {
+                    inputs.midi.insert(port.to_string(), (roles, handle));
+                }
+                Err(e) => {
+                    errors.insert(port.to_string(), e);
+                }
+            }
+        }
+        {
+            let mut shared = self.shared.lock().unwrap();
+            // Every wanted port that isn't open was just tried again.
+            shared.midi_errors = errors;
+            let clock_open = settings.clock_port.as_ref().is_some_and(|p| inputs.midi.contains_key(p));
+            shared.midi_clock.connected = clock_open;
+            shared.midi_clock.error = settings.clock_port.as_ref().and_then(|p| shared.midi_errors.get(p).cloned());
         }
 
         inputs.settings = settings;
@@ -235,7 +282,7 @@ impl TimingManager {
         })
     }
 
-    fn start_midi(&self, port: &str) -> Result<MidiInputHandle, String> {
+    fn start_midi(&self, port: &str, roles: MidiRoles) -> Result<MidiInputHandle, String> {
         let shared = self.shared.clone();
         let tempo = self.handles.tempo.clone();
         let clock = self.handles.timecode.clone();
@@ -243,8 +290,14 @@ impl TimingManager {
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
         let mut mixxx = MixxxDecoder::new();
+        let port_id = port.to_string();
         midi::open_input(port, move |stamp_us, msg| {
-            control.lock().unwrap().feed(msg);
+            if roles.controllers {
+                control.lock().unwrap().feed(&port_id, msg);
+            }
+            if !roles.clock {
+                return;
+            }
             if let Some(pos) = mtc.feed(msg) {
                 clock.lock().unwrap().set_external(TimecodeSource::Mtc, pos.ms, pos.fps);
             }
@@ -256,7 +309,7 @@ impl TimingManager {
             let driving = matches!(source, Some(TempoSource::MidiClock | TempoSource::Mixxx));
             match event {
                 Some(ClockEvent::Bpm(bpm)) => {
-                    shared.lock().unwrap().midi.clock_bpm = Some(bpm);
+                    shared.lock().unwrap().midi_clock.clock_bpm = Some(bpm);
                     if driving {
                         tempo.lock().unwrap().set_bpm((bpm * 10.0).round() / 10.0);
                     }
@@ -276,10 +329,19 @@ impl TimingManager {
             (inputs.settings.clone(), inputs.ltc.is_some())
         };
         let shared = self.shared.lock().unwrap();
+        let midi_controllers = settings
+            .controller_ports
+            .iter()
+            .map(|port| {
+                let error = shared.midi_errors.get(port).cloned();
+                MidiPortStatus { port: port.clone(), connected: error.is_none(), error }
+            })
+            .collect();
         TimingStatus {
             settings,
             audio: shared.audio.clone(),
-            midi: shared.midi.clone(),
+            midi_clock: shared.midi_clock.clone(),
+            midi_controllers,
             ltc_running,
             ltc_error: shared.ltc_error.clone(),
             timecode: self.handles.timecode.lock().unwrap().status(),

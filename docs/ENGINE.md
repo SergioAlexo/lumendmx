@@ -83,7 +83,7 @@ node id and fixture, so recompiling after an edit doesn't reset them.
 
 The tick passes the graph the show clock (`engine/tempo.rs`: a BPM and an
 integrated beat position, so BPM changes don't jump phases), audio band
-levels, MIDI controller/note state from the MIDI port chosen in Setup,
+levels, MIDI controller/note state from the controller ports chosen in Setup,
 timecode, and the playback bar's control values (one per Fader/Button
 node, set live and saved with the show, not undoable).
 

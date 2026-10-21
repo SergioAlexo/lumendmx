@@ -9,7 +9,7 @@ export type NodeTypeInfo = { kind: NodeKind, label: string,
  */
 category: string, description: string, 
 /**
- * Sockets with default params. Switch, Mix and Output change theirs
- * with their params; see the graph's per-node sockets.
+ * Sockets with default params. Switch, Mix, Any and Output change
+ * theirs with their params; see the graph's per-node sockets.
  */
 inputs: Array<SocketInfo>, outputs: Array<SocketInfo>, params: Array<ParamInfo>, };

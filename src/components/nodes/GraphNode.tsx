@@ -25,7 +25,12 @@ export type GraphNodeData = {
   info?: NodeTypeInfo;
   /** Input socket ids with a link into them. */
   connected: string[];
+  /** What drives the Enabled input, if linked: a node and its output index. */
+  enabledBy?: { node: string; socket: number };
 };
+
+/** The input every node has (registry.rs ENABLED), shown in the header. */
+const ENABLED = "enabled";
 
 export type GraphFlowNode = FlowNode<GraphNodeData, "graph">;
 
@@ -106,7 +111,7 @@ function MidiLearn({ nodeId, isNote }: { nodeId: string; isNote: boolean }) {
         learning ? "animate-pulse bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/70",
       )}
       onClick={() => void learn()}
-      title={`Move a ${isNote ? "pad or key" : "knob or fader"} on your MIDI controller (port chosen in Setup)`}
+      title={`Move a ${isNote ? "pad or key" : "knob or fader"} on your MIDI controller (a controller port chosen in Setup)`}
     >
       <Radio className="h-3 w-3" />
       {learning ? "Waiting for MIDI…" : "Learn"}
@@ -115,8 +120,12 @@ function MidiLearn({ nodeId, isNote }: { nodeId: string; isNote: boolean }) {
 }
 
 function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
-  const { view, info, connected } = data;
+  const { view, info, connected, enabledBy } = data;
   const values = useGraphStore((s) => s.values[view.id]);
+  const enabledLive = useGraphStore((s) => (enabledBy ? s.values[enabledBy.node]?.[enabledBy.socket]?.[0] : undefined));
+  const enabledSocket = view.inputs.find((s) => s.id === ENABLED);
+  const enabledParam = Number(view.params[ENABLED] ?? enabledSocket?.default ?? 1) > 0.5;
+  const enabled = enabledBy ? (enabledLive ?? 1) > 0.5 : enabledParam;
   const groups: Group[] = useShowStore((s) => s.show?.groups ?? EMPTY_GROUPS);
   const run = useShowStore((s) => s.run);
   const setParam = (id: string, value: ParamValue) => void run(() => graphApi.setParams(view.id, { [id]: value }));
@@ -129,11 +138,33 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
         "w-52 rounded-md border bg-card/95 text-[11px] shadow-lg",
         selected ? "border-primary ring-1 ring-primary" : "border-black/40",
         view.issues.length > 0 && "border-destructive",
+        !enabled && "opacity-50",
       )}
       title={info?.description}
     >
-      <div className="flex items-center justify-between gap-2 rounded-t-md px-2 py-1 font-medium text-white" style={{ backgroundColor: color }}>
-        <span className="truncate">{label ?? view.kind}</span>
+      <div className="relative flex items-center justify-between gap-2 rounded-t-md px-2 py-1 font-medium text-white" style={{ backgroundColor: color }}>
+        {enabledSocket && (
+          <Handle
+            type="target"
+            position={Position.Left}
+            id={ENABLED}
+            className="!h-2.5 !w-2.5 !border-black/60"
+            style={{ background: SOCKET_COLORS[enabledSocket.type] }}
+            title="Enabled: off makes everything this node feeds act as if unplugged"
+          />
+        )}
+        <span className="flex min-w-0 items-center gap-1.5">
+          {enabledSocket && !enabledBy && (
+            <input
+              type="checkbox"
+              className="nodrag"
+              checked={enabledParam}
+              onChange={(e) => setParam(ENABLED, e.target.checked ? 1 : 0)}
+              title="Enabled: off makes everything this node feeds act as if unplugged"
+            />
+          )}
+          <span className="truncate">{label ?? view.kind}</span>
+        </span>
         {view.issues.length > 0 && (
           <span title={view.issues.join("\n")}>
             <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
@@ -177,7 +208,7 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
           </div>
         )}
 
-        {view.inputs.map((socket) => {
+        {view.inputs.filter((socket) => socket.id !== ENABLED).map((socket) => {
           const linked = connected.includes(socket.id);
           return (
             <div key={socket.id} className="relative flex min-h-5 items-center gap-2 px-3">

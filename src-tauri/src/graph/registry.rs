@@ -33,6 +33,7 @@ pub enum NodeKind {
     Smooth,
     Envelope,
     Toggle,
+    Any,
     Counter,
     Rgb,
     Hsv,
@@ -46,7 +47,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 29] = [
+    pub const ALL: [NodeKind; 30] = [
         NodeKind::Number,
         NodeKind::Color,
         NodeKind::Time,
@@ -66,6 +67,7 @@ impl NodeKind {
         NodeKind::Smooth,
         NodeKind::Envelope,
         NodeKind::Toggle,
+        NodeKind::Any,
         NodeKind::Counter,
         NodeKind::Rgb,
         NodeKind::Hsv,
@@ -156,8 +158,8 @@ pub struct NodeTypeInfo {
     /// "Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output".
     pub category: String,
     pub description: String,
-    /// Sockets with default params. Switch, Mix and Output change theirs
-    /// with their params; see the graph's per-node sockets.
+    /// Sockets with default params. Switch, Mix, Any and Output change
+    /// theirs with their params; see the graph's per-node sockets.
     pub inputs: Vec<SocketInfo>,
     pub outputs: Vec<SocketInfo>,
     pub params: Vec<ParamInfo>,
@@ -173,6 +175,8 @@ pub const COMPARE_OPS: [&str; 3] = ["greater", "less", "equal"];
 pub const VALUE_TYPES: [&str; 3] = ["number", "color", "position"];
 /// Most inputs a Switch can have.
 pub const MAX_SWITCH_INPUTS: usize = 8;
+/// Most inputs an Any node grows to.
+pub const MAX_ANY_INPUTS: usize = 64;
 /// Most outputs any node has.
 pub const MAX_OUTPUTS: usize = 5;
 
@@ -307,7 +311,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::MidiCc => (
             "MIDI CC",
             "Input",
-            "A MIDI controller (knob, fader) on the MIDI port chosen in Setup, 0-1. Channel 0 listens on every channel.",
+            "A MIDI controller (knob, fader) on the controller ports chosen in Setup, 0-1. Channel 0 listens on every channel.",
             vec![],
             vec![output("value", "Value", Number)],
             vec![number("channel", "Channel", 0.0, 16.0, 1.0, 0.0), number("controller", "CC", 0.0, 127.0, 1.0, 1.0)],
@@ -315,7 +319,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::MidiNote => (
             "MIDI Note",
             "Input",
-            "A MIDI note (pad, key): Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.",
+            "A MIDI note (pad, key) on the controller ports chosen in Setup: Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.",
             vec![],
             vec![output("gate", "Gate", Trigger), output("velocity", "Velocity", Number)],
             vec![number("channel", "Channel", 0.0, 16.0, 1.0, 0.0), number("note", "Note", 0.0, 127.0, 1.0, 36.0)],
@@ -424,6 +428,14 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             "Flips on/off each time Trigger turns on.",
             vec![input("trigger", "Trigger", Trigger, n(0.0))],
             vec![output("value", "State", Trigger)],
+            vec![],
+        ),
+        NodeKind::Any => (
+            "Any",
+            "Math",
+            "On while any of its inputs is on: a Button and a MIDI pad driving the same thing. There's always a free input at the bottom; connect to it and another appears.",
+            vec![],
+            vec![],
             vec![],
         ),
         NodeKind::Counter => (
@@ -551,8 +563,14 @@ pub fn extra_attributes(params: &BTreeMap<String, ParamValue>) -> Vec<String> {
     param_text(params, "attributes", "")
         .split(',')
         .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty() && !OUTPUT_SOCKETS.iter().any(|(id, _, _)| id == s))
+        .filter(|s| !s.is_empty() && s != ENABLED && !OUTPUT_SOCKETS.iter().any(|(id, _, _)| id == s))
         .collect()
+}
+
+/// How many inputs an Any node has: its "count" param, which the graph
+/// edits keep at one more than the last one connected.
+pub fn any_inputs(params: &BTreeMap<String, ParamValue>) -> usize {
+    params.get("count").and_then(ParamValue::as_f32).unwrap_or(2.0).clamp(2.0, MAX_ANY_INPUTS as f32) as usize
 }
 
 /// Sockets of the node types whose sockets depend on their params; empty
@@ -565,6 +583,10 @@ pub fn sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (Vec<So
             let mut inputs = vec![input("index", "Index", SocketType::Number, n(0.0))];
             inputs.extend((0..count).map(|i| input(&format!("in{i}"), &format!("{i}"), ty, value_default(ty))));
             (inputs, vec![output("value", "Value", ty)])
+        }
+        NodeKind::Any => {
+            let inputs = (0..any_inputs(params)).map(|i| input_only(&format!("in{i}"), &format!("{}", i + 1), SocketType::Trigger)).collect();
+            (inputs, vec![output("gate", "Gate", SocketType::Trigger)])
         }
         NodeKind::Mix => {
             let ty = value_type(param_text(params, "type", "number"));
@@ -582,15 +604,22 @@ pub fn sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (Vec<So
     }
 }
 
-/// A node's actual sockets, given its params.
+/// The input every node has, last: while it's off, whatever the node feeds
+/// behaves as if the link wasn't there.
+pub const ENABLED: &str = "enabled";
+
+/// A node's actual sockets, given its params, Enabled included.
 pub fn node_sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (Vec<SocketInfo>, Vec<SocketInfo>) {
-    let (inputs, outputs) = sockets(kind, params);
-    if inputs.is_empty() && outputs.is_empty() {
+    let (mut inputs, outputs) = sockets(kind, params);
+    let outputs = if inputs.is_empty() && outputs.is_empty() {
         let info = node_type(kind);
-        (info.inputs, info.outputs)
+        inputs = info.inputs;
+        info.outputs
     } else {
-        (inputs, outputs)
-    }
+        outputs
+    };
+    inputs.push(input(ENABLED, "Enabled", SocketType::Trigger, n(1.0)));
+    (inputs, outputs)
 }
 
 pub fn node_types() -> Vec<NodeTypeInfo> {
@@ -609,7 +638,9 @@ fn nodes_markdown() -> String {
     let ty = |t: SocketType| format!("{t:?}").to_lowercase();
     let mut out = String::from(
         "# Node reference\n\nGenerated from `src-tauri/src/graph/registry.rs` by `cargo test` (run `UPDATE_DOCS=1 cargo test nodes_doc` after changing a node). \
-         Values are 0-1 unless noted. An unconnected input takes its value from a param with the input's id, else the default shown.\n",
+         Values are 0-1 unless noted. An unconnected input takes its value from a param with the input's id, else the default shown. \
+         Every node also has an `enabled` input (trigger, default on, not listed below): while it's off, everything the node feeds \
+         behaves as if the link wasn't there.\n",
     );
     let mut category = String::new();
     for info in node_types() {
@@ -680,14 +711,14 @@ mod tests {
         params.insert("type".to_string(), text("position"));
         params.insert("count".to_string(), n(3.0));
         let (inputs, outputs) = node_sockets(NodeKind::Switch, &params);
-        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs.len(), 5);
         assert_eq!(outputs[0].ty, SocketType::Position);
 
         let mut params = BTreeMap::new();
         params.insert("attributes".to_string(), text("Zoom, gobo, color"));
         let (inputs, _) = node_sockets(NodeKind::Output, &params);
         let ids: Vec<&str> = inputs.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["intensity", "color", "position", "strobe", "zoom", "gobo"]);
+        assert_eq!(ids, vec!["intensity", "color", "position", "strobe", "zoom", "gobo", "enabled"]);
     }
 
     #[test]

@@ -267,8 +267,14 @@ tests use synthesized signals).
       playback) with a playback running at fader 0: the rig should pulse on
       kicks. Raise the gate until only the loudest kicks fire.
 - [ ] **MIDI clock.** Send clock from a DAW or DJ app to a virtual MIDI port
-      (IAC / loopMIDI). Select the port and Tempo source MIDI clock: the BPM
+      (IAC / loopMIDI). Pick it as the Clock / timecode port and Tempo source MIDI clock: the BPM
       should follow within 0.1 and Start should snap the beat light.
+- [ ] **Clock and controllers together.** Keep the clock running and tick a
+      MIDI keyboard or controller under Controller ports (plus a second one,
+      if you have it). Turn knobs and hit pads: they show in the MIDI monitor
+      with their port, and MIDI CC / Note nodes follow them, while the BPM
+      keeps following the clock. Notes/CCs sent on the clock port alone must
+      not reach the nodes, and the keyboard must not move the BPM.
 - [ ] **MTC.** Send MTC from a DAW. Set Timecode source to MTC, select the
       port: the Timing tab clock should track it. Make a Timecode cuelist,
       give two cues times (Timeline tab) and confirm they fire as the DAW

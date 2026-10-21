@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AudioDeviceInfo,
+  MidiEvent,
   MidiPortInfo,
   TempoSource,
   TimecodeSource,
@@ -25,6 +26,11 @@ export function listAudioInputs(): Promise<AudioDeviceInfo[]> {
 
 export function listMidiInputs(): Promise<MidiPortInfo[]> {
   return invoke("timing_list_midi_inputs");
+}
+
+/** MIDI channel messages received after `after` (the last `seq` seen). */
+export function midiEvents(after: number): Promise<MidiEvent[]> {
+  return invoke("midi_events", { after });
 }
 
 export const TEMPO_SOURCES: { id: TempoSource; label: string }[] = [

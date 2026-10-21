@@ -7,8 +7,11 @@
 //! state by node id and fixture, so it survives recompiles: editing one node
 //! doesn't reset a smoothing or a counter elsewhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+
+use serde::Serialize;
+use ts_rs::TS;
 
 use super::compile::{CompareOp, Config, Conversion, GraphPlan, MathOp, Rate, Source, Val, Write};
 use super::registry::{NodeKind, MAX_OUTPUTS};
@@ -22,6 +25,40 @@ const LAYER_PREFIX: &str = "graph-out-";
 type Outs = [Val; MAX_OUTPUTS];
 const ZERO: Outs = [[0.0; 3]; MAX_OUTPUTS];
 
+/// How many recent messages the MIDI monitor keeps.
+const MIDI_LOG_LEN: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub enum MidiEventKind {
+    Cc,
+    NoteOn,
+    NoteOff,
+    PitchBend,
+    ProgramChange,
+    Aftertouch,
+}
+
+/// A channel message, as the Setup MIDI monitor lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct MidiEvent {
+    /// Counts up from 1; pass the last one seen back to get only newer ones.
+    #[ts(type = "number")]
+    pub seq: u64,
+    /// The id of the port it came in on.
+    pub port: String,
+    pub kind: MidiEventKind,
+    /// 1-16.
+    pub channel: u8,
+    /// Controller or note number; 0 for pitch bend and channel aftertouch.
+    pub number: u8,
+    /// 0-127, or 0-16383 for pitch bend.
+    pub value: u16,
+}
+
 /// Latest value of every MIDI controller and note, per channel (0-15).
 #[derive(Debug, Clone)]
 pub struct MidiState {
@@ -31,16 +68,21 @@ pub struct MidiState {
     /// The last controller or note-on received: (is_note, channel 1-16,
     /// number), for MIDI learn.
     pub last: Option<(bool, u8, u8)>,
+    /// Recent channel messages, oldest first.
+    pub log: VecDeque<MidiEvent>,
+    seq: u64,
 }
 
 impl Default for MidiState {
     fn default() -> Self {
-        Self { cc: [[0.0; 128]; 16], notes: [[0.0; 128]; 16], last: None }
+        Self { cc: [[0.0; 128]; 16], notes: [[0.0; 128]; 16], last: None, log: VecDeque::new(), seq: 0 }
     }
 }
 
 impl MidiState {
-    pub fn feed(&mut self, msg: &[u8]) {
+    /// A message from the MIDI port `port` (its id).
+    pub fn feed(&mut self, port: &str, msg: &[u8]) {
+        self.record(port, msg);
         let [status, number, value] = match msg {
             [s, n, v, ..] => [*s, *n & 0x7f, *v & 0x7f],
             _ => return,
@@ -58,6 +100,34 @@ impl MidiState {
             0x80 | 0x90 => self.notes[channel][number as usize] = 0.0,
             _ => {}
         }
+    }
+
+    /// Logs channel messages; clock, timecode and other system messages
+    /// would drown them out.
+    fn record(&mut self, port: &str, msg: &[u8]) {
+        let (Some(&status), data) = (msg.first(), &msg[msg.len().min(1)..]) else { return };
+        let d = |i: usize| data.get(i).map_or(0, |b| b & 0x7f);
+        let (kind, number, value) = match status & 0xf0 {
+            0x80 => (MidiEventKind::NoteOff, d(0), d(1) as u16),
+            0x90 if d(1) == 0 => (MidiEventKind::NoteOff, d(0), 0),
+            0x90 => (MidiEventKind::NoteOn, d(0), d(1) as u16),
+            0xa0 => (MidiEventKind::Aftertouch, d(0), d(1) as u16),
+            0xb0 => (MidiEventKind::Cc, d(0), d(1) as u16),
+            0xc0 => (MidiEventKind::ProgramChange, d(0), 0),
+            0xd0 => (MidiEventKind::Aftertouch, 0, d(0) as u16),
+            0xe0 => (MidiEventKind::PitchBend, 0, d(0) as u16 | (d(1) as u16) << 7),
+            _ => return,
+        };
+        self.seq += 1;
+        if self.log.len() == MIDI_LOG_LEN {
+            self.log.pop_front();
+        }
+        self.log.push_back(MidiEvent { seq: self.seq, port: port.to_string(), kind, channel: (status & 0x0f) + 1, number, value });
+    }
+
+    /// Logged messages newer than `after`.
+    pub fn since(&self, after: u64) -> Vec<MidiEvent> {
+        self.log.iter().filter(|e| e.seq > after).cloned().collect()
     }
 
     /// `channel` 1-16, or 0 for whichever channel is highest.
@@ -146,10 +216,16 @@ impl GraphRuntime {
         &self.preview
     }
 
+    /// The node's Enabled input (always its last) is on.
+    fn enabled(&self, plan: &GraphPlan, node: usize) -> bool {
+        plan.nodes[node].inputs.last().is_none_or(|s| self.read(plan, s)[0] > 0.5)
+    }
+
     fn read(&self, plan: &GraphPlan, source: &Source) -> Val {
         match source {
             Source::Const(v) => *v,
-            Source::Link { node, socket, conversion } => {
+            Source::Link { node, fallback, .. } if !self.enabled(plan, *node) => *fallback,
+            Source::Link { node, socket, conversion, .. } => {
                 let outs = if plan.nodes[*node].varying { &self.scratch[*node] } else { &self.uniform[*node] };
                 let v = outs[*socket];
                 match conversion {
@@ -271,6 +347,7 @@ impl GraphRuntime {
                 let pick = (num(0).round().max(0.0) as usize).min(count - 1);
                 out[0] = input(1 + pick);
             }
+            (NodeKind::Any, Config::Count(count)) => out[0] = bool_val((0..*count).any(|i| num(i) > 0.5)),
             (NodeKind::Mix, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
             (NodeKind::Random | NodeKind::Smooth | NodeKind::Envelope | NodeKind::Toggle | NodeKind::Counter, _) => {
                 return self.stateful(plan, idx, ctx, inputs);
@@ -395,8 +472,17 @@ impl GraphRuntime {
                     }
                 }
                 let node = &plan.nodes[output.node];
+                if !self.enabled(plan, output.node) {
+                    continue;
+                }
                 let mut item_values = ItemValues::default();
                 for (write, input) in &output.writes {
+                    // A disabled source counts as unconnected: nothing sent.
+                    if let Source::Link { node: from, .. } = node.inputs[*input] {
+                        if !self.enabled(plan, from) {
+                            continue;
+                        }
+                    }
                     let v = self.read(plan, &node.inputs[*input]);
                     match write {
                         Write::Intensity => item_values.intensity = Some(v[0]),
@@ -601,7 +687,7 @@ mod tests {
         };
         let mut rig = Rig::new(&graph, 1);
         rig.controls.insert("fader".into(), 0.5);
-        rig.midi.feed(&[0xb3, 7, 127]);
+        rig.midi.feed("test", &[0xb3, 7, 127]);
         rig.at(0.1);
         assert_eq!(rig.channel("out", 1).round(), 128.0);
         assert_eq!(rig.midi.last, Some((false, 4, 7)));
@@ -637,6 +723,83 @@ mod tests {
         assert!(!rig.layers.contains_key("graph-out-old"));
         assert_eq!(rig.channel("out", 1), 255.0);
         assert_eq!(rig.channel("out", 2), -1.0, "colour not connected, so red isn't written");
+    }
+
+    #[test]
+    fn a_disabled_node_acts_as_if_its_links_were_unplugged() {
+        let graph = Graph {
+            nodes: vec![
+                node("one", NodeKind::Number, &[]),
+                node("button", NodeKind::Button, &[]),
+                // Unconnected, B would read its param: 0.5.
+                node("mul", NodeKind::Math, &[("a", ParamValue::Number(1.0)), ("b", ParamValue::Number(0.5))]),
+                node("half", NodeKind::Number, &[("value", ParamValue::Number(0.5))]),
+                node("off", NodeKind::Output, &[("group", ParamValue::Number(1.0)), ("enabled", ParamValue::Number(0.0))]),
+                output("out"),
+            ],
+            edges: vec![
+                edge("button", "gate", "one", "enabled"),
+                edge("one", "value", "out", "strobe"),
+                edge("one", "value", "mul", "b"),
+                edge("mul", "value", "out", "intensity"),
+                edge("half", "value", "off", "intensity"),
+            ],
+        };
+        let mut rig = Rig::new(&graph, 1);
+        rig.at(0.1);
+        assert_eq!(rig.channel("out", 1).round(), 128.0, "button up: B falls back to its param");
+        assert_eq!(rig.channel("out", 5), -1.0, "and strobe isn't sent");
+        assert!(rig.layers["graph-out-off"].1.values.is_empty(), "a disabled output sends nothing");
+
+        rig.controls.insert("button".into(), 1.0);
+        rig.at(0.2);
+        assert_eq!(rig.channel("out", 1), 255.0, "button held: B reads the Number again");
+        assert_ne!(rig.channel("out", 5), -1.0, "and strobe is sent");
+    }
+
+    #[test]
+    fn the_midi_log_keeps_channel_messages_and_skips_clock() {
+        let mut midi = MidiState::default();
+        midi.feed("test", &[0xf8]); // clock
+        midi.feed("test", &[0xb1, 7, 100]);
+        midi.feed("test", &[0x92, 36, 0]); // note on at velocity 0 is a note off
+        midi.feed("test", &[0xe0, 0x00, 0x40]);
+        let kinds: Vec<_> = midi.since(0).iter().map(|e| (e.kind, e.channel, e.number, e.value)).collect();
+        assert_eq!(
+            kinds,
+            vec![(MidiEventKind::Cc, 2, 7, 100), (MidiEventKind::NoteOff, 3, 36, 0), (MidiEventKind::PitchBend, 1, 0, 8192)]
+        );
+        assert_eq!(midi.since(2).len(), 1);
+        for _ in 0..100 {
+            midi.feed("test", &[0xb0, 1, 1]);
+        }
+        assert_eq!(midi.log.len(), MIDI_LOG_LEN);
+    }
+
+    #[test]
+    fn any_is_on_while_any_input_is() {
+        let graph = Graph {
+            nodes: vec![
+                node("button", NodeKind::Button, &[]),
+                node("pad", NodeKind::MidiNote, &[("note", ParamValue::Number(36.0))]),
+                node("any", NodeKind::Any, &[("count", ParamValue::Number(3.0))]),
+                output("out"),
+            ],
+            edges: vec![edge("button", "gate", "any", "in0"), edge("pad", "gate", "any", "in1"), edge("any", "gate", "out", "intensity")],
+        };
+        let mut rig = Rig::new(&graph, 1);
+        rig.at(0.1);
+        assert_eq!(rig.channel("out", 1), 0.0);
+        rig.midi.feed("test", &[0x90, 36, 100]);
+        rig.at(0.2);
+        assert_eq!(rig.channel("out", 1), 255.0, "pad held");
+        rig.midi.feed("test", &[0x80, 36, 0]);
+        rig.controls.insert("button".into(), 1.0);
+        rig.at(0.3);
+        assert_eq!(rig.channel("out", 1), 255.0, "button held");
+        rig.controls.insert("button".into(), 0.0);
+        rig.at(0.4);
+        assert_eq!(rig.channel("out", 1), 0.0);
     }
 
     #[test]

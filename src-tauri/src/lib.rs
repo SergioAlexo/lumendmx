@@ -121,6 +121,11 @@ pub fn run() {
             show::commands::graph_set_control,
             show::commands::graph_controls,
             show::commands::graph_last_midi,
+            show::commands::midi_events,
+            show::commands::graph_node_presets,
+            show::commands::graph_save_node_preset,
+            show::commands::graph_delete_node_preset,
+            show::commands::graph_spawn_node_preset,
             mcp::mcp_status,
             mcp::mcp_configure,
         ])

@@ -9,7 +9,7 @@ use ts_rs::TS;
 
 use super::service::ShowService;
 use crate::graph::model::{Edge, Graph, Node, NodePosition, ParamValue};
-use crate::graph::registry::{node_sockets, NodeKind};
+use crate::graph::registry::{node_sockets, NodeKind, MAX_ANY_INPUTS};
 
 /// A param change: a value sets it, `null` resets it to the default.
 pub type ParamChanges = BTreeMap<String, Option<ParamValue>>;
@@ -39,7 +39,7 @@ fn reaches(graph: &Graph, from: &str, to: &str) -> bool {
 
 /// Drops edges whose sockets no longer exist (a Switch lost inputs, an
 /// Output dropped an attribute).
-fn prune_edges(graph: &mut Graph) {
+pub(super) fn prune_edges(graph: &mut Graph) {
     let sockets: HashMap<&str, (HashSet<String>, HashSet<String>)> = graph
         .nodes
         .iter()
@@ -52,6 +52,21 @@ fn prune_edges(graph: &mut Graph) {
         sockets.get(e.from_node.as_str()).is_some_and(|(_, outs)| outs.contains(&e.from_socket))
             && sockets.get(e.to_node.as_str()).is_some_and(|(ins, _)| ins.contains(&e.to_socket))
     });
+}
+
+/// Gives every Any node one free input after its last connected one. Inputs
+/// aren't renumbered, so a socket id stays put while edges come and go.
+pub(super) fn tidy_any_inputs(graph: &mut Graph) {
+    for node in graph.nodes.iter_mut().filter(|n| n.kind == NodeKind::Any) {
+        let last = graph
+            .edges
+            .iter()
+            .filter(|e| e.to_node == node.id)
+            .filter_map(|e| e.to_socket.strip_prefix("in")?.parse::<usize>().ok())
+            .max();
+        let count = last.map_or(2, |i| i + 2).clamp(2, MAX_ANY_INPUTS);
+        node.params.insert("count".into(), ParamValue::Number(count as f64));
+    }
 }
 
 fn apply_params(node: &mut Node, changes: ParamChanges) {
@@ -87,6 +102,7 @@ impl ShowService {
             }
             graph.nodes.retain(|n| !ids.contains(&n.id));
             graph.edges.retain(|e| !ids.contains(&e.from_node) && !ids.contains(&e.to_node));
+            tidy_any_inputs(graph);
             Ok(())
         })
     }
@@ -116,6 +132,7 @@ impl ShowService {
             }
             graph.edges.retain(|e| !(e.to_node == edge.to_node && e.to_socket == edge.to_socket));
             graph.edges.push(edge.clone());
+            tidy_any_inputs(graph);
             Ok(())
         })
     }
@@ -128,6 +145,7 @@ impl ShowService {
             if graph.edges.len() == before {
                 return Err(format!("Nothing is connected to {to_node}.{to_socket}"));
             }
+            tidy_any_inputs(graph);
             Ok(())
         })
     }
@@ -137,7 +155,8 @@ impl ShowService {
             let graph = &mut inner.show.graph;
             let node = graph.node_mut(id).ok_or_else(|| format!("No node {id}"))?;
             apply_params(node, changes);
-            let node = node.clone();
+            tidy_any_inputs(graph);
+            let node = graph.node(id).expect("found above").clone();
             prune_edges(graph);
             Ok(node)
         })
@@ -161,6 +180,7 @@ impl ShowService {
             if let Some(dup) = graph.nodes.iter().find(|n| !seen.insert(n.id.as_str())) {
                 return Err(format!("Node id {} is used twice", dup.id));
             }
+            tidy_any_inputs(&mut graph);
             prune_edges(&mut graph);
             inner.show.graph = graph;
             Ok(())
@@ -220,6 +240,27 @@ mod tests {
         shrink.insert("count".into(), None); // back to the default of 2
         service.set_params(&switch, shrink).unwrap();
         assert!(service.snapshot().graph.edges.is_empty());
+    }
+
+    #[test]
+    fn an_any_node_keeps_one_free_input_after_its_last_link() {
+        let (service, _) = service();
+        let any = add(&service, NodeKind::Any);
+        let (a, b) = (add(&service, NodeKind::Button), add(&service, NodeKind::MidiNote));
+        let inputs = |service: &ShowService| {
+            let view = service.snapshot().graph;
+            view.nodes.iter().find(|n| n.node.id == any).unwrap().inputs.iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(inputs(&service), ["in0", "in1", "enabled"]);
+        service.connect(edge(&a, "gate", &any, "in0")).unwrap();
+        service.connect(edge(&b, "gate", &any, "in1")).unwrap();
+        assert_eq!(inputs(&service), ["in0", "in1", "in2", "enabled"]);
+        // Unplugging the first leaves a gap rather than renumbering the second.
+        service.disconnect(&any, "in0").unwrap();
+        assert_eq!(inputs(&service), ["in0", "in1", "in2", "enabled"]);
+        assert_eq!(service.snapshot().graph.edges[0].to_socket, "in1");
+        service.remove_nodes(std::slice::from_ref(&b)).unwrap();
+        assert_eq!(inputs(&service), ["in0", "in1", "enabled"]);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use super::state::{EngineState, Layer};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::TimecodeClock;
 use crate::graph::compile::{GraphPlan, Val};
-use crate::graph::eval::{GraphRuntime, Inputs, MidiState};
+use crate::graph::eval::{GraphRuntime, Inputs, MidiEvent, MidiState};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 use crate::show::resolve::ResolvedPatch;
@@ -267,6 +267,12 @@ impl EngineManager {
     /// number). For MIDI learn.
     pub fn last_midi(&self) -> Option<(bool, u8, u8)> {
         self.shared.midi.lock().unwrap().last
+    }
+
+    /// MIDI channel messages received after `after` (a `seq`), for the
+    /// Setup MIDI monitor.
+    pub fn midi_events(&self, after: u64) -> Vec<MidiEvent> {
+        self.shared.midi.lock().unwrap().since(after)
     }
 
     // --- Tempo ---

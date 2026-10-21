@@ -15,15 +15,16 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Plus } from "lucide-react";
+import { Bookmark, Plus } from "lucide-react";
 import * as graphApi from "../../lib/graph";
 import { CATEGORY_COLORS, SOCKET_COLORS, feeds } from "../../lib/graph";
-import type { NodeKind, NodeTypeInfo, NodeView, SocketType } from "../../lib/showfile/generated";
+import type { NodeKind, NodePreset, NodeTypeInfo, NodeView, SocketType } from "../../lib/showfile/generated";
 import { useGraphStore } from "../../store/useGraphStore";
 import { useShowStore } from "../../store/useShowStore";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { AddNodeMenu } from "./AddNodeMenu";
-import { GraphNode, type GraphFlowNode } from "./GraphNode";
+import { GraphNode, type GraphFlowNode, type GraphNodeData } from "./GraphNode";
 
 const nodeTypes = { graph: GraphNode };
 
@@ -46,15 +47,22 @@ function isEditable(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-function toFlowNode(view: NodeView, info: NodeTypeInfo | undefined, connected: string[], previous?: GraphFlowNode): GraphFlowNode {
+function toFlowNode(
+  view: NodeView,
+  info: NodeTypeInfo | undefined,
+  connected: string[],
+  enabledBy: GraphNodeData["enabledBy"],
+  previous?: GraphFlowNode,
+  select?: boolean,
+): GraphFlowNode {
   return {
     id: view.id,
     type: "graph",
     // Keep the local position while it's being dragged.
     position: previous?.dragging ? previous.position : { x: view.position.x, y: view.position.y },
-    selected: previous?.selected,
+    selected: select || previous?.selected,
     dragging: previous?.dragging,
-    data: { view, info, connected },
+    data: { view, info, connected, enabledBy },
   };
 }
 
@@ -67,16 +75,36 @@ function Editor() {
   const [nodes, setNodes] = useState<GraphFlowNode[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const pointer = useRef({ x: 200, y: 200 });
+  const [presets, setPresets] = useState<NodePreset[]>([]);
+  /** The name being typed for a new preset; null when not saving one. */
+  const [presetName, setPresetName] = useState<string | null>(null);
+  /** Nodes to select once they arrive from the backend (a spawned preset). */
+  const selectNext = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    void graphApi.nodePresets().then(setPresets).catch(() => undefined);
+  }, []);
 
   const views = useMemo(() => new Map((graph?.nodes ?? []).map((v) => [v.id, v])), [graph]);
 
   useEffect(() => {
     if (!graph) return;
     const connected = new Map<string, string[]>();
-    for (const e of graph.edges) connected.set(e.toNode, [...(connected.get(e.toNode) ?? []), e.toSocket]);
+    const enabledBy = new Map<string, GraphNodeData["enabledBy"]>();
+    for (const e of graph.edges) {
+      connected.set(e.toNode, [...(connected.get(e.toNode) ?? []), e.toSocket]);
+      if (e.toSocket === "enabled") {
+        const socket = graph.nodes.find((n) => n.id === e.fromNode)?.outputs.findIndex((s) => s.id === e.fromSocket) ?? -1;
+        if (socket >= 0) enabledBy.set(e.toNode, { node: e.fromNode, socket });
+      }
+    }
+    const select = selectNext.current;
+    selectNext.current = new Set();
     setNodes((prev) => {
       const byId = new Map(prev.map((n) => [n.id, n]));
-      return graph.nodes.map((v) => toFlowNode(v, byKind[v.kind], connected.get(v.id) ?? [], byId.get(v.id)));
+      const next = graph.nodes.map((v) => toFlowNode(v, byKind[v.kind], connected.get(v.id) ?? [], enabledBy.get(v.id), byId.get(v.id), select.has(v.id)));
+      // A spawned preset replaces the selection.
+      return select.size > 0 ? next.map((n) => ({ ...n, selected: select.has(n.id) })) : next;
     });
   }, [graph, byKind]);
 
@@ -137,6 +165,38 @@ function Editor() {
       const output = info?.outputs.find((s) => feeds(s.type, pending.type));
       if (output) void run(() => graphApi.connect({ fromNode: node.id, fromSocket: output.id, toNode: pending.nodeId, toSocket: pending.socketId }));
     }
+  };
+
+  const spawnPreset = async (preset: NodePreset) => {
+    if (!menu) return;
+    const position = flow.screenToFlowPosition(menu.screen);
+    setMenu(null);
+    const ids = await run(() => graphApi.spawnNodePreset(preset.id, position));
+    // The new graph may already be here; if not, select when it arrives.
+    if (!ids) return;
+    setNodes((ns) => {
+      if (!ns.some((n) => ids.includes(n.id))) {
+        selectNext.current = new Set(ids);
+        return ns;
+      }
+      return ns.map((n) => ({ ...n, selected: ids.includes(n.id) }));
+    });
+  };
+
+  const deletePreset = async (preset: NodePreset) => {
+    await run(() => graphApi.deleteNodePreset(preset.id));
+    setPresets((ps) => ps.filter((p) => p.id !== preset.id));
+  };
+
+  const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+
+  const savePreset = async () => {
+    const name = presetName?.trim();
+    if (!name || selectedIds.length === 0) return;
+    const saved = await run(() => graphApi.saveNodePreset(name, selectedIds));
+    if (!saved) return;
+    setPresetName(null);
+    void graphApi.nodePresets().then(setPresets).catch(() => undefined);
   };
 
   const onConnectEnd = (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
@@ -210,11 +270,13 @@ function Editor() {
         }}
         edgesReconnectable
         onReconnect={(old, next) => {
+          // Connect first: unplugging can drop an Any node's spare input,
+          // which may be the one being dropped onto.
           void run(async () => {
-            await graphApi.disconnect(old.target, old.targetHandle!);
             if (next.sourceHandle && next.targetHandle) {
               await graphApi.connect({ fromNode: next.source, fromSocket: next.sourceHandle, toNode: next.target, toSocket: next.targetHandle });
             }
+            if (old.target !== next.target || old.targetHandle !== next.targetHandle) await graphApi.disconnect(old.target, old.targetHandle!);
           });
         }}
         onReconnectEnd={(_e, edge, _side, state) => {
@@ -247,6 +309,44 @@ function Editor() {
           <Plus />
           Add node
         </Button>
+        {presetName === null ? (
+          selectedIds.length > 0 && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setPresetName("")}
+              title="Save the selected nodes and the links between them, to add again from the Add node menu in any show"
+            >
+              <Bookmark />
+              Save {selectedIds.length === 1 ? "node" : `${selectedIds.length} nodes`} as preset
+            </Button>
+          )
+        ) : (
+          <form
+            className="flex items-center gap-2 rounded-md bg-card p-1 shadow-lg"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void savePreset();
+            }}
+          >
+            <Input
+              autoFocus
+              className="h-8 w-48"
+              placeholder="Preset name"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setPresetName(null);
+              }}
+            />
+            <Button size="sm" type="submit" disabled={!presetName.trim() || selectedIds.length === 0}>
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setPresetName(null)}>
+              Cancel
+            </Button>
+          </form>
+        )}
       </div>
 
       {nodes.length === 0 && (
@@ -262,7 +362,17 @@ function Editor() {
       )}
 
       {menu && (
-        <AddNodeMenu x={menu.screen.x} y={menu.screen.y} types={types} accepts={accepts} onPick={(k) => void addNode(k)} onClose={() => setMenu(null)} />
+        <AddNodeMenu
+          x={menu.screen.x}
+          y={menu.screen.y}
+          types={types}
+          presets={presets}
+          accepts={accepts}
+          onPick={(k) => void addNode(k)}
+          onPickPreset={(p) => void spawnPreset(p)}
+          onDeletePreset={(p) => void deletePreset(p)}
+          onClose={() => setMenu(null)}
+        />
       )}
     </div>
   );

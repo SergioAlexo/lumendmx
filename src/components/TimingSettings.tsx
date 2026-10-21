@@ -3,6 +3,7 @@ import * as showApi from "../lib/show";
 import * as timing from "../lib/timing";
 import { useShowStore } from "../store/useShowStore";
 import type { AudioDeviceInfo, MidiPortInfo, TimingSettings, TimingStatus } from "../lib/showfile/generated";
+import { MidiMonitor } from "./MidiMonitor";
 import { Button } from "./ui/button";
 import { Input, Select } from "./ui/input";
 import { Section } from "./ui/section";
@@ -180,30 +181,67 @@ export function TimingSettingsPanel() {
           </div>
         )}
 
-        <Field label="MIDI port">
-          <Select value={s.midiPort ?? ""} onChange={(e) => apply({ midiPort: e.target.value || null })}>
+        <Field label="Clock / timecode port">
+          <Select
+            value={s.clockPort ?? ""}
+            onChange={(e) => apply({ clockPort: e.target.value || null })}
+            title="MIDI clock, MTC and Mixxx are read from this port only"
+          >
             <option value="">None</option>
             {midiInputs.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>
             ))}
+            {s.clockPort && !midiInputs.some((p) => p.id === s.clockPort) && <option value={s.clockPort}>Unplugged port</option>}
           </Select>
         </Field>
         {(s.tempoSource === "midiClock" || s.tempoSource === "mixxx" || s.timecodeSource === "mtc") && (
           <div className="rounded-md bg-muted/50 p-3 text-sm">
-            {status.midi.error ? (
-              <span className="text-destructive">{status.midi.error}</span>
-            ) : status.midi.connected ? (
+            {!s.clockPort ? (
+              <span className="text-muted-foreground">Choose the clock / timecode port above</span>
+            ) : status.midiClock.error ? (
+              <span className="text-destructive">{status.midiClock.error}</span>
+            ) : status.midiClock.connected ? (
               <span>
                 Connected. {s.tempoSource === "mixxx" ? "Mixxx BPM" : "MIDI clock"}:{" "}
-                <strong className="tabular-nums">{status.midi.clockBpm ? status.midi.clockBpm.toFixed(1) : (s.tempoSource === "mixxx" ? "waiting for Mixxx" : "no clock yet")}</strong>
+                <strong className="tabular-nums">
+                  {status.midiClock.clockBpm ? status.midiClock.clockBpm.toFixed(1) : s.tempoSource === "mixxx" ? "waiting for Mixxx" : "no clock yet"}
+                </strong>
               </span>
             ) : (
               <span className="text-muted-foreground">Not connected</span>
             )}
           </div>
         )}
+        <div className="grid grid-cols-[9rem_1fr] items-start gap-3 text-sm">
+          <span className="pt-0.5 text-muted-foreground" title="Ports MIDI CC and MIDI Note nodes read, merged">
+            Controller ports
+          </span>
+          <div className="flex flex-col gap-1">
+            {midiInputs.length === 0 && s.controllerPorts.length === 0 && <span className="text-muted-foreground">No MIDI inputs found</span>}
+            {[...midiInputs, ...s.controllerPorts.filter((id) => !midiInputs.some((p) => p.id === id)).map((id) => ({ id, name: "Unplugged port" }))].map(
+              (p) => {
+                const on = s.controllerPorts.includes(p.id);
+                const error = status.midiControllers.find((c) => c.port === p.id)?.error;
+                return (
+                  <label key={p.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) =>
+                        apply({ controllerPorts: e.target.checked ? [...s.controllerPorts, p.id] : s.controllerPorts.filter((id) => id !== p.id) })
+                      }
+                    />
+                    <span className="truncate">{p.name}</span>
+                    {on && error && <span className="truncate text-xs text-destructive">{error}</span>}
+                  </label>
+                );
+              },
+            )}
+          </div>
+        </div>
+        {s.controllerPorts.length > 0 && <MidiMonitor ports={midiInputs} />}
         <div>
           <Button size="sm" variant="outline" onClick={refreshDevices}>
             Rescan devices

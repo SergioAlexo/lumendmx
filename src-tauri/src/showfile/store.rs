@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 
 use super::migrate::migrate;
+use crate::show::presets::NodePreset;
 use super::schema::{RecentShowEntry, ShowFile};
 
 const RECENT_LIMIT: usize = 10;
@@ -84,6 +85,24 @@ impl ShowStore {
         if let Ok(text) = serde_json::to_string_pretty(&entries) {
             let _ = fs::write(self.recent_file_path(), text);
         }
+    }
+
+    fn node_presets_path(&self) -> PathBuf {
+        self.data_dir.join("node-presets.json")
+    }
+
+    /// The saved node presets; none if the file is missing or unreadable.
+    pub fn node_presets(&self) -> Vec<NodePreset> {
+        let Ok(text) = fs::read_to_string(self.node_presets_path()) else {
+            return Vec::new();
+        };
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    pub fn write_node_presets(&self, presets: &[NodePreset]) -> Result<(), String> {
+        fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(presets).map_err(|e| e.to_string())?;
+        fs::write(self.node_presets_path(), text).map_err(|e| format!("Couldn't save the presets: {e}"))
     }
 
     /// Writes a timestamped snapshot into this show's autosave folder and

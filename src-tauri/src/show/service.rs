@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::library::{FixtureLibrary, FixtureTypeSummary};
+use super::presets::NodePreset;
 use super::resolve::{resolve, ResolvedPatch};
 use crate::graph::compile::{compile, GraphIssue, GraphPlan};
 use crate::graph::model::{Edge, Graph, Node};
@@ -275,7 +276,9 @@ impl Inner {
 pub struct ShowService {
     pub(super) inner: Mutex<Inner>,
     pub(super) sink: Box<dyn ShowSink>,
-    store: Option<ShowStore>,
+    pub(super) store: Option<ShowStore>,
+    /// The app-wide node presets (`presets.rs`).
+    pub(super) presets: Mutex<Vec<NodePreset>>,
 }
 
 impl ShowService {
@@ -299,6 +302,7 @@ impl ShowService {
                 saved_revision: 0,
             }),
             sink,
+            presets: Mutex::new(store.as_ref().map(ShowStore::node_presets).unwrap_or_default()),
             store,
         };
         service.load(show, path);

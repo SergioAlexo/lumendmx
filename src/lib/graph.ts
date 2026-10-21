@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Edge, Node, NodeKind, NodeMove, NodePosition, NodeTypeInfo, ParamValue, SocketType } from "./showfile/generated";
+import type { Edge, Node, NodeKind, NodeMove, NodePosition, NodePreset, NodeTypeInfo, ParamValue, SocketType } from "./showfile/generated";
 
 // Wrappers for the graph commands (src-tauri/src/show/commands.rs). Edits
 // are undoable show edits; they come back as `show://changed`.
@@ -14,6 +14,25 @@ export function nodeTypes(): Promise<NodeTypeInfo[]> {
 
 export function addNode(kind: NodeKind, position: NodePosition, params?: ParamChanges): Promise<Node> {
   return invoke("graph_add_node", { kind, position, params: params ?? null });
+}
+
+/** Saved node presets, app-wide (not part of the show). */
+export function nodePresets(): Promise<NodePreset[]> {
+  return invoke("graph_node_presets");
+}
+
+/** Saves the nodes `ids` and the links between them as a preset. */
+export function saveNodePreset(name: string, ids: string[]): Promise<NodePreset> {
+  return invoke("graph_save_node_preset", { name, ids });
+}
+
+export function deleteNodePreset(id: string): Promise<void> {
+  return invoke("graph_delete_node_preset", { id });
+}
+
+/** Adds a copy of a preset with its top-left node at `position`; resolves to the new node ids. */
+export function spawnNodePreset(id: string, position: NodePosition): Promise<string[]> {
+  return invoke("graph_spawn_node_preset", { id, position });
 }
 
 export function removeNodes(ids: string[]): Promise<void> {

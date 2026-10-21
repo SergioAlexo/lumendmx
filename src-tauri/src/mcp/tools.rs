@@ -30,7 +30,8 @@ How the graph works:
 - A Fixture Output node (kind "output") targets a group (param "group" = group id) or a fixture list (param "fixtures" = "1-8, 12"). Only its connected inputs are sent: intensity, color, position, strobe, plus extra attributes listed in param "attributes" (e.g. "zoom, gobo"). Where outputs overlap, intensity takes the highest value; other attributes come from the output with the higher "priority".
 - Every node upstream of an Output is evaluated once per target fixture. "fixtureIndex" (index, position 0-1, count) and "fan" (a per-fixture phase offset) make fixtures differ: fan.phase -> lfo.phase gives a wave travelling across a group; fixtureIndex.position -> gradient.t spreads a rainbow.
 - "time" gives the show clock (beat, bar, onBeat trigger, bpm). "lfo" and "shape" run at a rate in cycles per beat (unit "beats", follows the BPM) or per second (unit "hz").
-- Looks are switched live with "switch" (index input picks one of N inputs) driven by a "counter", "midiCc", or a "fader"; "mix" crossfades two values. "fader" and "button" nodes appear as controls on the playback bar.
+- Looks are switched live with "switch" (index input picks one of N inputs) driven by a "counter", "midiCc", or a "fader"; "mix" crossfades two values. "fader" and "button" nodes appear as controls on the playback bar. An input takes one link; to drive one from several triggers (a button and a MIDI pad), connect them to an "any" node's inputs "in0", "in1", ... (it always has one free input after the last connected one) and its "gate" to the input.
+- Every node has an "enabled" trigger input (default on). While it's off, everything the node feeds behaves as if the link were unplugged (inputs fall back to their param or default, and an Output doesn't send that attribute); a disabled Output sends nothing. Feed it a "button" to bring parts of a look in and out.
 - An unconnected input takes its value from a param with the input's socket id (e.g. params {"t": 0.5} on a mix node), else its default.
 
 Workflow: call list_node_types once for the exact node kinds, sockets and params; get_show and list_fixtures to see the rig; get_graph before editing. Build with add_node, connect and set_params, or write a whole graph at once with replace_graph. Check get_graph for per-node issues and get_output to confirm what fixtures are actually doing. Keep node positions tidy: inputs on the left (x ~ 0), outputs on the right (x ~ 800), ~150 px apart vertically."#;
@@ -230,7 +231,7 @@ impl LumenMcp {
         Ok("Deleted".into())
     }
 
-    /// Every node type: kind, description, input/output sockets (id, type, default) and params (id, kind, range/options, default). Switch, Mix and Output change their sockets with their params.
+    /// Every node type: kind, description, input/output sockets (id, type, default) and params (id, kind, range/options, default). Switch, Mix, Any and Output change their sockets with their params.
     #[tool]
     async fn list_node_types(&self) -> ToolResult {
         json(node_types())

@@ -1,6 +1,6 @@
 # Node reference
 
-Generated from `src-tauri/src/graph/registry.rs` by `cargo test` (run `UPDATE_DOCS=1 cargo test nodes_doc` after changing a node). Values are 0-1 unless noted. An unconnected input takes its value from a param with the input's id, else the default shown.
+Generated from `src-tauri/src/graph/registry.rs` by `cargo test` (run `UPDATE_DOCS=1 cargo test nodes_doc` after changing a node). Values are 0-1 unless noted. An unconnected input takes its value from a param with the input's id, else the default shown. Every node also has an `enabled` input (trigger, default on, not listed below): while it's off, everything the node feeds behaves as if the link wasn't there.
 
 ## Input
 
@@ -68,7 +68,7 @@ Params:
 
 ### MIDI CC (`midiCc`)
 
-A MIDI controller (knob, fader) on the MIDI port chosen in Setup, 0-1. Channel 0 listens on every channel.
+A MIDI controller (knob, fader) on the controller ports chosen in Setup, 0-1. Channel 0 listens on every channel.
 
 Outputs:
 - `value` Value (number)
@@ -79,7 +79,7 @@ Params:
 
 ### MIDI Note (`midiNote`)
 
-A MIDI note (pad, key): Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.
+A MIDI note (pad, key) on the controller ports chosen in Setup: Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.
 
 Outputs:
 - `gate` Gate (trigger)
@@ -242,6 +242,17 @@ Inputs:
 
 Outputs:
 - `value` State (trigger)
+
+### Any (`any`)
+
+On while any of its inputs is on: a Button and a MIDI pad driving the same thing. There's always a free input at the bottom; connect to it and another appears.
+
+Inputs:
+- `in0` 1 (trigger)
+- `in1` 2 (trigger)
+
+Outputs:
+- `gate` Gate (trigger)
 
 ### Counter (`counter`)
 

@@ -42,7 +42,9 @@ pub enum Conversion {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Const(Val),
-    Link { node: usize, socket: usize, conversion: Conversion },
+    /// `fallback` is what the input reads while the linked node is disabled:
+    /// its value as if unconnected.
+    Link { node: usize, socket: usize, conversion: Conversion, fallback: Val },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,7 +70,7 @@ pub enum Config {
     Steps(u32),
     Gradient { stops: Vec<Val>, wrap: bool },
     Shape { shape: PositionShape, rate: Rate },
-    /// Switch: how many value inputs follow the index.
+    /// Switch: how many value inputs follow the index. Any: how many inputs.
     Count(usize),
     /// Index into `GraphPlan::outputs`.
     Output(usize),
@@ -280,6 +282,7 @@ fn config(node: &Node) -> Config {
             wrap: flag(node, "wrap", true),
         },
         NodeKind::Shape => Config::Shape { shape: shape(text(node, "shape", "circle")), rate: rate(node) },
+        NodeKind::Any => Config::Count(registry::any_inputs(&node.params)),
         NodeKind::Switch => Config::Count(number(node, "count", 2.0).clamp(2.0, MAX_SWITCH_INPUTS as f32) as usize),
         _ => Config::None,
     }
@@ -437,7 +440,7 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
                 .iter()
                 .enumerate()
                 .map(|(s, socket)| match links.get(&(i, s)) {
-                    Some(&(node, socket, conversion)) => Source::Link { node, socket, conversion },
+                    Some(&(from, out, conversion)) => Source::Link { node: from, socket: out, conversion, fallback: constant(node, socket) },
                     None => Source::Const(constant(node, socket)),
                 })
                 .collect(),
@@ -466,7 +469,7 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
             .0
             .iter()
             .enumerate()
-            .filter(|(s, _)| links.contains_key(&(i, *s)))
+            .filter(|(s, socket)| socket.id != registry::ENABLED && links.contains_key(&(i, *s)))
             .map(|(s, socket)| {
                 let write = match socket.id.as_str() {
                     "intensity" => Write::Intensity,

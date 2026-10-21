@@ -12,10 +12,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::graph_ops::{NodeMove, ParamChanges};
 use super::library::FixtureTypeSummary;
+use super::presets::NodePreset;
 use super::resolve::ResolvedPatch;
 use super::service::{AddFixtures, FixtureUpdate, ShowService, ShowSink, ShowSnapshot};
 use crate::engine::manager::EngineManager;
 use crate::graph::compile::GraphPlan;
+use crate::graph::eval::MidiEvent;
 use crate::graph::model::{Edge, Graph, Node, NodePosition};
 use crate::graph::registry::{node_types, NodeKind, NodeTypeInfo};
 use crate::output::config::DriverConfig;
@@ -263,4 +265,33 @@ pub fn graph_controls(engine: State<Arc<EngineManager>>) -> HashMap<String, f32>
 #[tauri::command]
 pub fn graph_last_midi(engine: State<Arc<EngineManager>>) -> Option<(bool, u8, u8)> {
     engine.last_midi()
+}
+
+#[tauri::command]
+pub fn graph_node_presets(show: State<Arc<ShowService>>) -> Vec<NodePreset> {
+    show.node_presets()
+}
+
+/// Saves the nodes `ids` and the links between them as a preset.
+#[tauri::command]
+pub fn graph_save_node_preset(show: State<Arc<ShowService>>, name: String, ids: Vec<String>) -> Result<NodePreset, String> {
+    show.save_node_preset(&name, &ids)
+}
+
+#[tauri::command]
+pub fn graph_delete_node_preset(show: State<Arc<ShowService>>, id: String) -> Result<(), String> {
+    show.delete_node_preset(&id)
+}
+
+/// Adds a copy of a preset at `position`; returns the new node ids.
+#[tauri::command]
+pub fn graph_spawn_node_preset(show: State<Arc<ShowService>>, id: String, position: NodePosition) -> Result<Vec<String>, String> {
+    show.spawn_node_preset(&id, position)
+}
+
+/// MIDI channel messages received after `after` (the last `seq` seen; 0 for
+/// all that are kept), for the Setup MIDI monitor.
+#[tauri::command]
+pub fn midi_events(engine: State<Arc<EngineManager>>, after: u64) -> Vec<MidiEvent> {
+    engine.midi_events(after)
 }
