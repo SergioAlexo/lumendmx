@@ -380,6 +380,12 @@ function Editor() {
         }}
         deleteKeyCode={["Backspace", "Delete"]}
         multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+        // Trackpad-friendly, like Figma: drag on empty canvas draws a
+        // selection box, two-finger scroll pans, pinch (or Ctrl+wheel) zooms.
+        // A mouse pans with the middle button or Space+drag.
+        selectionOnDrag
+        panOnScroll
+        panOnDrag={[1]}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.2}
