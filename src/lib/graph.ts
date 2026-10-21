@@ -98,4 +98,5 @@ export const CATEGORY_COLORS: Record<string, string> = {
   Position: "#4b3b83",
   Switching: "#3c6b3c",
   Output: "#a5492b",
+  Layout: "#6b7280",
 };

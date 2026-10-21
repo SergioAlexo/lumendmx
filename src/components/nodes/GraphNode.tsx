@@ -32,7 +32,7 @@ export type GraphNodeData = {
 /** The input every node has (registry.rs ENABLED), shown in the header. */
 const ENABLED = "enabled";
 
-export type GraphFlowNode = FlowNode<GraphNodeData, "graph">;
+export type GraphFlowNode = FlowNode<GraphNodeData, "graph" | "frame">;
 
 function toHex(v: number[]): string {
   return `#${v

@@ -402,3 +402,15 @@ Params:
 - `cells` Each cell separately: on/off, default false
 - `priority` Priority: number 0 to 100, default 0
 - `attributes` More attributes: text: Extra inputs, comma-separated: zoom, gobo, white, default (empty)
+
+## Layout
+
+### Frame (`frame`)
+
+A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them.
+
+Params:
+- `label` Label: text: Shown at the top, default `Frame`
+- `color` Color: gray / red / orange / yellow / green / blue / purple, default `gray`
+- `width` Width: number 100 to 10000, default 400
+- `height` Height: number 80 to 10000, default 300

@@ -5,7 +5,7 @@ import type { SocketInfo } from "./SocketInfo";
 
 export type NodeTypeInfo = { kind: NodeKind, label: string, 
 /**
- * "Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output".
+ * "Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output", "Layout".
  */
 category: string, description: string, 
 /**

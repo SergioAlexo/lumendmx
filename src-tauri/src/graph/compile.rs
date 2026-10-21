@@ -507,6 +507,7 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
         });
     }
 
-    let uniform_order = order.iter().copied().filter(|&i| !nodes[i].varying && nodes[i].kind != NodeKind::Output).collect();
+    let uniform_order =
+        order.iter().copied().filter(|&i| !nodes[i].varying && !matches!(nodes[i].kind, NodeKind::Output | NodeKind::Frame)).collect();
     (GraphPlan { nodes, uniform_order, outputs }, issues)
 }

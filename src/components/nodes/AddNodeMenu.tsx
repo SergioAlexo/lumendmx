@@ -4,7 +4,7 @@ import { CATEGORY_COLORS } from "../../lib/graph";
 import type { NodeKind, NodePreset, NodeTypeInfo } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 
-const CATEGORY_ORDER = ["Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output"];
+const CATEGORY_ORDER = ["Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output", "Layout"];
 
 type Item = { type: "node"; info: NodeTypeInfo } | { type: "preset"; preset: NodePreset };
 

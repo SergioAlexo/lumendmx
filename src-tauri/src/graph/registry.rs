@@ -44,10 +44,11 @@ pub enum NodeKind {
     Switch,
     Mix,
     Output,
+    Frame,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 30] = [
+    pub const ALL: [NodeKind; 31] = [
         NodeKind::Number,
         NodeKind::Color,
         NodeKind::Time,
@@ -78,6 +79,7 @@ impl NodeKind {
         NodeKind::Switch,
         NodeKind::Mix,
         NodeKind::Output,
+        NodeKind::Frame,
     ];
 }
 
@@ -155,7 +157,7 @@ pub struct ParamInfo {
 pub struct NodeTypeInfo {
     pub kind: NodeKind,
     pub label: String,
-    /// "Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output".
+    /// "Input", "Fixtures", "Math", "Colour", "Position", "Switching", "Output", "Layout".
     pub category: String,
     pub description: String,
     /// Sockets with default params. Switch, Mix, Any and Output change
@@ -173,6 +175,7 @@ pub const SHAPES: [&str; 5] = ["circle", "figure8", "ballyhoo", "panSaw", "tiltS
 pub const MATH_OPS: [&str; 10] = ["add", "subtract", "multiply", "divide", "min", "max", "power", "modulo", "invert", "abs"];
 pub const COMPARE_OPS: [&str; 3] = ["greater", "less", "equal"];
 pub const VALUE_TYPES: [&str; 3] = ["number", "color", "position"];
+pub const FRAME_COLORS: [&str; 7] = ["gray", "red", "orange", "yellow", "green", "blue", "purple"];
 /// Most inputs a Switch can have.
 pub const MAX_SWITCH_INPUTS: usize = 8;
 /// Most inputs an Any node grows to.
@@ -514,6 +517,19 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             vec![],
             vec![choice("type", "Type", &VALUE_TYPES, "number")],
         ),
+        NodeKind::Frame => (
+            "Frame",
+            "Layout",
+            "A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them.",
+            vec![],
+            vec![],
+            vec![
+                text_param("label", "Label", "Shown at the top", "Frame"),
+                choice("color", "Color", &FRAME_COLORS, "gray"),
+                number("width", "Width", 100.0, 10000.0, 1.0, 400.0),
+                number("height", "Height", 80.0, 10000.0, 1.0, 300.0),
+            ],
+        ),
         NodeKind::Output => (
             "Fixture Output",
             "Output",
@@ -618,7 +634,10 @@ pub fn node_sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (V
     } else {
         outputs
     };
-    inputs.push(input(ENABLED, "Enabled", SocketType::Trigger, n(1.0)));
+    // A Frame isn't evaluated, so there's nothing to disable.
+    if kind != NodeKind::Frame {
+        inputs.push(input(ENABLED, "Enabled", SocketType::Trigger, n(1.0)));
+    }
     (inputs, outputs)
 }
 

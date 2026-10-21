@@ -24,9 +24,14 @@ import { useShowStore } from "../../store/useShowStore";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { AddNodeMenu } from "./AddNodeMenu";
+import { FRAME_MIN, FrameNode } from "./FrameNode";
 import { GraphNode, type GraphFlowNode, type GraphNodeData } from "./GraphNode";
 
-const nodeTypes = { graph: GraphNode };
+const nodeTypes = { graph: GraphNode, frame: FrameNode };
+
+/** Space around the nodes a new frame is drawn around, and its header. */
+const FRAME_PAD = 30;
+const FRAME_HEADER = 28;
 
 /** A link being dragged that was dropped on empty canvas: the add menu
  * offers nodes that can take it, and links the new node in. */
@@ -55,15 +60,34 @@ function toFlowNode(
   previous?: GraphFlowNode,
   select?: boolean,
 ): GraphFlowNode {
+  const frame = view.kind === "frame";
+  // Keep the local position (and a frame's size) while it's being dragged or resized.
+  const live = previous?.dragging || previous?.resizing;
   return {
     id: view.id,
-    type: "graph",
-    // Keep the local position while it's being dragged.
-    position: previous?.dragging ? previous.position : { x: view.position.x, y: view.position.y },
+    type: frame ? "frame" : "graph",
+    position: live ? previous!.position : { x: view.position.x, y: view.position.y },
     selected: select || previous?.selected,
     dragging: previous?.dragging,
     data: { view, info, connected, enabledBy },
+    ...(frame && {
+      width: live ? previous!.width : Number(view.params.width ?? 400),
+      height: live ? previous!.height : Number(view.params.height ?? 300),
+      // Behind the nodes and links; only the header takes the pointer.
+      zIndex: -1,
+      dragHandle: ".frame-handle",
+      style: { pointerEvents: "none" as const },
+    }),
   };
+}
+
+/** Whether node `n` lies entirely inside `frame`. */
+function inside(n: GraphFlowNode, frame: GraphFlowNode): boolean {
+  const w = n.measured?.width ?? n.width ?? 0;
+  const h = n.measured?.height ?? n.height ?? 0;
+  const fw = frame.width ?? frame.measured?.width ?? 0;
+  const fh = frame.height ?? frame.measured?.height ?? 0;
+  return n.position.x >= frame.position.x && n.position.y >= frame.position.y && n.position.x + w <= frame.position.x + fw && n.position.y + h <= frame.position.y + fh;
 }
 
 function Editor() {
@@ -80,6 +104,9 @@ function Editor() {
   const [presetName, setPresetName] = useState<string | null>(null);
   /** Nodes to select once they arrive from the backend (a spawned preset). */
   const selectNext = useRef<Set<string>>(new Set());
+  /** While a frame is dragged: the nodes inside it and where each started,
+   * and where the frame started. */
+  const carried = useRef<{ frames: Map<string, { x: number; y: number }>; nodes: Map<string, { x: number; y: number; frame: string }> } | null>(null);
 
   useEffect(() => {
     void graphApi.nodePresets().then(setPresets).catch(() => undefined);
@@ -167,6 +194,66 @@ function Editor() {
     }
   };
 
+  /** Cmd/Ctrl+J: a new frame around the selected nodes. */
+  const frameSelected = async () => {
+    const selected = flow.getNodes().filter((n) => n.selected);
+    if (selected.length === 0) return;
+    const b = flow.getNodesBounds(selected);
+    const position = { x: b.x - FRAME_PAD, y: b.y - FRAME_PAD - FRAME_HEADER };
+    const size = {
+      width: Math.max(FRAME_MIN.width, Math.round(b.width + 2 * FRAME_PAD)),
+      height: Math.max(FRAME_MIN.height, Math.round(b.height + 2 * FRAME_PAD + FRAME_HEADER)),
+    };
+    const frame = await run(() => graphApi.addNode("frame", position, size));
+    if (frame) selectNext.current = new Set([frame.id]);
+  };
+
+  const onNodeDragStart = (_e: unknown, _node: GraphFlowNode, dragged: GraphFlowNode[]) => {
+    const frames = dragged.filter((n) => n.type === "frame");
+    if (frames.length === 0) {
+      carried.current = null;
+      return;
+    }
+    const all = flow.getNodes();
+    const draggedIds = new Set(dragged.map((n) => n.id));
+    const nodes = new Map<string, { x: number; y: number; frame: string }>();
+    for (const frame of frames) {
+      for (const n of all) {
+        if (n.id !== frame.id && !draggedIds.has(n.id) && !nodes.has(n.id) && inside(n, frame)) {
+          nodes.set(n.id, { ...n.position, frame: frame.id });
+        }
+      }
+    }
+    carried.current = { frames: new Map(frames.map((f) => [f.id, { ...f.position }])), nodes };
+  };
+
+  const onNodeDrag = (_e: unknown, _node: GraphFlowNode, dragged: GraphFlowNode[]) => {
+    const c = carried.current;
+    if (!c || c.nodes.size === 0) return;
+    const delta = new Map<string, { x: number; y: number }>();
+    for (const f of dragged) {
+      const start = c.frames.get(f.id);
+      if (start) delta.set(f.id, { x: f.position.x - start.x, y: f.position.y - start.y });
+    }
+    setNodes((ns) =>
+      ns.map((n) => {
+        const start = c.nodes.get(n.id);
+        const d = start && delta.get(start.frame);
+        return d ? { ...n, position: { x: start.x + d.x, y: start.y + d.y } } : n;
+      }),
+    );
+  };
+
+  const onNodeDragStop = (_e: unknown, _node: GraphFlowNode, dragged: GraphFlowNode[]) => {
+    const moved = new Map(dragged.map((n) => [n.id, n.position]));
+    const c = carried.current;
+    carried.current = null;
+    if (c) {
+      for (const n of flow.getNodes()) if (c.nodes.has(n.id)) moved.set(n.id, n.position);
+    }
+    void run(() => graphApi.moveNodes([...moved].map(([id, p]) => ({ id, position: { x: p.x, y: p.y } }))));
+  };
+
   const spawnPreset = async (preset: NodePreset) => {
     if (!menu) return;
     const position = flow.screenToFlowPosition(menu.screen);
@@ -225,6 +312,9 @@ function Editor() {
       } else if ((e.shiftKey && e.key.toLowerCase() === "d") || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d")) {
         e.preventDefault();
         void duplicateSelected();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        void frameSelected();
       } else if (e.key === "Home" || (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey)) {
         void flow.fitView({ padding: 0.2, duration: 200 });
       }
@@ -256,9 +346,10 @@ function Editor() {
         onConnect={connect}
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
-        onNodeDragStop={(_e, _node, dragged) =>
-          void run(() => graphApi.moveNodes(dragged.map((n) => ({ id: n.id, position: { x: n.position.x, y: n.position.y } }))))
-        }
+        onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
+        onNodeDragStop={onNodeDragStop}
+        elevateNodesOnSelect={false}
         onDelete={({ nodes: gone, edges: cut }) => {
           const ids = gone.map((n) => n.id);
           if (ids.length > 0) void run(() => graphApi.removeNodes(ids));
