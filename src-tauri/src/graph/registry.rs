@@ -25,6 +25,7 @@ pub enum NodeKind {
     FixtureIndex,
     Fan,
     Math,
+    Expression,
     MapRange,
     Compare,
     Random,
@@ -46,7 +47,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 29] = [
+    pub const ALL: [NodeKind; 30] = [
         NodeKind::Number,
         NodeKind::Color,
         NodeKind::Time,
@@ -58,6 +59,7 @@ impl NodeKind {
         NodeKind::FixtureIndex,
         NodeKind::Fan,
         NodeKind::Math,
+        NodeKind::Expression,
         NodeKind::MapRange,
         NodeKind::Compare,
         NodeKind::Random,
@@ -389,6 +391,14 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             vec![output("value", "Value", Number)],
             vec![choice("op", "Operation", &MATH_OPS, "multiply"), bool_param("clamp", "Clamp 0-1", false)],
         ),
+        NodeKind::Expression => (
+            "Expression",
+            "Math",
+            "A formula in one node: + - * / % ^, brackets, constants pi, tau and e, and the functions sin, cos, abs, sqrt, floor, fract, sign, min, max, pow, step, clamp, mix and smoothstep. Every other name in it becomes an input, in the order it first appears: sin(t * 2) * depth + 0.5 has inputs t and depth. Unconnected inputs take the value typed on the node.",
+            vec![],
+            vec![output("value", "Value", Number)],
+            vec![text_param("formula", "Formula", "e.g. sin(t * 2) * depth + 0.5", "a * b")],
+        ),
         NodeKind::MapRange => (
             "Map Range",
             "Math",
@@ -636,6 +646,10 @@ pub fn sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (Vec<So
                 .map(|(c, (ty, name))| output(&if c == 0 { "value".to_string() } else { format!("value{c}") }, if channels == 1 { "Value" } else { name }, *ty))
                 .collect();
             (inputs, outputs)
+        }
+        NodeKind::Expression => {
+            let inputs = super::expr::input_names(param_text(params, "formula", "a * b")).iter().map(|name| input(name, name, SocketType::Number, n(0.0))).collect();
+            (inputs, vec![output("value", "Value", SocketType::Number)])
         }
         NodeKind::Any => {
             let inputs = (0..any_inputs(params)).map(|i| input_only(&format!("in{i}"), &format!("{}", i + 1), SocketType::Trigger)).collect();

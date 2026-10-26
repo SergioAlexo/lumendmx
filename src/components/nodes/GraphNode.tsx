@@ -9,7 +9,7 @@ import { cn } from "../../lib/utils";
 import { useGraphStore } from "../../store/useGraphStore";
 import { useEditedGraph } from "../../store/useEditedGraph";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
-import { BeatRateField, ColorField, CurveEditor, GradientEditor, ParamControl, ScrubNumber } from "./controls";
+import { BeatRateField, ColorField, CurveEditor, ExpressionHelp, GradientEditor, ParamControl, ScrubNumber } from "./controls";
 import type { CurveMode } from "../../lib/curve";
 import { ExposeMenu, type ExposeTarget } from "./ExposeMenu";
 import { exposedSockets, socketKey, type FramePort } from "./frames";
@@ -311,6 +311,7 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
                   <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
                 ),
               )}
+            {view.kind === "expression" && <ExpressionHelp />}
             {(view.kind === "button" || view.kind === "fader") && <MidiLearn nodeId={view.id} isFader={view.kind === "fader"} />}
           </div>
         )}

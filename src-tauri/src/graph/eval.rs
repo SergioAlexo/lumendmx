@@ -181,6 +181,12 @@ impl GraphRuntime {
                 let v = if v.is_finite() { v } else { 0.0 };
                 out[0][0] = if *clamp { v.clamp(0.0, 1.0) } else { v };
             }
+            (NodeKind::Expression, Config::Expr(expr)) => {
+                if let Some(expr) = expr {
+                    let vars: Vec<f32> = (0..expr.vars.len()).map(&num).collect();
+                    out[0][0] = expr.eval(&vars);
+                }
+            }
             (NodeKind::MapRange, Config::MapRange { from, to, clamp }) => {
                 let span = from.1 - from.0;
                 let t = if span == 0.0 { 0.0 } else { (num(0) - from.0) / span };
@@ -571,6 +577,30 @@ mod tests {
         rig.controls.insert("pick".into(), 1.0);
         rig.at(1.0);
         assert_eq!((rig.channel("out", 1), rig.channel("out", 2), rig.channel("out", 4)), (127.5, 0.0, 255.0)); // half blue
+    }
+
+    #[test]
+    fn an_expression_node_computes_its_formula_from_linked_and_typed_inputs() {
+        let graph = Graph {
+            nodes: vec![
+                node("fader", NodeKind::Fader, &[]),
+                node("expr", NodeKind::Expression, &[("formula", ParamValue::Text("clamp(x * 2, 0, 1) * depth".into())), ("depth", ParamValue::Number(0.5))]),
+                output("out"),
+            ],
+            edges: vec![edge("fader", "value", "expr", "x"), edge("expr", "value", "out", "intensity")],
+        };
+        let mut rig = Rig::new(&graph, 1);
+        rig.controls.insert("fader".into(), 0.25);
+        rig.at(0.1);
+        assert_eq!(rig.channel("out", 1), 63.75); // clamp(0.5) * 0.5 = 0.25
+        rig.controls.insert("fader".into(), 1.0);
+        rig.at(0.2);
+        assert_eq!(rig.channel("out", 1), 127.5); // clamp(2) * 0.5 = 0.5
+
+        // A formula with a mistake outputs 0 and says why.
+        let broken = Graph { nodes: vec![node("expr", NodeKind::Expression, &[("formula", ParamValue::Text("1 +".into()))])], edges: vec![] };
+        let (_, issues) = crate::graph::compile::compile(&broken, &Default::default(), &[]);
+        assert!(issues.iter().any(|i| i.node == "expr" && i.message.contains("ends too soon")), "{issues:?}");
     }
 
     #[test]

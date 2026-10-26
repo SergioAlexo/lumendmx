@@ -4,6 +4,7 @@
 
 pub mod compile;
 pub mod eval;
+pub mod expr;
 pub mod gradient;
 pub mod model;
 pub mod registry;

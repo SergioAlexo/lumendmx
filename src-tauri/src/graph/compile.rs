@@ -63,6 +63,8 @@ pub enum Config {
     Gain(f32),
     Fan(Fan),
     Math { op: MathOp, clamp: bool },
+    /// Expression: the parsed formula, none while it has a mistake.
+    Expr(Option<super::expr::Expr>),
     MapRange { from: (f32, f32), to: (f32, f32), clamp: bool },
     Compare(CompareOp),
     Seed(u64),
@@ -265,6 +267,7 @@ fn config(node: &Node) -> Config {
             wings: number(node, "wings", 0.0) as u32,
         }),
         NodeKind::Math => Config::Math { op: math_op(text(node, "op", "multiply")), clamp: flag(node, "clamp", false) },
+        NodeKind::Expression => Config::Expr(super::expr::Expr::parse(text(node, "formula", "a * b")).ok()),
         NodeKind::MapRange => Config::MapRange {
             from: (number(node, "fromMin", 0.0), number(node, "fromMax", 1.0)),
             to: (number(node, "toMin", 0.0), number(node, "toMax", 1.0)),
@@ -443,6 +446,11 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
             if indegree[d] == 0 {
                 queue.push_back(d);
             }
+        }
+    }
+    for node in graph.nodes.iter().filter(|n| n.kind == NodeKind::Expression) {
+        if let Err(e) = super::expr::Expr::parse(text(node, "formula", "a * b")) {
+            issue(&node.id, e);
         }
     }
     let ordered: HashSet<usize> = order.iter().copied().collect();

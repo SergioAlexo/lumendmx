@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Trash2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Trash2 } from "lucide-react";
 import { curveValue, formatCurve, parseCurve, type CurveMode, type CurvePoint } from "../../lib/curve";
 import type { Group, ParamInfo, ParamValue } from "../../lib/showfile/generated";
 import { BEAT_PRESETS, parseLength, rateLabel } from "../../lib/beatRate";
+import { CONSTANTS, FUNCTIONS, OPERATORS } from "../../lib/expressionHelp";
 import { colorAt, formatStops, parseStops, stopsCss, type Stop } from "../../lib/gradient";
 import { cn } from "../../lib/utils";
 
@@ -497,6 +498,54 @@ export function BeatRateField({ rate, onCommit }: { rate: number; onCommit: (rat
           </div>,
           document.body,
         )}
+    </div>
+  );
+}
+
+/** What a formula can use, folded away under the formula field. */
+export function ExpressionHelp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="text-[10px] leading-snug text-muted-foreground">
+      <button className="nodrag flex items-center gap-1 hover:text-foreground" onClick={() => setOpen(!open)}>
+        <CircleHelp className="h-3 w-3" />
+        {open ? "Hide help" : "What can I write?"}
+      </button>
+      {open && (
+        <div className="nodrag nowheel mt-1 flex max-h-56 select-text flex-col gap-1.5 overflow-y-auto rounded bg-muted/60 p-1.5">
+          <p>
+            <span className="text-foreground">Inputs:</span> any other name you write becomes an input on the node, in the order it first appears.
+            In <code>sin(t * 2) * depth</code> that is <code>t</code> and <code>depth</code>. Unconnected, it uses the number typed beside it.
+          </p>
+          <div>
+            <span className="text-foreground">Operators</span>
+            {OPERATORS.map((o) => (
+              <div key={o.symbol} className="flex gap-1.5">
+                <code className="w-14 shrink-0 text-foreground">{o.symbol}</code>
+                <span>{o.meaning}</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <span className="text-foreground">Constants</span>
+            {CONSTANTS.map((c) => (
+              <div key={c.name} className="flex gap-1.5">
+                <code className="w-14 shrink-0 text-foreground">{c.name}</code>
+                <span>{c.meaning}</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <span className="text-foreground">Functions</span>
+            {FUNCTIONS.map((f) => (
+              <div key={f.signature} className="flex flex-col">
+                <code className="text-foreground">{f.signature}</code>
+                <span className="pl-2">{f.meaning}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

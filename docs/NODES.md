@@ -144,6 +144,20 @@ Params:
 - `op` Operation: add / subtract / multiply / divide / min / max / power / modulo / invert / abs, default `multiply`
 - `clamp` Clamp 0-1: on/off, default false
 
+### Expression (`expression`)
+
+A formula in one node: + - * / % ^, brackets, constants pi, tau and e, and the functions sin, cos, abs, sqrt, floor, fract, sign, min, max, pow, step, clamp, mix and smoothstep. Every other name in it becomes an input, in the order it first appears: sin(t * 2) * depth + 0.5 has inputs t and depth. Unconnected inputs take the value typed on the node.
+
+Inputs:
+- `a` a (number, default 0)
+- `b` b (number, default 0)
+
+Outputs:
+- `value` Value (number)
+
+Params:
+- `formula` Formula: text: e.g. sin(t * 2) * depth + 0.5, default `a * b`
+
 ### Map Range (`mapRange`)
 
 Rescales a value from one range to another.
