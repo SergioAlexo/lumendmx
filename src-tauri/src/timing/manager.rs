@@ -1,9 +1,12 @@
 //! Owns the live timing sources: which one drives the tempo and timecode,
 //! the audio / MIDI inputs they need, and the status the UI polls. All
 //! settings are applied through `configure`, which starts and stops inputs
-//! to match.
+//! to match, and saved per machine (`timing.json` in the app data folder) so
+//! the chosen devices come back on the next launch.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -146,22 +149,44 @@ struct Inputs {
 
 pub struct TimingManager {
     handles: TimingHandles,
+    /// Where the settings are saved; `None` when there's no data folder.
+    settings_path: Option<PathBuf>,
     shared: Arc<Mutex<Shared>>,
     inputs: Mutex<Inputs>,
 }
 
 impl TimingManager {
-    pub fn new(handles: TimingHandles) -> Self {
+    pub fn new(handles: TimingHandles, data_dir: Option<PathBuf>) -> Self {
         Self {
             handles,
+            settings_path: data_dir.map(|d| d.join("timing.json")),
             shared: Arc::new(Mutex::new(Shared { tempo_source: Some(TempoSource::Manual), ..Default::default() })),
             inputs: Mutex::new(Inputs { settings: TimingSettings::default(), audio: None, ltc: None, midi: HashMap::new() }),
         }
     }
 
-    /// Applies `settings`, starting and stopping inputs as needed. An input
-    /// that fails to open is reported in the status, not as an error here.
+    /// The settings saved by the last launch, if any (and readable).
+    pub fn saved_settings(&self) -> Option<TimingSettings> {
+        let text = fs::read_to_string(self.settings_path.as_ref()?).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    fn save(&self, settings: &TimingSettings) {
+        let Some(path) = &self.settings_path else { return };
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(settings) {
+            let _ = fs::write(path, text);
+        }
+    }
+
+    /// Applies `settings`, starting and stopping inputs as needed, and saves
+    /// them. An input that fails to open (a device that's unplugged) is
+    /// reported in the status, not as an error here; it's tried again on the
+    /// next `configure`.
     pub fn configure(&self, settings: TimingSettings) {
+        self.save(&settings);
         let mut inputs = self.inputs.lock().unwrap();
         let old = inputs.settings.clone();
         self.shared.lock().unwrap().tempo_source = Some(settings.tempo_source);
@@ -364,12 +389,31 @@ mod tests {
     /// UI thread on the frontend's first `timing_status` poll.
     #[test]
     fn status_does_not_deadlock() {
-        let timing = TimingManager::new(EngineManager::new().timing_handles());
+        let timing = TimingManager::new(EngineManager::new().timing_handles(), None);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             tx.send(timing.status().ltc_running).unwrap();
         });
         let ltc_running = rx.recv_timeout(Duration::from_secs(2)).expect("status() deadlocked");
         assert!(!ltc_running);
+    }
+
+    #[test]
+    fn settings_are_saved_and_read_back_next_launch() {
+        let dir = std::env::temp_dir().join(format!("lumendmx-timing-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let first = TimingManager::new(EngineManager::new().timing_handles(), Some(dir.clone()));
+        assert!(first.saved_settings().is_none());
+        // Ports that don't exist: they fail to open, but are still saved.
+        let settings = TimingSettings {
+            tempo_source: TempoSource::Tap,
+            controller_ports: vec!["no-such-port-1".into(), "no-such-port-2".into()],
+            ..TimingSettings::default()
+        };
+        first.configure(settings.clone());
+
+        let next = TimingManager::new(EngineManager::new().timing_handles(), Some(dir.clone()));
+        assert_eq!(next.saved_settings(), Some(settings));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

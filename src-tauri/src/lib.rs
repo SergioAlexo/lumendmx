@@ -34,12 +34,21 @@ pub fn run() {
             app.manage(DmxInputManager::new());
 
             engine.start_tick(app.handle().clone());
-            app.manage(TimingManager::new(engine.timing_handles()));
+            let data_dir = app.path().app_data_dir().ok();
+            app.manage(TimingManager::new(engine.timing_handles(), data_dir.clone()));
             app.manage(engine.clone());
+            // Reopen last launch's audio and MIDI inputs off the setup thread:
+            // opening devices can be slow.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let timing = handle.state::<TimingManager>();
+                if let Some(settings) = timing.saved_settings() {
+                    timing.configure(settings);
+                }
+            });
 
             // After the engine and outputs: loading the last session
             // configures universes and hands the engine its patch.
-            let data_dir = app.path().app_data_dir().ok();
             let store = data_dir.clone().map(ShowStore::new);
             let sink = AppSink { app: app.handle().clone(), engine: engine.clone() };
             let show = Arc::new(ShowService::new(Box::new(sink), store));
