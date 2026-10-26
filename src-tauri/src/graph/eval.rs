@@ -198,19 +198,7 @@ impl GraphRuntime {
             (NodeKind::Rgb, _) => out[0] = [num(0), num(1), num(2)],
             (NodeKind::Hsv, _) => out[0] = hsv_to_rgb(num(0), num(1), num(2)),
             (NodeKind::MixColor, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
-            (NodeKind::Gradient, Config::Gradient { stops, wrap }) => {
-                out[0] = match stops.len() {
-                    0 => [0.0; 3],
-                    1 => stops[0],
-                    n => {
-                        let t = num(0);
-                        let (segments, t) = if *wrap { (n, t.rem_euclid(1.0)) } else { (n - 1, t.clamp(0.0, 1.0)) };
-                        let x = t * segments as f32;
-                        let i = (x.floor() as usize).min(segments - 1);
-                        lerp(stops[i], stops[(i + 1) % n], x - i as f32)
-                    }
-                };
-            }
+            (NodeKind::Gradient, Config::Gradient { stops, wrap }) => out[0] = super::gradient::color_at(stops, *wrap, num(0)),
             (NodeKind::Shape, Config::Shape { shape, rate }) => {
                 let cycles = rate_cycles(*rate, inputs) + num(0) as f64;
                 let (dx, dy) = shape_value(*shape, cycles.rem_euclid(1.0));

@@ -486,10 +486,10 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Gradient => (
             "Gradient",
             "Colour",
-            "Picks a colour along evenly spaced stops; Position 0 is the first stop, 1 the last.",
+            "Picks a colour along a row of colour stops; Position 0 is the start, 1 the end. Stops are \"#rrggbb@place\" (place 0-1) and spread evenly where they have no place; wrapped, the last blends round to the first.",
             vec![input("t", "Position", Number, n(0.0))],
             vec![output("color", "Color", Color)],
-            vec![text_param("stops", "Stops", "Colours, comma-separated: #ff0000, #00ff00", "#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff"), bool_param("wrap", "Wrap around", true)],
+            vec![text_param("stops", "Stops", "Colours with their place, comma-separated: #ff0000@0, #00ff00@0.5", "#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff"), bool_param("wrap", "Wrap around", true)],
         ),
         NodeKind::Shape => (
             "Shape",

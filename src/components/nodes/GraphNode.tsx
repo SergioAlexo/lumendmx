@@ -9,7 +9,7 @@ import { cn } from "../../lib/utils";
 import { useGraphStore } from "../../store/useGraphStore";
 import { useEditedGraph } from "../../store/useEditedGraph";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
-import { ColorField, CurveEditor, ParamControl, ScrubNumber } from "./controls";
+import { BeatRateField, ColorField, CurveEditor, GradientEditor, ParamControl, ScrubNumber } from "./controls";
 import type { CurveMode } from "../../lib/curve";
 import { ExposeMenu, type ExposeTarget } from "./ExposeMenu";
 import { exposedSockets, socketKey, type FramePort } from "./frames";
@@ -303,6 +303,10 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
                     playhead={values?.[1]?.[0]}
                     onCommit={(v) => setParam(p.id, v)}
                   />
+                ) : (view.kind === "lfo" || view.kind === "shape") && p.id === "rate" && String(view.params.unit ?? "beats") === "beats" ? (
+                  <BeatRateField key={p.id} rate={Number(view.params.rate ?? p.default)} onCommit={(v) => setParam(p.id, v)} />
+                ) : view.kind === "gradient" && p.id === "stops" ? (
+                  <GradientEditor key={p.id} value={String(view.params.stops ?? p.default)} wrap={view.params.wrap !== false} onCommit={(v) => setParam(p.id, v)} />
                 ) : (
                   <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
                 ),

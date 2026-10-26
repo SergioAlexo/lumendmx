@@ -68,7 +68,7 @@ pub enum Config {
     Seed(u64),
     Times { rise_ms: f32, fall_ms: f32 },
     Steps(u32),
-    Gradient { stops: Vec<Val>, wrap: bool },
+    Gradient { stops: Vec<(f32, Val)>, wrap: bool },
     Shape { shape: PositionShape, rate: Rate },
     /// Any: how many inputs.
     Count(usize),
@@ -279,10 +279,10 @@ fn config(node: &Node) -> Config {
         NodeKind::Smooth => Config::Times { rise_ms: number(node, "attack", 50.0), fall_ms: number(node, "release", 300.0) },
         NodeKind::Envelope => Config::Times { rise_ms: number(node, "attack", 10.0), fall_ms: number(node, "decay", 250.0) },
         NodeKind::Counter => Config::Steps(number(node, "steps", 4.0).max(1.0) as u32),
-        NodeKind::Gradient => Config::Gradient {
-            stops: text(node, "stops", "#000000, #ffffff").split(',').filter_map(parse_hex).collect(),
-            wrap: flag(node, "wrap", true),
-        },
+        NodeKind::Gradient => {
+            let wrap = flag(node, "wrap", true);
+            Config::Gradient { stops: super::gradient::parse_stops(text(node, "stops", "#000000, #ffffff"), wrap), wrap }
+        }
         NodeKind::Shape => Config::Shape { shape: shape(text(node, "shape", "circle")), rate: rate(node) },
         NodeKind::Any => Config::Count(registry::any_inputs(&node.params)),
         NodeKind::Switch => Config::Switch {
