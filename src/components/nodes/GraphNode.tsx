@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { Handle, Position, type NodeProps, type Node as FlowNode } from "@xyflow/react";
 import { AlertTriangle, Radio } from "lucide-react";
 import * as graphApi from "../../lib/graph";
+import * as timing from "../../lib/timing";
 import { CATEGORY_COLORS, SOCKET_COLORS } from "../../lib/graph";
 import type { Group, NodeTypeInfo, NodeView, ParamValue, SocketInfo } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
@@ -87,13 +88,17 @@ function MidiLearn({ nodeId, isNote }: { nodeId: string; isNote: boolean }) {
 
   const learn = async () => {
     setLearning(true);
-    const before = JSON.stringify(await graphApi.lastMidi().catch(() => null));
+    // Wait for a message newer than any already logged, not for a different
+    // control: moving the knob you touched last must still count.
+    const logged = await timing.midiEvents(0).catch(() => []);
+    let after = logged.length > 0 ? logged[logged.length - 1].seq : 0;
     const started = Date.now();
     const poll = async () => {
-      const last = await graphApi.lastMidi().catch(() => null);
-      if (last && JSON.stringify(last) !== before && last[0] === isNote) {
-        const [, channel, number] = last;
-        await run(() => graphApi.setParams(nodeId, { channel, [isNote ? "note" : "controller"]: number }));
+      const events = await timing.midiEvents(after).catch(() => []);
+      if (events.length > 0) after = events[events.length - 1].seq;
+      const hit = events.find((e) => e.kind === (isNote ? "noteOn" : "cc"));
+      if (hit) {
+        await run(() => graphApi.setParams(nodeId, { channel: hit.channel, [isNote ? "note" : "controller"]: hit.number }));
         setLearning(false);
       } else if (Date.now() - started > 15_000) {
         setLearning(false);
