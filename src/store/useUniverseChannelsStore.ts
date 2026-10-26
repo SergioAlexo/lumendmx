@@ -5,11 +5,14 @@ interface UniverseChannelsState {
   /** Each universe's merged output, keyed by universe id. Populated from the
    * engine's ~20Hz frame event. */
   channels: Record<number, Uint8Array>;
+  /** The same for the draft graph, while there is one (never sent out). */
+  draft: Record<number, Uint8Array>;
   init: () => Promise<void>;
 }
 
 export const useUniverseChannelsStore = create<UniverseChannelsState>((set) => ({
   channels: {},
+  draft: {},
 
   init: async () => {
     try {
@@ -21,6 +24,9 @@ export const useUniverseChannelsStore = create<UniverseChannelsState>((set) => (
         set((s) => ({
           channels: { ...s.channels, [frame.universeId]: Uint8Array.from(frame.channels) },
         }));
+      });
+      await engineApi.onDraftFrame((frame) => {
+        set((s) => ({ draft: { ...s.draft, [frame.universeId]: Uint8Array.from(frame.channels) } }));
       });
     } catch (err) {
       // Expected outside the Tauri runtime (plain browser preview).

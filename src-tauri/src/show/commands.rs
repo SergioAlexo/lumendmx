@@ -42,6 +42,10 @@ impl ShowSink for AppSink {
         self.engine.set_graph(plan);
     }
 
+    fn draft_compiled(&self, plan: Option<Arc<GraphPlan>>) {
+        self.engine.set_draft(plan);
+    }
+
     fn controls(&self) -> HashMap<String, f32> {
         self.engine.controls()
     }
@@ -238,6 +242,21 @@ pub fn graph_disconnect(show: State<Arc<ShowService>>, to_node: String, to_socke
 #[tauri::command]
 pub fn graph_set_params(show: State<Arc<ShowService>>, id: String, params: ParamChanges) -> Result<Node, String> {
     show.set_params(&id, params)
+}
+
+#[tauri::command]
+pub fn graph_start_draft(show: State<Arc<ShowService>>) -> Result<(), String> {
+    show.start_draft()
+}
+
+#[tauri::command]
+pub fn graph_discard_draft(show: State<Arc<ShowService>>) -> Result<(), String> {
+    show.discard_draft()
+}
+
+#[tauri::command]
+pub fn graph_push_draft(show: State<Arc<ShowService>>) -> Result<(), String> {
+    show.push_draft()
 }
 
 #[tauri::command]

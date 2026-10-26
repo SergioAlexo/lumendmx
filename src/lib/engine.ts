@@ -6,6 +6,11 @@ export function onUniverseFrame(cb: (frame: EngineFrame) => void) {
   return listen<EngineFrame>("engine://universe-frame", (event) => cb(event.payload));
 }
 
+/** What the draft graph would output, per universe (~20Hz), while there is a draft. Never sent to the fixtures. */
+export function onDraftFrame(cb: (frame: EngineFrame) => void) {
+  return listen<EngineFrame>("engine://draft-frame", (event) => cb(event.payload));
+}
+
 /** 0-100%. Scales every intensity channel of the output. */
 export function setGrandMaster(percent: number): Promise<void> {
   return invoke("engine_set_grand_master", { percent });

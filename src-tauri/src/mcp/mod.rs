@@ -179,6 +179,9 @@ mod tests {
         fn graph_compiled(&self, plan: Arc<GraphPlan>) {
             self.0.set_graph(plan);
         }
+        fn draft_compiled(&self, plan: Option<Arc<GraphPlan>>) {
+            self.0.set_draft(plan);
+        }
         fn controls(&self) -> HashMap<String, f32> {
             self.0.controls()
         }

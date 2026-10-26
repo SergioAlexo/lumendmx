@@ -5,6 +5,7 @@ import * as graphApi from "../../lib/graph";
 import { SOCKET_COLORS } from "../../lib/graph";
 import { cn } from "../../lib/utils";
 import { useShowStore } from "../../store/useShowStore";
+import { useEditedGraph } from "../../store/useEditedGraph";
 import type { GraphFlowNode } from "./GraphNode";
 import { ExposeMenu, type ExposeTarget } from "./ExposeMenu";
 import { exposedParam, exposedSockets, socketKey, type FramePort } from "./frames";
@@ -27,7 +28,7 @@ export const FRAME_MIN = { width: 100, height: 80 };
  * into the frame: dimmed, and right-click exposes it. */
 function PortRow({ port }: { port: FramePort }) {
   const run = useShowStore((s) => s.run);
-  const view = useShowStore((s) => s.show?.graph.nodes.find((n) => n.id === port.node));
+  const view = useEditedGraph().graph?.nodes.find((n) => n.id === port.node);
   const [draft, setDraft] = useState<string | null>(null);
   const [exposing, setExposing] = useState<ExposeTarget | null>(null);
   const key = socketKey(port.side, port.socket);

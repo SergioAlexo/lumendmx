@@ -38,7 +38,7 @@ impl ShowService {
         }
         let preset = {
             let inner = self.inner.lock().unwrap();
-            let graph = &inner.show.graph;
+            let graph = inner.edited_graph();
             let mut wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
             if let Some(missing) = wanted.iter().find(|id| graph.node(id).is_none()) {
                 return Err(format!("No node {missing}"));
@@ -85,7 +85,7 @@ impl ShowService {
     pub fn spawn_node_preset(&self, id: &str, position: NodePosition) -> Result<Vec<String>, String> {
         let preset = self.presets.lock().unwrap().iter().find(|p| p.id == id).cloned().ok_or_else(|| format!("No preset {id}"))?;
         self.edit(&format!("Add {}", preset.name), |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             let mut new_ids = HashMap::new();
             for node in &preset.nodes {
                 let new_id = graph.next_id();

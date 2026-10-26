@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as graphApi from "../../lib/graph";
 import { useShowStore } from "../../store/useShowStore";
+import { useEditedGraph } from "../../store/useEditedGraph";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { exposedParam, exposedSockets, socketKey } from "./frames";
@@ -12,7 +13,7 @@ export type ExposeTarget = { node: string; side: "in" | "out"; socket: string; x
  * on the frame under a name, rename it, or stop exposing it. */
 export function ExposeMenu({ target, onClose }: { target: ExposeTarget; onClose: () => void }) {
   const run = useShowStore((s) => s.run);
-  const view = useShowStore((s) => s.show?.graph.nodes.find((n) => n.id === target.node));
+  const view = useEditedGraph().graph?.nodes.find((n) => n.id === target.node);
   const ref = useRef<HTMLFormElement>(null);
   const key = socketKey(target.side, target.socket);
   const socket = (target.side === "in" ? view?.inputs : view?.outputs)?.find((s) => s.id === target.socket);

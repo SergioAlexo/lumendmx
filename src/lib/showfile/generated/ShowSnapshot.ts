@@ -23,4 +23,9 @@ dirty: boolean, universes: Array<UniverseConfig>, patch: Array<PatchedFixture>, 
 /**
  * Patched fixtures whose type or mode isn't in the fixture library.
  */
-unresolved: Array<number>, graph: GraphView, beatOffsetMs: number, };
+unresolved: Array<number>, graph: GraphView, 
+/**
+ * The draft being edited, if any. While there is one, every graph edit
+ * (editor or MCP) goes to it and the live graph stays as it is.
+ */
+draft: GraphView | null, beatOffsetMs: number, };

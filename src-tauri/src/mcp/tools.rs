@@ -37,6 +37,8 @@ How the graph works:
 
 Workflow: call list_node_types once for the exact node kinds, sockets and params; get_show and list_fixtures to see the rig; get_graph before editing; list_node_presets for the user's saved building blocks. Check get_graph for per-node issues and get_output to confirm what fixtures are actually doing.
 
+Drafts: the user can edit the graph without it going live. While a draft exists, every graph edit (yours too) and get_graph work on the draft, the lights keep following the live graph, and the user pushes the draft live from the editor. Call start_draft before bigger graph changes so they can preview them first; get_output always shows the live output.
+
 Building:
 - Add to the user's graph with add_node, connect and set_params. Use replace_graph only on an empty graph or when the user asks to start over: it replaces everything they built.
 - Before building something from scratch, check whether a preset does it; spawn_node_preset places a copy (one undo step) and returns the new nodes to wire up. Save a preset (save_node_preset) only when the user asks.
@@ -220,6 +222,7 @@ impl LumenMcp {
             "unknownFixtureTypes": s.unresolved,
             "groups": s.groups,
             "nodeCount": s.graph.nodes.len(),
+            "draftActive": s.draft.is_some(),
             "graphIssues": self.show.graph_issues(),
             "bpm": self.engine.bpm(),
         }))
@@ -287,10 +290,17 @@ impl LumenMcp {
         json(node_types())
     }
 
-    /// The node graph: nodes (id, kind, position, params, actual sockets, issues) and edges.
+    /// The node graph you are editing: nodes (id, kind, position, params, actual sockets, issues) and edges. While a draft exists this is the draft, not what is playing.
     #[tool]
     async fn get_graph(&self) -> ToolResult {
-        json(self.show.snapshot().graph)
+        json(self.show.edited_graph_view())
+    }
+
+    /// Start a draft: a copy of the playing graph that all graph edits go to, so nothing reaches the lights until the user pushes it live in the editor. Does nothing if a draft exists. Prefer this before bigger graph changes.
+    #[tool]
+    async fn start_draft(&self) -> ToolResult {
+        self.show.start_draft()?;
+        json(serde_json::json!({ "draftActive": true }))
     }
 
     /// Add a node. Returns it with its id.
@@ -337,7 +347,7 @@ impl LumenMcp {
     #[tool]
     async fn spawn_node_preset(&self, Parameters(args): Parameters<SpawnPresetArgs>) -> ToolResult {
         let ids = self.show.spawn_node_preset(&args.id, NodePosition { x: args.x, y: args.y })?;
-        let graph = self.show.snapshot().graph;
+        let graph = self.show.edited_graph_view();
         json(graph.nodes.iter().filter(|n| ids.contains(&n.node.id)).map(|n| &n.node).collect::<Vec<_>>())
     }
 

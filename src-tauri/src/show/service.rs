@@ -33,6 +33,8 @@ pub const MAX_BEAT_OFFSET_MS: f32 = 500.0;
 pub trait ShowSink: Send + Sync {
     fn patch_resolved(&self, patch: &ResolvedPatch);
     fn graph_compiled(&self, plan: Arc<GraphPlan>);
+    /// The draft graph compiled for preview only (never sent to the fixtures), or none.
+    fn draft_compiled(&self, plan: Option<Arc<GraphPlan>>);
     /// Playback-bar control values by node id.
     fn controls(&self) -> HashMap<String, f32>;
     fn set_controls(&self, controls: HashMap<String, f32>);
@@ -68,6 +70,9 @@ pub struct ShowSnapshot {
     /// Patched fixtures whose type or mode isn't in the fixture library.
     pub unresolved: Vec<u32>,
     pub graph: GraphView,
+    /// The draft being edited, if any. While there is one, every graph edit
+    /// (editor or MCP) goes to it and the live graph stays as it is.
+    pub draft: Option<GraphView>,
     pub beat_offset_ms: f32,
 }
 
@@ -150,6 +155,7 @@ struct Snapshot {
     patch: Vec<PatchedFixture>,
     groups: Vec<Group>,
     graph: Graph,
+    draft: Option<Graph>,
 }
 
 pub(super) struct Inner {
@@ -158,6 +164,7 @@ pub(super) struct Inner {
     library: FixtureLibrary,
     resolved: Arc<ResolvedPatch>,
     issues: Vec<GraphIssue>,
+    draft_issues: Vec<GraphIssue>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     revision: u64,
@@ -171,6 +178,7 @@ impl Inner {
             patch: self.show.patch.clone(),
             groups: self.show.groups.clone(),
             graph: self.show.graph.clone(),
+            draft: self.show.draft.clone(),
         }
     }
 
@@ -178,17 +186,26 @@ impl Inner {
         self.show.patch = snapshot.patch;
         self.show.groups = snapshot.groups;
         self.show.graph = snapshot.graph;
+        self.show.draft = snapshot.draft;
     }
 
-    fn graph_view(&self) -> GraphView {
+    /// The graph graph edits apply to: the draft while there is one, else the live graph.
+    pub(super) fn graph_mut(&mut self) -> &mut Graph {
+        self.show.draft.as_mut().unwrap_or(&mut self.show.graph)
+    }
+
+    /// The same graph, to read.
+    pub(super) fn edited_graph(&self) -> &Graph {
+        self.show.draft.as_ref().unwrap_or(&self.show.graph)
+    }
+
+    fn view_of(graph: &Graph, found: &[GraphIssue]) -> GraphView {
         let mut issues: HashMap<&str, Vec<String>> = HashMap::new();
-        for issue in &self.issues {
+        for issue in found {
             issues.entry(issue.node.as_str()).or_default().push(issue.message.clone());
         }
         GraphView {
-            nodes: self
-                .show
-                .graph
+            nodes: graph
                 .nodes
                 .iter()
                 .map(|node| {
@@ -196,8 +213,16 @@ impl Inner {
                     NodeView { node: node.clone(), inputs, outputs, issues: issues.remove(node.id.as_str()).unwrap_or_default() }
                 })
                 .collect(),
-            edges: self.show.graph.edges.clone(),
+            edges: graph.edges.clone(),
         }
+    }
+
+    fn graph_view(&self) -> GraphView {
+        Self::view_of(&self.show.graph, &self.issues)
+    }
+
+    fn draft_view(&self) -> Option<GraphView> {
+        self.show.draft.as_ref().map(|draft| Self::view_of(draft, &self.draft_issues))
     }
 
     fn channel_count(&self, fixture: &PatchedFixture) -> u16 {
@@ -296,6 +321,7 @@ impl ShowService {
                 library: FixtureLibrary::default(),
                 resolved: Arc::new(ResolvedPatch::default()),
                 issues: Vec::new(),
+                draft_issues: Vec::new(),
                 undo: Vec::new(),
                 redo: Vec::new(),
                 revision: 0,
@@ -330,12 +356,29 @@ impl ShowService {
             redo_label: inner.redo.last().map(|s| s.label.clone()),
             unresolved: inner.resolved.unresolved.clone(),
             graph: inner.graph_view(),
+            draft: inner.draft_view(),
             beat_offset_ms: inner.show.settings.beat_offset_ms,
         }
     }
 
+    /// Problems in the graph being edited (the draft while there is one).
     pub fn graph_issues(&self) -> Vec<GraphIssue> {
-        self.inner.lock().unwrap().issues.clone()
+        let inner = self.inner.lock().unwrap();
+        if inner.show.draft.is_some() {
+            inner.draft_issues.clone()
+        } else {
+            inner.issues.clone()
+        }
+    }
+
+    /// The graph edits apply to, as the editor draws it: the draft while there is one.
+    pub fn edited_graph_view(&self) -> GraphView {
+        let inner = self.inner.lock().unwrap();
+        inner.draft_view().unwrap_or_else(|| inner.graph_view())
+    }
+
+    pub fn has_draft(&self) -> bool {
+        self.inner.lock().unwrap().show.draft.is_some()
     }
 
     pub fn fixture_types(&self) -> Vec<FixtureTypeSummary> {
@@ -362,6 +405,17 @@ impl ShowService {
             let (plan, issues) = compile(&inner.show.graph, &inner.resolved, &inner.show.groups);
             inner.issues = issues;
             self.sink.graph_compiled(Arc::new(plan));
+            match &inner.show.draft {
+                Some(draft) => {
+                    let (plan, issues) = compile(draft, &inner.resolved, &inner.show.groups);
+                    inner.draft_issues = issues;
+                    self.sink.draft_compiled(Some(Arc::new(plan)));
+                }
+                None => {
+                    inner.draft_issues.clear();
+                    self.sink.draft_compiled(None);
+                }
+            }
         }
         self.sink.changed(inner.revision);
     }
@@ -409,6 +463,10 @@ impl ShowService {
         inner.show = show;
         inner.show.graph.infer_frames_if_unset();
         inner.show.graph.sanitize_frames();
+        if let Some(draft) = inner.show.draft.as_mut() {
+            draft.infer_frames_if_unset();
+            draft.sanitize_frames();
+        }
         inner.path = path;
         inner.undo.clear();
         inner.redo.clear();
@@ -711,7 +769,7 @@ impl ShowService {
         let mut show = inner.show.clone();
         show.schema_version = CURRENT_SCHEMA_VERSION;
         show.bpm = self.sink.bpm();
-        let ids: HashSet<&str> = show.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+        let ids: HashSet<&str> = show.graph.nodes.iter().chain(show.draft.iter().flat_map(|d| d.nodes.iter())).map(|n| n.id.as_str()).collect();
         show.controls = self.sink.controls().into_iter().filter(|(k, _)| ids.contains(k.as_str())).collect::<BTreeMap<_, _>>();
         show
     }
@@ -757,6 +815,7 @@ pub mod tests {
         pub patches: Mutex<Vec<Arc<ResolvedPatch>>>,
         pub configured: Mutex<Vec<u32>>,
         pub plan: Mutex<Arc<GraphPlan>>,
+        pub draft_plan: Mutex<Option<Arc<GraphPlan>>>,
         pub controls: Mutex<HashMap<String, f32>>,
     }
 
@@ -766,6 +825,9 @@ pub mod tests {
         }
         fn graph_compiled(&self, plan: Arc<GraphPlan>) {
             *self.plan.lock().unwrap() = plan;
+        }
+        fn draft_compiled(&self, plan: Option<Arc<GraphPlan>>) {
+            *self.draft_plan.lock().unwrap() = plan;
         }
         fn controls(&self) -> HashMap<String, f32> {
             self.controls.lock().unwrap().clone()

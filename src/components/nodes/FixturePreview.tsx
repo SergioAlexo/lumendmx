@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Group, PatchedFixture } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 import { useAllFixtures } from "../../store/useFixtureLibraryStore";
+import { useEditedGraph } from "../../store/useEditedGraph";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
 import { useUniverseChannelsStore } from "../../store/useUniverseChannelsStore";
 import { channelValues, findMode, strobeHz, strobeStyle, swatchColor } from "../fixtures/fixtureLook";
@@ -30,8 +31,8 @@ function useCollapsed(): [boolean, (collapsed: boolean) => void] {
 }
 
 /** One fixture: a square showing the colour it is putting out right now. */
-function Cell({ fixture, library }: { fixture: PatchedFixture; library: FixtureDefinition[] }) {
-  const frame = useUniverseChannelsStore((s) => s.channels[fixture.universe]);
+function Cell({ fixture, library, draft }: { fixture: PatchedFixture; library: FixtureDefinition[]; draft: boolean }) {
+  const frame = useUniverseChannelsStore((s) => (draft ? s.draft : s.channels)[fixture.universe]);
   const { mode } = findMode(library, fixture);
   const title = `#${fixture.fixtureNumber} ${fixture.name}`;
   if (!mode) {
@@ -80,6 +81,7 @@ export function FixturePreview() {
   const library = useAllFixtures();
   const groups = useShowStore((s) => s.show?.groups ?? EMPTY_GROUPS);
   const [collapsed, setCollapsed] = useCollapsed();
+  const draft = useEditedGraph().view === "draft";
   const fixtures = useMemo(() => [...(patch ?? [])].sort((a, b) => a.fixtureNumber - b.fixtureNumber), [patch]);
   const parts = useMemo(() => sections(fixtures, groups), [fixtures, groups]);
 
@@ -101,6 +103,7 @@ export function FixturePreview() {
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-xs font-medium">
         <span>
           Fixtures <span className="text-muted-foreground">({fixtures.length})</span>
+          {draft && <span className="ml-1.5 rounded bg-amber-500 px-1 text-[10px] text-black">draft preview</span>}
         </span>
         <button className="text-muted-foreground hover:text-foreground" onClick={() => setCollapsed(true)} title="Hide the fixture preview">
           <ChevronRight className="h-4 w-4" />
@@ -118,7 +121,7 @@ export function FixturePreview() {
             )}
             <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(36px, 1fr))" }}>
               {part.fixtures.map((f) => (
-                <Cell key={f.fixtureNumber} fixture={f} library={library} />
+                <Cell key={f.fixtureNumber} fixture={f} library={library} draft={draft} />
               ))}
             </div>
           </section>

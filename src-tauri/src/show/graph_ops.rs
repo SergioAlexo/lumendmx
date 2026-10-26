@@ -85,7 +85,7 @@ fn apply_params(node: &mut Node, changes: ParamChanges) {
 impl ShowService {
     pub fn add_node(&self, kind: NodeKind, position: NodePosition, params: ParamChanges) -> Result<Node, String> {
         self.edit("Add node", |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             let mut node = Node { id: graph.next_id(), kind, position, params: BTreeMap::new(), frame: None };
             apply_params(&mut node, params);
             let id = node.id.clone();
@@ -101,7 +101,7 @@ impl ShowService {
     pub fn remove_nodes(&self, ids: &[String]) -> Result<(), String> {
         let label = if ids.len() == 1 { "Delete node".to_string() } else { format!("Delete {} nodes", ids.len()) };
         self.edit(&label, |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             if let Some(missing) = ids.iter().find(|id| graph.node(id).is_none()) {
                 return Err(format!("No node {missing}"));
             }
@@ -117,7 +117,7 @@ impl ShowService {
     /// that input before.
     pub fn connect(&self, edge: Edge) -> Result<(), String> {
         self.edit("Connect", |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             let from = graph.node(&edge.from_node).ok_or_else(|| format!("No node {}", edge.from_node))?;
             let to = graph.node(&edge.to_node).ok_or_else(|| format!("No node {}", edge.to_node))?;
             let (_, outputs) = node_sockets(from.kind, &from.params);
@@ -145,7 +145,7 @@ impl ShowService {
 
     pub fn disconnect(&self, to_node: &str, to_socket: &str) -> Result<(), String> {
         self.edit("Disconnect", |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             let before = graph.edges.len();
             graph.edges.retain(|e| !(e.to_node == to_node && e.to_socket == to_socket));
             if graph.edges.len() == before {
@@ -158,7 +158,7 @@ impl ShowService {
 
     pub fn set_params(&self, id: &str, changes: ParamChanges) -> Result<Node, String> {
         self.edit("Edit node", |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             let node = graph.node_mut(id).ok_or_else(|| format!("No node {id}"))?;
             let resized = node.kind == NodeKind::Frame && (changes.contains_key("width") || changes.contains_key("height"));
             apply_params(node, changes);
@@ -174,7 +174,7 @@ impl ShowService {
 
     pub fn move_nodes(&self, moves: &[NodeMove]) -> Result<(), String> {
         self.edit("Move nodes", |inner| {
-            let graph = &mut inner.show.graph;
+            let graph = inner.graph_mut();
             for m in moves {
                 let node = graph.node_mut(&m.id).ok_or_else(|| format!("No node {}", m.id))?;
                 node.position = m.position;
@@ -203,7 +203,33 @@ impl ShowService {
             graph.sanitize_frames();
             tidy_any_inputs(&mut graph);
             prune_edges(&mut graph);
-            inner.show.graph = graph;
+            *inner.graph_mut() = graph;
+            Ok(())
+        })
+    }
+
+    /// Starts a draft: a copy of the live graph that edits go to until it is
+    /// pushed live or discarded. Does nothing if there is one already.
+    pub fn start_draft(&self) -> Result<(), String> {
+        if self.has_draft() {
+            return Ok(());
+        }
+        self.edit("Start draft", |inner| {
+            inner.show.draft = Some(inner.show.graph.clone());
+            Ok(())
+        })
+    }
+
+    pub fn discard_draft(&self) -> Result<(), String> {
+        self.edit("Discard draft", |inner| {
+            inner.show.draft.take().map(|_| ()).ok_or_else(|| "There is no draft".to_string())
+        })
+    }
+
+    /// Makes the draft the live graph; the fixtures follow it from here.
+    pub fn push_draft(&self) -> Result<(), String> {
+        self.edit("Push draft live", |inner| {
+            inner.show.graph = inner.show.draft.take().ok_or_else(|| "There is no draft".to_string())?;
             Ok(())
         })
     }
@@ -211,7 +237,7 @@ impl ShowService {
     /// A playback-bar Fader or Button value. Live, so not an undoable edit.
     pub fn set_control(&self, id: &str, value: f32) -> Result<(), String> {
         let inner = self.inner.lock().unwrap();
-        let node = inner.show.graph.node(id).ok_or_else(|| format!("No node {id}"))?;
+        let node = inner.show.graph.node(id).or_else(|| inner.show.draft.as_ref()?.node(id)).ok_or_else(|| format!("No node {id}"))?;
         if !matches!(node.kind, NodeKind::Fader | NodeKind::Button) {
             return Err(format!("{id} isn't a Fader or Button"));
         }
@@ -379,5 +405,45 @@ mod tests {
         assert_eq!((parent(&service, &inner), parent(&service, &n)), (Some(outer.clone()), Some(inner.clone())));
         service.remove_nodes(std::slice::from_ref(&inner)).unwrap();
         assert_eq!(parent(&service, &n), Some(outer));
+    }
+
+    #[test]
+    fn a_draft_takes_the_edits_until_it_is_pushed_live() {
+        let (service, sink) = service();
+        let live = add(&service, NodeKind::Output);
+        service.start_draft().unwrap();
+        let drafted = add(&service, NodeKind::Number);
+        // The live graph (and what the fixtures run) is untouched.
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.graph.nodes.len(), 1);
+        assert_eq!(snapshot.draft.as_ref().unwrap().nodes.len(), 2);
+        assert!(sink.draft_plan.lock().unwrap().is_some());
+        assert_eq!(sink.plan.lock().unwrap().outputs.len(), 1);
+
+        service.push_draft().unwrap();
+        let snapshot = service.snapshot();
+        assert!(snapshot.draft.is_none());
+        assert_eq!(snapshot.graph.nodes.iter().map(|n| n.node.id.clone()).collect::<Vec<_>>(), vec![live.clone(), drafted]);
+        assert!(sink.draft_plan.lock().unwrap().is_none());
+
+        // Undo brings the draft back, as it was before the push.
+        service.undo().unwrap();
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.graph.nodes.len(), 1);
+        assert_eq!(snapshot.draft.as_ref().unwrap().nodes.len(), 2);
+    }
+
+    #[test]
+    fn discarding_a_draft_leaves_the_live_graph_and_controls_work_in_both() {
+        let (service, _) = service();
+        let live = add(&service, NodeKind::Button);
+        service.start_draft().unwrap();
+        let drafted = add(&service, NodeKind::Button);
+        service.set_control(&live, 1.0).unwrap();
+        service.set_control(&drafted, 1.0).unwrap();
+        service.discard_draft().unwrap();
+        assert_eq!(service.snapshot().graph.nodes.len(), 1);
+        assert!(service.snapshot().draft.is_none());
+        assert!(service.discard_draft().is_err());
     }
 }

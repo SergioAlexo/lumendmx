@@ -55,6 +55,20 @@ export function moveNodes(moves: NodeMove[]): Promise<void> {
   return invoke("graph_move_nodes", { moves });
 }
 
+/** Starts a draft: a copy of the live graph that edits go to, not played until pushed. */
+export function startDraft(): Promise<void> {
+  return invoke("graph_start_draft");
+}
+
+export function discardDraft(): Promise<void> {
+  return invoke("graph_discard_draft");
+}
+
+/** Makes the draft the live graph. */
+export function pushDraft(): Promise<void> {
+  return invoke("graph_push_draft");
+}
+
 /** A playback-bar Fader/Button value, 0-1. Live, not an undoable edit. */
 export function setControl(id: string, value: number): Promise<void> {
   return invoke("graph_set_control", { id, value });
@@ -68,6 +82,11 @@ export function controls(): Promise<Record<string, number>> {
 /** Each node's live output values (~20Hz), by node id; each value is [x, y, z]. */
 export function onGraphValues(cb: (values: Record<string, number[][]>) => void) {
   return listen<Record<string, number[][]>>("graph://values", (event) => cb(event.payload));
+}
+
+/** The same for the draft graph, while there is one. */
+export function onDraftValues(cb: (values: Record<string, number[][]>) => void) {
+  return listen<Record<string, number[][]>>("graph://draft-values", (event) => cb(event.payload));
 }
 
 /** Mirrors `SocketType::feeds` in src-tauri/src/graph/registry.rs. */

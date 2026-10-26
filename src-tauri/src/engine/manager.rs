@@ -54,6 +54,11 @@ struct TickShared {
     controls: Arc<Mutex<HashMap<String, f32>>>,
     plan: Arc<Mutex<Arc<GraphPlan>>>,
     runtime: Arc<Mutex<GraphRuntime>>,
+    /// The draft graph, run beside the live one for the editor's preview.
+    /// Its output layers and merge state are its own and never reach the fixtures.
+    draft_plan: Arc<Mutex<Option<Arc<GraphPlan>>>>,
+    draft_runtime: Arc<Mutex<GraphRuntime>>,
+    draft_state: Arc<Mutex<EngineState>>,
     /// The show's beat offset: the graph sees the beat this far ahead.
     beat_offset_ms: Arc<Mutex<f32>>,
 }
@@ -106,10 +111,19 @@ impl TickShared {
         let mut runtime = self.runtime.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         runtime.run(&plan, &inputs, &mut state.layers);
+        if let Some(draft) = self.draft_plan.lock().unwrap().clone() {
+            let mut runtime = self.draft_runtime.lock().unwrap();
+            let mut state = self.draft_state.lock().unwrap();
+            runtime.run(&draft, &inputs, &mut state.layers);
+        }
     }
 
     fn graph_values(&self) -> GraphValues {
         self.runtime.lock().unwrap().preview().iter().map(|(id, v)| (id.to_string(), v.clone())).collect()
+    }
+
+    fn draft_values(&self) -> GraphValues {
+        self.draft_runtime.lock().unwrap().preview().iter().map(|(id, v)| (id.to_string(), v.clone())).collect()
     }
 }
 
@@ -150,6 +164,9 @@ impl EngineManager {
                 controls: Arc::new(Mutex::new(HashMap::new())),
                 plan: Arc::new(Mutex::new(Arc::new(GraphPlan::default()))),
                 runtime: Arc::new(Mutex::new(GraphRuntime::default())),
+                draft_plan: Arc::new(Mutex::new(None)),
+                draft_runtime: Arc::new(Mutex::new(GraphRuntime::default())),
+                draft_state: Arc::new(Mutex::new(EngineState::new())),
                 beat_offset_ms: Arc::new(Mutex::new(0.0)),
             },
             tick_started: AtomicBool::new(false),
@@ -187,6 +204,7 @@ impl EngineManager {
 
         let shared = self.shared.clone();
         let state = self.shared.state.clone();
+        let draft_state = self.shared.draft_state.clone();
         let blackout = self.blackout.clone();
 
         thread::spawn(move || {
@@ -223,6 +241,15 @@ impl EngineManager {
                 }
                 if show_display {
                     let _ = app.emit("graph://values", shared.graph_values());
+                    // The draft, if there is one: what it would output, for the preview only.
+                    if shared.draft_plan.lock().unwrap().is_some() {
+                        let _ = app.emit("graph://draft-values", shared.draft_values());
+                        for universe_id in output.universe_ids() {
+                            let frame = merge_universe(&draft_state.lock().unwrap(), universe_id);
+                            let channels = if blackout.load(Ordering::Relaxed) { vec![0; UNIVERSE_SIZE] } else { frame.to_vec() };
+                            let _ = app.emit("engine://draft-frame", EngineFrame { universe_id, channels });
+                        }
+                    }
                     last_display = now;
                 }
 
@@ -241,6 +268,22 @@ impl EngineManager {
         state.htp_channels = patch.htp.clone();
         let defaults = Layer { values: patch.defaults.clone(), ..Layer::default() };
         state.layers.insert(DEFAULTS_LAYER.to_string(), (DEFAULTS_PRIORITY, defaults));
+        drop(state);
+        let mut draft = self.shared.draft_state.lock().unwrap();
+        draft.htp_channels = patch.htp.clone();
+        let defaults = Layer { values: patch.defaults.clone(), ..Layer::default() };
+        draft.layers.insert(DEFAULTS_LAYER.to_string(), (DEFAULTS_PRIORITY, defaults));
+    }
+
+    /// Swaps in the draft graph to preview (or none). It runs from the next
+    /// tick into its own layers; a fresh draft starts from a clean runtime.
+    pub fn set_draft(&self, plan: Option<Arc<GraphPlan>>) {
+        let mut slot = self.shared.draft_plan.lock().unwrap();
+        if plan.is_none() && slot.is_some() {
+            *self.shared.draft_runtime.lock().unwrap() = GraphRuntime::default();
+            self.shared.draft_state.lock().unwrap().layers.retain(|k, _| k == DEFAULTS_LAYER);
+        }
+        *slot = plan;
     }
 
     /// Swaps in a newly compiled graph; it runs from the next tick.
@@ -258,7 +301,9 @@ impl EngineManager {
     }
 
     pub fn set_grand_master(&self, percent: f32) {
-        self.shared.state.lock().unwrap().grand_master = percent.clamp(0.0, 100.0) / 100.0;
+        let master = percent.clamp(0.0, 100.0) / 100.0;
+        self.shared.state.lock().unwrap().grand_master = master;
+        self.shared.draft_state.lock().unwrap().grand_master = master;
     }
 
     pub fn grand_master(&self) -> f32 {
@@ -407,5 +452,34 @@ mod tests {
         assert!(engine.get_universe_data(1).iter().all(|&v| v == 0));
         engine.blackout_flag().store(false, Ordering::Relaxed);
         assert_eq!(engine.get_universe_data(1)[0], 128);
+    }
+
+    #[test]
+    fn a_draft_previews_in_its_own_frame_and_never_touches_the_fixtures() {
+        let engine = EngineManager::new();
+        let patch = resolve(&[par()], &library());
+        engine.set_patch(&patch);
+        let level = |v: f64| {
+            let graph = Graph {
+                nodes: vec![
+                    node("n", NodeKind::Number, &[("value", ParamValue::Number(v))]),
+                    node("out", NodeKind::Output, &[("fixtures", ParamValue::Text("1".into()))]),
+                ],
+                edges: vec![edge("n", "value", "out", "intensity")],
+            };
+            Arc::new(compile(&graph, &patch, &[]).0)
+        };
+        engine.set_graph(level(0.5));
+        engine.set_draft(Some(level(1.0)));
+        engine.step(10.0);
+        let draft_frame = merge_universe(&engine.shared.draft_state.lock().unwrap(), 1);
+        assert_eq!(engine.get_universe_data(1)[0], 128); // the fixtures follow the live graph
+        assert_eq!(draft_frame[0], 255); // the preview follows the draft
+        assert_eq!(engine.shared.draft_values()["n"][0][0], 1.0);
+
+        // Dropping the draft clears its preview.
+        engine.set_draft(None);
+        assert!(engine.shared.draft_state.lock().unwrap().layers.keys().all(|k| k == DEFAULTS_LAYER));
+        assert!(engine.shared.draft_values().is_empty());
     }
 }

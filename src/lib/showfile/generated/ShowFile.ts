@@ -15,6 +15,10 @@ createdAt: string, modifiedAt: string, universes: Array<UniverseConfig>, patch: 
  */
 graph: Graph, 
 /**
+ * A copy of the graph being edited without playing it, until pushed live.
+ */
+draft: Graph | null, 
+/**
  * Playback-bar Fader/Button values by node id, as last left.
  */
 controls: { [key: string]: number }, 

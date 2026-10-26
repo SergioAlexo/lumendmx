@@ -98,6 +98,9 @@ pub struct ShowFile {
     /// What the show plays.
     #[serde(default)]
     pub graph: Graph,
+    /// A copy of the graph being edited without playing it, until pushed live.
+    #[serde(default)]
+    pub draft: Option<Graph>,
     /// Playback-bar Fader/Button values by node id, as last left.
     #[serde(default)]
     pub controls: BTreeMap<String, f32>,
@@ -123,6 +126,7 @@ impl ShowFile {
             settings: ShowSettings::default(),
             groups: Vec::new(),
             graph: Graph::default(),
+            draft: None,
             controls: BTreeMap::new(),
             bpm: crate::engine::tempo::DEFAULT_BPM,
         }

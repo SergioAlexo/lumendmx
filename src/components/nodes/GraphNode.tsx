@@ -7,6 +7,7 @@ import { CATEGORY_COLORS, SOCKET_COLORS } from "../../lib/graph";
 import type { Group, NodeTypeInfo, NodeView, ParamValue, SocketInfo } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 import { useGraphStore } from "../../store/useGraphStore";
+import { useEditedGraph } from "../../store/useEditedGraph";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
 import { ColorField, CurveEditor, ParamControl, ScrubNumber } from "./controls";
 import type { CurveMode } from "../../lib/curve";
@@ -120,15 +121,16 @@ function MidiLearn({ nodeId, isFader }: { nodeId: string; isFader: boolean }) {
 
 function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
   const { view, info, connected, enabledBy, framed } = data;
-  const values = useGraphStore((s) => s.values[view.id]);
-  const enabledLive = useGraphStore((s) => (enabledBy ? s.values[enabledBy.node]?.[enabledBy.socket]?.[0] : undefined));
+  const values = useGraphStore((s) => (s.view === "draft" ? s.draftValues : s.values)[view.id]);
+  const enabledLive = useGraphStore((s) => (enabledBy ? (s.view === "draft" ? s.draftValues : s.values)[enabledBy.node]?.[enabledBy.socket]?.[0] : undefined));
   const enabledSocket = view.inputs.find((s) => s.id === ENABLED);
   const enabledParam = Number(view.params[ENABLED] ?? enabledSocket?.default ?? 1) > 0.5;
   const enabled = enabledBy ? (enabledLive ?? 1) > 0.5 : enabledParam;
   const groups: Group[] = useShowStore((s) => s.show?.groups ?? EMPTY_GROUPS);
   const run = useShowStore((s) => s.run);
   // Only the nodes that draw the chase need the graph around them.
-  const graph = useShowStore((s) => (view.kind === "lfo" || view.kind === "fan" ? s.show?.graph : undefined));
+  const edited = useEditedGraph().graph;
+  const graph = view.kind === "lfo" || view.kind === "fan" ? edited : undefined;
   const setParam = (id: string, value: ParamValue) => void run(() => graphApi.setParams(view.id, { [id]: value }));
   const color = CATEGORY_COLORS[info?.category ?? ""] ?? "#555";
   const label = view.kind === "fader" || view.kind === "button" ? String(view.params.label ?? info?.label) : info?.label;

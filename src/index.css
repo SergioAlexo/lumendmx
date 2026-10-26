@@ -60,6 +60,11 @@
   }
 }
 
+/* The playing graph while a draft is open: look, don't touch (edits would land in the draft). */
+.node-readonly .react-flow__node * {
+  pointer-events: none !important;
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;

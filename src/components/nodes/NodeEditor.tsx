@@ -15,12 +15,14 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Bookmark, Plus } from "lucide-react";
+import { Bookmark, Plus, Undo2, Upload } from "lucide-react";
 import * as graphApi from "../../lib/graph";
 import { CATEGORY_COLORS, SOCKET_COLORS, feeds } from "../../lib/graph";
 import type { NodeKind, NodePreset, NodeTypeInfo, NodeView, SocketType } from "../../lib/showfile/generated";
+import { useEditedGraph } from "../../store/useEditedGraph";
 import { useGraphStore } from "../../store/useGraphStore";
 import { useShowStore } from "../../store/useShowStore";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { FixturePreview } from "./FixturePreview";
@@ -111,7 +113,8 @@ function toFlowNode(
 }
 
 function Editor() {
-  const graph = useShowStore((s) => s.show?.graph);
+  const { graph, view: graphView, readOnly, hasDraft } = useEditedGraph();
+  const setGraphView = useGraphStore((s) => s.setView);
   const run = useShowStore((s) => s.run);
   const types = useGraphStore((s) => s.nodeTypes);
   const byKind = useGraphStore((s) => s.byKind);
@@ -127,6 +130,19 @@ function Editor() {
   /** While a frame is dragged: the nodes inside it and where each started,
    * and where the frame started. */
   const carried = useRef<{ frames: Map<string, { x: number; y: number }>; nodes: Map<string, { x: number; y: number; frame: string }> } | null>(null);
+
+  // The draft is gone (pushed, discarded, undone): back to the playing graph.
+  const hadDraft = useRef(false);
+  useEffect(() => {
+    if (hadDraft.current && !hasDraft) setGraphView("live");
+    hadDraft.current = hasDraft;
+  }, [hasDraft, setGraphView]);
+
+  /** Switches to the draft, starting one from the playing graph if there is none. */
+  const showDraft = async () => {
+    if (!hasDraft && !(await run(async () => (await graphApi.startDraft(), true)))) return;
+    setGraphView("draft");
+  };
 
   useEffect(() => {
     void graphApi.nodePresets().then(setPresets).catch(() => undefined);
@@ -426,7 +442,7 @@ function Editor() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isEditable(e.target) || menu) return;
+      if (isEditable(e.target) || menu || readOnly) return;
       if ((e.shiftKey && e.key.toLowerCase() === "a") || e.key === "Tab") {
         e.preventDefault();
         openMenu(pointer.current);
@@ -453,7 +469,7 @@ function Editor() {
 
   return (
     <div
-      className="relative h-full w-full"
+      className={cn("relative h-full w-full", readOnly && "node-readonly", graphView === "draft" && "ring-2 ring-inset ring-amber-400/60")}
       onMouseMove={(e) => {
         pointer.current = { x: e.clientX, y: e.clientY };
       }}
@@ -479,7 +495,6 @@ function Editor() {
             if (!ids.includes(e.source) && !ids.includes(e.target)) void run(() => graphApi.disconnect(real.toNode, real.toSocket));
           }
         }}
-        edgesReconnectable
         onReconnect={(old, next) => {
           // Connect first: unplugging can drop an Any node's spare input,
           // which may be the one being dropped onto.
@@ -494,9 +509,13 @@ function Editor() {
         }}
         onPaneContextMenu={(e) => {
           e.preventDefault();
+          if (readOnly) return;
           openMenu({ x: e.clientX, y: e.clientY });
         }}
-        deleteKeyCode={["Backspace", "Delete"]}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        edgesReconnectable={!readOnly}
+        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
         multiSelectionKeyCode={["Meta", "Control", "Shift"]}
         // Trackpad-friendly, like Figma: drag on empty canvas draws a
         // selection box, two-finger scroll pans, pinch (or Ctrl+wheel) zooms.
@@ -519,12 +538,45 @@ function Editor() {
         />
       </ReactFlow>
 
-      <div className="absolute left-3 top-3 flex items-center gap-2">
-        <Button size="sm" variant="secondary" onClick={() => openMenu({ x: pointer.current.x, y: pointer.current.y })}>
-          <Plus />
-          Add node
-        </Button>
-        {presetName === null ? (
+      <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+        <div className="flex rounded-md border border-border bg-card p-0.5" title="Edit a draft of the graph without changing what plays, then push it live">
+          {(["live", "draft"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => (v === "draft" ? void showDraft() : setGraphView("live"))}
+              className={cn(
+                "rounded px-3 py-1 text-xs font-medium capitalize",
+                graphView === v ? (v === "draft" ? "bg-amber-500 text-black" : "bg-primary text-primary-foreground") : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {v}
+              {v === "draft" && hasDraft && graphView !== "draft" && " •"}
+            </button>
+          ))}
+        </div>
+        {graphView === "draft" && (
+          <>
+            <Button size="sm" onClick={() => void run(() => graphApi.pushDraft())} title="Make the draft the playing graph">
+              <Upload />
+              Push to live
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void run(() => graphApi.discardDraft())} title="Throw the draft away; the playing graph stays as it is">
+              <Undo2 />
+              Discard
+            </Button>
+          </>
+        )}
+        {readOnly && <span className="rounded-md bg-card px-2 py-1 text-xs text-muted-foreground">A draft is open: the playing graph is read-only</span>}
+      </div>
+
+      <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
+        {!readOnly && (
+          <Button size="sm" variant="secondary" onClick={() => openMenu({ x: pointer.current.x, y: pointer.current.y })}>
+            <Plus />
+            Add node
+          </Button>
+        )}
+        {readOnly ? null : presetName === null ? (
           selectedIds.length > 0 && (
             <Button
               size="sm"
