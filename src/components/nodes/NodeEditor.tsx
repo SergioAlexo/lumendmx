@@ -23,6 +23,7 @@ import { useGraphStore } from "../../store/useGraphStore";
 import { useShowStore } from "../../store/useShowStore";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { FixturePreview } from "./FixturePreview";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { FRAME_MIN, FrameNode } from "./FrameNode";
 import { GraphNode, type GraphFlowNode, type GraphNodeData } from "./GraphNode";
@@ -637,8 +638,13 @@ function Editor() {
 /** The Nodes tab: the show's node graph. */
 export function NodeEditor() {
   return (
-    <ReactFlowProvider>
-      <Editor />
-    </ReactFlowProvider>
+    <div className="flex h-full w-full">
+      <div className="h-full min-w-0 flex-1">
+        <ReactFlowProvider>
+          <Editor />
+        </ReactFlowProvider>
+      </div>
+      <FixturePreview />
+    </div>
   );
 }

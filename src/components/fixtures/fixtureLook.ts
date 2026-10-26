@@ -85,3 +85,8 @@ export function strobeHz(mode: FixtureMode, values: Record<number, number>): num
   const hz = range && range.unit === "hz" ? range.min + (range.max - range.min) * t : 1 + 19 * t;
   return Math.min(MAX_STROBE_HZ, Math.max(0.5, hz));
 }
+
+/** Inline style that flashes a swatch at `hz` (see `strobe-flash` in index.css). */
+export function strobeStyle(hz: number): { animation: string } | undefined {
+  return hz > 0 ? { animation: `strobe-flash ${1 / hz}s step-end infinite` } : undefined;
+}
