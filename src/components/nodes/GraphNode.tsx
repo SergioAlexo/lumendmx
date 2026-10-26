@@ -306,7 +306,13 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
                 ) : (view.kind === "lfo" || view.kind === "shape") && p.id === "rate" && String(view.params.unit ?? "beats") === "beats" ? (
                   <BeatRateField key={p.id} rate={Number(view.params.rate ?? p.default)} onCommit={(v) => setParam(p.id, v)} />
                 ) : view.kind === "gradient" && p.id === "stops" ? (
-                  <GradientEditor key={p.id} value={String(view.params.stops ?? p.default)} wrap={view.params.wrap !== false} onCommit={(v) => setParam(p.id, v)} />
+                  <GradientEditor
+                    key={p.id}
+                    value={String(view.params.stops ?? p.default)}
+                    wrap={view.params.wrap !== false}
+                    position={values?.[1]?.[0]}
+                    onCommit={(v) => setParam(p.id, v)}
+                  />
                 ) : (
                   <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
                 ),

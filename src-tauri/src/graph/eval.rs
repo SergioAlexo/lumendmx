@@ -61,7 +61,9 @@ pub struct GraphRuntime {
     scratch: Vec<Outs>,
     state: HashMap<(Arc<str>, u64), NodeState>,
     /// Each node's outputs this tick (for varying nodes, at the first
-    /// target that evaluated them), for the editor's live previews.
+    /// target that evaluated them), for the editor's live previews. A
+    /// Gradient has just its colour and, as a hidden second entry, where on
+    /// the gradient it is picking (0-1).
     preview: HashMap<Arc<str>, Vec<Val>>,
 }
 
@@ -204,7 +206,12 @@ impl GraphRuntime {
             (NodeKind::Rgb, _) => out[0] = [num(0), num(1), num(2)],
             (NodeKind::Hsv, _) => out[0] = hsv_to_rgb(num(0), num(1), num(2)),
             (NodeKind::MixColor, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
-            (NodeKind::Gradient, Config::Gradient { stops, wrap }) => out[0] = super::gradient::color_at(stops, *wrap, num(0)),
+            (NodeKind::Gradient, Config::Gradient { stops, wrap }) => {
+                let t = if *wrap { num(0).rem_euclid(1.0) } else { num(0).clamp(0.0, 1.0) };
+                out[0] = super::gradient::color_at(stops, *wrap, t);
+                // Not a socket: where on the gradient this is, for the editor's marker.
+                out[1][0] = t;
+            }
             (NodeKind::Shape, Config::Shape { shape, rate }) => {
                 let cycles = rate_cycles(*rate, inputs) + num(0) as f64;
                 let (dx, dy) = shape_value(*shape, cycles.rem_euclid(1.0));
@@ -309,7 +316,8 @@ impl GraphRuntime {
 
     fn record_preview(&mut self, plan: &GraphPlan, idx: usize, outs: &Outs) {
         let id = plan.nodes[idx].id.clone();
-        self.preview.entry(id).or_insert_with(|| outs.to_vec());
+        let kind = plan.nodes[idx].kind;
+        self.preview.entry(id).or_insert_with(|| if kind == NodeKind::Gradient { outs[..2].to_vec() } else { outs.to_vec() });
     }
 
     /// Evaluates the graph and rewrites every Output node's layer.
@@ -601,6 +609,25 @@ mod tests {
         let broken = Graph { nodes: vec![node("expr", NodeKind::Expression, &[("formula", ParamValue::Text("1 +".into()))])], edges: vec![] };
         let (_, issues) = crate::graph::compile::compile(&broken, &Default::default(), &[]);
         assert!(issues.iter().any(|i| i.node == "expr" && i.message.contains("ends too soon")), "{issues:?}");
+    }
+
+    #[test]
+    fn a_gradient_reports_where_on_it_it_is_picking() {
+        let graph = Graph {
+            nodes: vec![
+                node("index", NodeKind::FixtureIndex, &[]),
+                node("grad", NodeKind::Gradient, &[("stops", ParamValue::Text("#ff0000, #0000ff".into())), ("wrap", ParamValue::Bool(false))]),
+                node("fixed", NodeKind::Gradient, &[("t", ParamValue::Number(1.5)), ("wrap", ParamValue::Bool(false))]),
+                output("out"),
+            ],
+            edges: vec![edge("index", "position", "grad", "t"), edge("grad", "color", "out", "color"), edge("fixed", "color", "out", "intensity")],
+        };
+        let mut rig = Rig::new(&graph, 4);
+        rig.at(0.0);
+        // Fixture 1's position, beside the colour; uniform or varying alike.
+        assert_eq!(rig.runtime.preview()["grad"].len(), 2);
+        assert_eq!(rig.runtime.preview()["grad"][1][0], 0.0);
+        assert_eq!(rig.runtime.preview()["fixed"][1][0], 1.0); // clamped, as it is picked
     }
 
     #[test]

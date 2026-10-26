@@ -296,7 +296,18 @@ export function ParamControl({
 /** A Gradient's colours, as in any paint program: the gradient with a handle
  * for every stop. Drag a handle along it, click the bar to add a stop there,
  * pick the selected stop's colour below. A drag commits once, on release. */
-export function GradientEditor({ value, wrap, onCommit }: { value: string; wrap: boolean; onCommit: (value: string) => void }) {
+export function GradientEditor({
+  value,
+  wrap,
+  position,
+  onCommit,
+}: {
+  value: string;
+  wrap: boolean;
+  /** Where on the gradient it is picking right now (0-1), for the line on the bar. */
+  position?: number;
+  onCommit: (value: string) => void;
+}) {
   const [draft, setDraft] = useState<Stop[] | null>(null);
   const [selected, setSelected] = useState(0);
   const bar = useRef<HTMLDivElement>(null);
@@ -322,7 +333,7 @@ export function GradientEditor({ value, wrap, onCommit }: { value: string; wrap:
     <div className="flex flex-col gap-1.5">
       <div
         ref={bar}
-        className="nodrag nowheel relative mb-3.5 h-6 cursor-copy rounded border border-black/40"
+        className="nodrag nowheel relative mb-3.5 mt-2 h-6 cursor-copy rounded border border-black/40"
         style={{ background: stopsCss(stops, wrap) }}
         title="Click to add a colour stop"
         onPointerDown={(e) => {
@@ -332,6 +343,13 @@ export function GradientEditor({ value, wrap, onCommit }: { value: string; wrap:
           commit([...stops, added], added);
         }}
       >
+        {/* Where it is picking now: a line through the bar with a point above it. */}
+        {position !== undefined && (
+          <div className="pointer-events-none absolute -top-2 bottom-0 w-0 -translate-x-1/2" style={{ left: `${Math.min(1, Math.max(0, position)) * 100}%` }}>
+            <div className="absolute left-1/2 top-0 h-0 w-0 -translate-x-1/2 border-x-[4px] border-t-[6px] border-x-transparent border-t-white drop-shadow" />
+            <div className="absolute bottom-0 left-1/2 top-1.5 w-px -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.55)]" />
+          </div>
+        )}
         {stops.map((s, i) => (
           <div
             key={i}
