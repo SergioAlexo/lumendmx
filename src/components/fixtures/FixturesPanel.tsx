@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Input, Select } from "../ui/input";
 import { AddFixturesDialog } from "./AddFixturesDialog";
 import { GroupsPanel } from "./GroupsPanel";
-import { channelValues, findMode, hasAttribute, swatchColor } from "./fixtureLook";
+import { channelValues, findMode, hasAttribute, strobeHz, swatchColor } from "./fixtureLook";
 
 type View = "patch" | "values" | "dmx";
 
@@ -425,6 +425,7 @@ function ValuesRow({
   const pan = valueOf("pan");
   const tilt = valueOf("tilt");
   const others = mode.channels.filter((c) => !MAIN_ATTRIBUTES.has(c.type));
+  const strobing = strobeHz(mode, values);
 
   return (
     <div
@@ -434,7 +435,11 @@ function ValuesRow({
         selected ? "bg-primary/15" : "hover:bg-accent/40",
       )}
     >
-      <span className="h-5 w-5 rounded border border-border" style={{ backgroundColor: swatchColor(mode, values) }} />
+      <span
+        className="h-5 w-5 rounded border border-border"
+        style={{ backgroundColor: swatchColor(mode, values), animation: strobing > 0 ? `strobe-flash ${1 / strobing}s step-end infinite` : undefined }}
+        title={strobing > 0 ? `Strobing at about ${strobing.toFixed(1)} Hz` : undefined}
+      />
       <span className="tabular-nums text-muted-foreground">#{fixture.fixtureNumber}</span>
       <span className="truncate">{fixture.name}</span>
       <div className="flex items-center gap-2" title="Intensity">

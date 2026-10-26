@@ -65,3 +65,23 @@ export function swatchColor(mode: FixtureMode, values: Record<number, number>): 
 export function hasAttribute(mode: FixtureMode | undefined, type: ChannelType): boolean {
   return mode?.channels.some((c) => c.type === type) ?? false;
 }
+
+/** Fastest flash rate drawn: past this a screen can't show it anyway. */
+const MAX_STROBE_HZ = 25;
+
+/** How fast the fixture is strobing right now, in flashes per second, or 0
+ * when it isn't. Follows the strobe channel's capabilities (a sub-range with a
+ * rate in Hz is interpolated); a plain strobe channel runs 1-20 Hz across 1-255. */
+export function strobeHz(mode: FixtureMode, values: Record<number, number>): number {
+  const channel = mode.channels.find((c) => c.type === "strobe");
+  const value = channel ? (values[channel.offset] ?? 0) : 0;
+  if (!channel || value <= 0) return 0;
+  const caps = channel.capabilities ?? [];
+  const cap = caps.find((c) => value >= c.dmxRange[0] && value <= c.dmxRange[1]);
+  if (caps.length > 0 && cap?.type !== "strobe") return 0;
+  const [lo, hi] = cap?.dmxRange ?? [1, 255];
+  const t = hi > lo ? (value - lo) / (hi - lo) : 1;
+  const range = cap?.physicalRange;
+  const hz = range && range.unit === "hz" ? range.min + (range.max - range.min) * t : 1 + 19 * t;
+  return Math.min(MAX_STROBE_HZ, Math.max(0.5, hz));
+}

@@ -50,6 +50,16 @@
   }
 }
 
+/* A strobing fixture's swatch in the Values view: on for half the period, near off for the rest. */
+@keyframes strobe-flash {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.08;
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;
