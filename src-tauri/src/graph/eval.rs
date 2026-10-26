@@ -3,15 +3,12 @@
 //! target's place in the list as context. Each Output node's values go
 //! through `write::write_item` into its own engine layer.
 //!
-//! Stateful nodes (Smooth, Envelope, Toggle, Counter, Random, Tap Tempo) keep their
+//! Stateful nodes (Smooth, Envelope, Toggle, Counter, Random) keep their
 //! state by node id and fixture, so it survives recompiles: editing one node
 //! doesn't reset a smoothing or a counter elsewhere.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
-
-use serde::Serialize;
-use ts_rs::TS;
 
 use super::compile::{CompareOp, Config, Conversion, GraphPlan, MathOp, Rate, Source, Val, Write};
 use super::registry::{NodeKind, MAX_OUTPUTS};
@@ -25,121 +22,6 @@ const LAYER_PREFIX: &str = "graph-out-";
 type Outs = [Val; MAX_OUTPUTS];
 const ZERO: Outs = [[0.0; 3]; MAX_OUTPUTS];
 
-/// How many recent messages the MIDI monitor keeps.
-const MIDI_LOG_LEN: usize = 64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub enum MidiEventKind {
-    Cc,
-    NoteOn,
-    NoteOff,
-    PitchBend,
-    ProgramChange,
-    Aftertouch,
-}
-
-/// A channel message, as the Setup MIDI monitor lists it.
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/lib/showfile/generated/")]
-pub struct MidiEvent {
-    /// Counts up from 1; pass the last one seen back to get only newer ones.
-    #[ts(type = "number")]
-    pub seq: u64,
-    /// The id of the port it came in on.
-    pub port: String,
-    pub kind: MidiEventKind,
-    /// 1-16.
-    pub channel: u8,
-    /// Controller or note number; 0 for pitch bend and channel aftertouch.
-    pub number: u8,
-    /// 0-127, or 0-16383 for pitch bend.
-    pub value: u16,
-}
-
-/// Latest value of every MIDI controller and note, per channel (0-15).
-#[derive(Debug, Clone)]
-pub struct MidiState {
-    pub cc: [[f32; 128]; 16],
-    /// Velocity of each held note, 0 when released.
-    pub notes: [[f32; 128]; 16],
-    /// The last controller or note-on received: (is_note, channel 1-16,
-    /// number), for MIDI learn.
-    pub last: Option<(bool, u8, u8)>,
-    /// Recent channel messages, oldest first.
-    pub log: VecDeque<MidiEvent>,
-    seq: u64,
-}
-
-impl Default for MidiState {
-    fn default() -> Self {
-        Self { cc: [[0.0; 128]; 16], notes: [[0.0; 128]; 16], last: None, log: VecDeque::new(), seq: 0 }
-    }
-}
-
-impl MidiState {
-    /// A message from the MIDI port `port` (its id).
-    pub fn feed(&mut self, port: &str, msg: &[u8]) {
-        self.record(port, msg);
-        let [status, number, value] = match msg {
-            [s, n, v, ..] => [*s, *n & 0x7f, *v & 0x7f],
-            _ => return,
-        };
-        let channel = (status & 0x0f) as usize;
-        match status & 0xf0 {
-            0xb0 => {
-                self.cc[channel][number as usize] = value as f32 / 127.0;
-                self.last = Some((false, channel as u8 + 1, number));
-            }
-            0x90 if value > 0 => {
-                self.notes[channel][number as usize] = value as f32 / 127.0;
-                self.last = Some((true, channel as u8 + 1, number));
-            }
-            0x80 | 0x90 => self.notes[channel][number as usize] = 0.0,
-            _ => {}
-        }
-    }
-
-    /// Logs channel messages; clock, timecode and other system messages
-    /// would drown them out.
-    fn record(&mut self, port: &str, msg: &[u8]) {
-        let (Some(&status), data) = (msg.first(), &msg[msg.len().min(1)..]) else { return };
-        let d = |i: usize| data.get(i).map_or(0, |b| b & 0x7f);
-        let (kind, number, value) = match status & 0xf0 {
-            0x80 => (MidiEventKind::NoteOff, d(0), d(1) as u16),
-            0x90 if d(1) == 0 => (MidiEventKind::NoteOff, d(0), 0),
-            0x90 => (MidiEventKind::NoteOn, d(0), d(1) as u16),
-            0xa0 => (MidiEventKind::Aftertouch, d(0), d(1) as u16),
-            0xb0 => (MidiEventKind::Cc, d(0), d(1) as u16),
-            0xc0 => (MidiEventKind::ProgramChange, d(0), 0),
-            0xd0 => (MidiEventKind::Aftertouch, 0, d(0) as u16),
-            0xe0 => (MidiEventKind::PitchBend, 0, d(0) as u16 | (d(1) as u16) << 7),
-            _ => return,
-        };
-        self.seq += 1;
-        if self.log.len() == MIDI_LOG_LEN {
-            self.log.pop_front();
-        }
-        self.log.push_back(MidiEvent { seq: self.seq, port: port.to_string(), kind, channel: (status & 0x0f) + 1, number, value });
-    }
-
-    /// Logged messages newer than `after`.
-    pub fn since(&self, after: u64) -> Vec<MidiEvent> {
-        self.log.iter().filter(|e| e.seq > after).cloned().collect()
-    }
-
-    /// `channel` 1-16, or 0 for whichever channel is highest.
-    fn read(table: &[[f32; 128]; 16], channel: u8, number: u8) -> f32 {
-        let n = number.min(127) as usize;
-        match channel {
-            1..=16 => table[channel as usize - 1][n],
-            _ => table.iter().map(|ch| ch[n]).fold(0.0, f32::max),
-        }
-    }
-}
-
 /// Everything outside the graph that nodes read, for one tick.
 pub struct Inputs<'a> {
     pub beats: f64,
@@ -148,7 +30,6 @@ pub struct Inputs<'a> {
     pub bpm: f32,
     pub dt_ms: f64,
     pub audio: BandLevels,
-    pub midi: &'a MidiState,
     /// Fader and Button values by node id.
     pub controls: &'a HashMap<String, f32>,
     pub timecode_seconds: f64,
@@ -182,8 +63,6 @@ pub struct GraphRuntime {
     /// Each node's outputs this tick (for varying nodes, at the first
     /// target that evaluated them), for the editor's live previews.
     preview: HashMap<Arc<str>, Vec<Val>>,
-    /// Tap Tempo taps since the engine last took them (`take_taps`).
-    taps: u32,
 }
 
 fn rate_cycles(rate: Rate, inputs: &Inputs) -> f64 {
@@ -216,11 +95,6 @@ fn bool_val(b: bool) -> Val {
 impl GraphRuntime {
     pub fn preview(&self) -> &HashMap<Arc<str>, Vec<Val>> {
         &self.preview
-    }
-
-    /// How many times a Tap Tempo node fired since the last call.
-    pub fn take_taps(&mut self) -> u32 {
-        std::mem::take(&mut self.taps)
     }
 
     /// The node's Enabled input (always its last) is on.
@@ -275,12 +149,6 @@ impl GraphRuntime {
                 for (i, level) in [a.low, a.mid, a.high, a.loudness].into_iter().enumerate() {
                     out[i][0] = (level * gain).clamp(0.0, 1.0);
                 }
-            }
-            (NodeKind::MidiCc, Config::Midi { channel, number }) => out[0][0] = MidiState::read(&inputs.midi.cc, *channel, *number),
-            (NodeKind::MidiNote, Config::Midi { channel, number }) => {
-                let velocity = MidiState::read(&inputs.midi.notes, *channel, *number);
-                out[0] = bool_val(velocity > 0.0);
-                out[1][0] = velocity;
             }
             (NodeKind::Fader | NodeKind::Button, _) => out[0][0] = inputs.controls.get(&*node.id).copied().unwrap_or(0.0),
             (NodeKind::Timecode, _) => {
@@ -356,7 +224,7 @@ impl GraphRuntime {
             }
             (NodeKind::Any, Config::Count(count)) => out[0] = bool_val((0..*count).any(|i| num(i) > 0.5)),
             (NodeKind::Mix, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
-            (NodeKind::Random | NodeKind::Smooth | NodeKind::Envelope | NodeKind::Toggle | NodeKind::Counter | NodeKind::TapTempo, _) => {
+            (NodeKind::Random | NodeKind::Smooth | NodeKind::Envelope | NodeKind::Toggle | NodeKind::Counter, _) => {
                 return self.stateful(plan, idx, ctx, inputs);
             }
             _ => {}
@@ -368,7 +236,6 @@ impl GraphRuntime {
         let node = &plan.nodes[idx];
         let a = self.read(plan, node.inputs.first().unwrap_or(&Source::Const([0.0; 3])))[0];
         let b = node.inputs.get(1).map_or(0.0, |s| self.read(plan, s)[0]);
-        let enabled = self.enabled(plan, idx);
         let tick = self.tick;
         let state = self.state.entry((node.id.clone(), ctx.key)).or_default();
         if state.tick == tick && state.started {
@@ -428,14 +295,6 @@ impl GraphRuntime {
                 m[1] = b;
                 out[0][0] = m[2];
                 out[1][0] = if *steps > 1 { m[2] / (*steps - 1) as f32 } else { 0.0 };
-            }
-            _ if node.kind == NodeKind::TapTempo => {
-                // m[0] last trigger. Not on the first tick: a pad already
-                // held when the node appears isn't a tap.
-                if !first && enabled && rising(m[0], a) {
-                    self.taps += 1;
-                }
-                m[0] = a;
             }
             _ => {
                 // Toggle: m[0] last trigger, m[1] state.
@@ -569,7 +428,6 @@ mod tests {
         plan: GraphPlan,
         runtime: GraphRuntime,
         layers: HashMap<String, (i64, Layer)>,
-        midi: MidiState,
         controls: HashMap<String, f32>,
         beats: f64,
     }
@@ -580,7 +438,7 @@ mod tests {
             let groups = vec![Group { id: 1, name: "All".into(), fixture_numbers: (1..=fixtures).collect() }];
             let (plan, issues) = compile(graph, &patch, &groups);
             assert!(issues.is_empty(), "{issues:?}");
-            Self { plan, runtime: GraphRuntime::default(), layers: HashMap::new(), midi: MidiState::default(), controls: HashMap::new(), beats: 0.0 }
+            Self { plan, runtime: GraphRuntime::default(), layers: HashMap::new(), controls: HashMap::new(), beats: 0.0 }
         }
 
         /// Advances to `beats` (at 120 BPM) and runs a tick.
@@ -593,7 +451,6 @@ mod tests {
                 bpm: 120.0,
                 dt_ms,
                 audio: BandLevels::default(),
-                midi: &self.midi,
                 controls: &self.controls,
                 timecode_seconds: 0.0,
                 timecode_running: false,
@@ -691,22 +548,16 @@ mod tests {
     }
 
     #[test]
-    fn faders_midi_and_envelopes_drive_outputs() {
+    fn faders_drive_outputs() {
         let graph = Graph {
-            nodes: vec![
-                node("fader", NodeKind::Fader, &[]),
-                node("cc", NodeKind::MidiCc, &[("controller", ParamValue::Number(7.0))]),
-                node("mul", NodeKind::Math, &[]),
-                output("out"),
-            ],
-            edges: vec![edge("fader", "value", "mul", "a"), edge("cc", "value", "mul", "b"), edge("mul", "value", "out", "intensity")],
+            nodes: vec![node("a", NodeKind::Fader, &[]), node("b", NodeKind::Fader, &[]), node("mul", NodeKind::Math, &[]), output("out")],
+            edges: vec![edge("a", "value", "mul", "a"), edge("b", "value", "mul", "b"), edge("mul", "value", "out", "intensity")],
         };
         let mut rig = Rig::new(&graph, 1);
-        rig.controls.insert("fader".into(), 0.5);
-        rig.midi.feed("test", &[0xb3, 7, 127]);
+        rig.controls.insert("a".into(), 0.5);
+        rig.controls.insert("b".into(), 1.0);
         rig.at(0.1);
         assert_eq!(rig.channel("out", 1).round(), 128.0);
-        assert_eq!(rig.midi.last, Some((false, 4, 7)));
     }
 
     #[test]
@@ -774,30 +625,11 @@ mod tests {
     }
 
     #[test]
-    fn the_midi_log_keeps_channel_messages_and_skips_clock() {
-        let mut midi = MidiState::default();
-        midi.feed("test", &[0xf8]); // clock
-        midi.feed("test", &[0xb1, 7, 100]);
-        midi.feed("test", &[0x92, 36, 0]); // note on at velocity 0 is a note off
-        midi.feed("test", &[0xe0, 0x00, 0x40]);
-        let kinds: Vec<_> = midi.since(0).iter().map(|e| (e.kind, e.channel, e.number, e.value)).collect();
-        assert_eq!(
-            kinds,
-            vec![(MidiEventKind::Cc, 2, 7, 100), (MidiEventKind::NoteOff, 3, 36, 0), (MidiEventKind::PitchBend, 1, 0, 8192)]
-        );
-        assert_eq!(midi.since(2).len(), 1);
-        for _ in 0..100 {
-            midi.feed("test", &[0xb0, 1, 1]);
-        }
-        assert_eq!(midi.log.len(), MIDI_LOG_LEN);
-    }
-
-    #[test]
     fn any_is_on_while_any_input_is() {
         let graph = Graph {
             nodes: vec![
                 node("button", NodeKind::Button, &[]),
-                node("pad", NodeKind::MidiNote, &[("note", ParamValue::Number(36.0))]),
+                node("pad", NodeKind::Button, &[]),
                 node("any", NodeKind::Any, &[("count", ParamValue::Number(3.0))]),
                 output("out"),
             ],
@@ -806,47 +638,16 @@ mod tests {
         let mut rig = Rig::new(&graph, 1);
         rig.at(0.1);
         assert_eq!(rig.channel("out", 1), 0.0);
-        rig.midi.feed("test", &[0x90, 36, 100]);
+        rig.controls.insert("pad".into(), 1.0);
         rig.at(0.2);
         assert_eq!(rig.channel("out", 1), 255.0, "pad held");
-        rig.midi.feed("test", &[0x80, 36, 0]);
+        rig.controls.insert("pad".into(), 0.0);
         rig.controls.insert("button".into(), 1.0);
         rig.at(0.3);
         assert_eq!(rig.channel("out", 1), 255.0, "button held");
         rig.controls.insert("button".into(), 0.0);
         rig.at(0.4);
         assert_eq!(rig.channel("out", 1), 0.0);
-    }
-
-    #[test]
-    fn tap_tempo_taps_once_per_press_without_an_output() {
-        let graph = Graph {
-            nodes: vec![node("pad", NodeKind::MidiNote, &[("note", ParamValue::Number(40.0))]), node("tap", NodeKind::TapTempo, &[])],
-            edges: vec![edge("pad", "gate", "tap", "tap")],
-        };
-        let mut rig = Rig::new(&graph, 1);
-        rig.at(0.1);
-        rig.midi.feed("test", &[0x90, 40, 100]);
-        rig.at(0.2);
-        rig.at(0.3); // still held: no new tap
-        assert_eq!(rig.runtime.take_taps(), 1);
-        rig.midi.feed("test", &[0x80, 40, 0]);
-        rig.at(0.4);
-        rig.midi.feed("test", &[0x90, 40, 100]);
-        rig.at(0.5);
-        assert_eq!(rig.runtime.take_taps(), 1);
-        assert_eq!(rig.runtime.take_taps(), 0, "taken");
-    }
-
-    #[test]
-    fn tap_tempo_fed_by_the_fixture_is_reported() {
-        let graph = Graph {
-            nodes: vec![node("idx", NodeKind::FixtureIndex, &[]), node("tap", NodeKind::TapTempo, &[])],
-            edges: vec![edge("idx", "position", "tap", "tap")],
-        };
-        let patch = resolve(&pars(1), &library());
-        let (_, issues) = compile(&graph, &patch, &[]);
-        assert!(issues.iter().any(|i| i.node == "tap"), "{issues:?}");
     }
 
     #[test]

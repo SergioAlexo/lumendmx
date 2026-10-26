@@ -36,8 +36,8 @@ pub struct TempoStatus {
 enum TapClock {
     /// The caller's (the TAP button's `performance.now()`).
     Caller,
-    /// The engine's own `seconds` (Tap Tempo nodes).
-    Engine,
+    /// When the MIDI tap message arrived.
+    Midi,
 }
 
 #[derive(Debug, Clone)]
@@ -104,9 +104,9 @@ impl Tempo {
         self.tap_on(TapClock::Caller, now_ms)
     }
 
-    /// A tap timed by the engine clock, from a Tap Tempo node.
-    pub fn tap_engine(&mut self) -> f32 {
-        self.tap_on(TapClock::Engine, self.seconds * 1000.0)
+    /// A tap from the MIDI tap trigger, `now_ms` on a clock of the caller's.
+    pub fn tap_midi(&mut self, now_ms: f64) -> f32 {
+        self.tap_on(TapClock::Midi, now_ms)
     }
 
     fn tap_on(&mut self, clock: TapClock, now_ms: f64) -> f32 {
@@ -172,13 +172,12 @@ mod tests {
     }
 
     #[test]
-    fn engine_taps_use_the_engine_clock_and_dont_mix_with_button_taps() {
+    fn midi_taps_dont_mix_with_button_taps() {
         let mut tempo = Tempo::new();
         tempo.tap(100.0);
         tempo.tap(600.0); // button: 500ms = 120 BPM
-        for _ in 0..4 {
-            tempo.advance(400.0);
-            tempo.tap_engine(); // 400ms apart = 150 BPM
+        for i in 0..4 {
+            tempo.tap_midi(5_000.0 + 400.0 * i as f64); // 400ms apart = 150 BPM
         }
         assert!((tempo.bpm() - 150.0).abs() < 0.01);
     }

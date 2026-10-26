@@ -246,7 +246,7 @@ mod tests {
     fn an_any_node_keeps_one_free_input_after_its_last_link() {
         let (service, _) = service();
         let any = add(&service, NodeKind::Any);
-        let (a, b) = (add(&service, NodeKind::Button), add(&service, NodeKind::MidiNote));
+        let (a, b) = (add(&service, NodeKind::Button), add(&service, NodeKind::Button));
         let inputs = |service: &ShowService| {
             let view = service.snapshot().graph;
             view.nodes.iter().find(|n| n.node.id == any).unwrap().inputs.iter().map(|s| s.id.clone()).collect::<Vec<_>>()
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn controls_only_exist_for_faders_and_buttons() {
         let (service, sink) = service();
-        let fader = add(&service, NodeKind::Fader);
+        let fader = add(&service, NodeKind::Button);
         let lfo = add(&service, NodeKind::Lfo);
         service.set_control(&fader, 0.7).unwrap();
         assert!(service.set_control(&lfo, 0.7).is_err());

@@ -40,7 +40,8 @@ any program on this machine can connect while the server is on.
 | `list_node_types` | Every node: description, sockets, params (the registry) |
 | `get_graph` | Nodes with their sockets and issues, and edges |
 | `add_node` / `remove_nodes` / `connect` / `disconnect` / `set_params` | Graph edits |
-| `replace_graph` | Write a whole graph in one undo step |
+| `replace_graph` | Write a whole graph in one undo step (agents are told to use it only on an empty graph or a fresh start) |
+| `list_node_presets` / `spawn_node_preset` / `save_node_preset` | The user's saved presets: what's in them, place a copy, save one (saving a frame saves what's inside). No delete: agents can't remove presets |
 | `get_output` | Each fixture's live DMX values per attribute |
 | `get_tempo` / `set_bpm` | Show tempo |
 | `set_control` | Move a playback-bar Fader or press a Button |
@@ -49,7 +50,10 @@ any program on this machine can connect while the server is on.
 The server's instructions (`INSTRUCTIONS` in `src-tauri/src/mcp/tools.rs`)
 explain the graph model to the agent: socket types, how Output targets and
 priorities work, per-fixture evaluation, and the usual patterns (Fan → LFO,
-Fixture Index → Gradient, Counter → Switch).
+Fixture Index → Gradient, Counter → Switch). They also set how an agent
+works in your graph: add to it rather than replacing it, reuse presets
+before building from scratch, and put each piece of work in a labelled
+frame placed in free space below what's there.
 
 `src-tauri/src/mcp/mod.rs`'s test drives a real server over HTTP: it
 patches, groups, wires a graph and checks the DMX output.

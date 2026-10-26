@@ -66,42 +66,22 @@ Outputs:
 Params:
 - `gain` Gain: number 0 to 4, default 1
 
-### MIDI CC (`midiCc`)
-
-A MIDI controller (knob, fader) on the controller ports chosen in Setup, 0-1. Channel 0 listens on every channel.
-
-Outputs:
-- `value` Value (number)
-
-Params:
-- `channel` Channel: number 0 to 16, default 0
-- `controller` CC: number 0 to 127, default 1
-
-### MIDI Note (`midiNote`)
-
-A MIDI note (pad, key) on the controller ports chosen in Setup: Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.
-
-Outputs:
-- `gate` Gate (trigger)
-- `velocity` Velocity (number)
-
-Params:
-- `channel` Channel: number 0 to 16, default 0
-- `note` Note: number 0 to 127, default 36
-
 ### Fader (`fader`)
 
-A fader on the playback bar, 0-1.
+A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it.
 
 Outputs:
 - `value` Value (number)
 
 Params:
 - `label` Label: text: Shown on the playback bar, default `Fader`
+- `midi` MIDI: none / note / cc, default `none`
+- `midiChannel` MIDI channel: number 0 to 16, default 0
+- `midiNumber` MIDI number: number 0 to 127, default 0
 
 ### Button (`button`)
 
-A button on the playback bar: on while held (flash) or on/off per press (toggle).
+A button on the playback bar: on while held (flash) or on/off per press (toggle). Bind it to a pad or key on a MIDI controller (a note, or a CC that's on at 64 and above) and the MIDI presses it.
 
 Outputs:
 - `gate` Gate (trigger)
@@ -109,6 +89,9 @@ Outputs:
 Params:
 - `label` Label: text: Shown on the playback bar, default `Button`
 - `mode` Mode: flash / toggle, default `flash`
+- `midi` MIDI: none / note / cc, default `none`
+- `midiChannel` MIDI channel: number 0 to 16, default 0
+- `midiNumber` MIDI number: number 0 to 127, default 0
 
 ### Timecode (`timecode`)
 
@@ -117,13 +100,6 @@ The incoming timecode (MTC or LTC, chosen in Setup): position in seconds, and wh
 Outputs:
 - `seconds` Seconds (number)
 - `running` Running (trigger)
-
-### Tap Tempo (`tapTempo`)
-
-Taps the show tempo each time Tap turns on, like the TAP button: wire a MIDI Note or Button into it. Averages the last 4 taps (a gap over 2 seconds starts again) and lines the beat up with each tap. An external tempo source (audio, MIDI clock, Mixxx) overrides it. Tap can't depend on the fixture.
-
-Inputs:
-- `tap` Tap (trigger, default 0)
 
 ## Fixtures
 
@@ -252,7 +228,7 @@ Outputs:
 
 ### Any (`any`)
 
-On while any of its inputs is on: a Button and a MIDI pad driving the same thing. There's always a free input at the bottom; connect to it and another appears.
+On while any of its inputs is on: say two Buttons driving the same thing. There's always a free input at the bottom; connect to it and another appears.
 
 Inputs:
 - `in0` 1 (trigger)
@@ -362,7 +338,7 @@ Outputs:
 
 ### Switch (`switch`)
 
-Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter, MIDI or a Fader to change looks live.
+Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live.
 
 Inputs:
 - `index` Index (number, default 0)
@@ -414,10 +390,11 @@ Params:
 
 ### Frame (`frame`)
 
-A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them.
+A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them. Collapsed, it hides the nodes inside and shows the sockets they expose, under the names given, so a frame works like a node of your own. A node inside exposes sockets with its "exposed" param, JSON from socket to name: {"in:rate": "Speed", "out:value": ""} (empty: the socket's own name).
 
 Params:
 - `label` Label: text: Shown at the top, default `Frame`
 - `color` Color: gray / red / orange / yellow / green / blue / purple, default `gray`
 - `width` Width: number 100 to 10000, default 400
 - `height` Height: number 80 to 10000, default 300
+- `collapsed` Collapsed: on/off, default false

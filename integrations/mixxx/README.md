@@ -16,8 +16,9 @@ built-in IAC Driver as a virtual MIDI bus; nothing to install.
 3. **Load it in Mixxx.** Restart Mixxx, then Preferences → Controllers →
    **IAC Driver Bus 1** → Load Mapping → **LumenDMX MIDI Clock**, tick
    **Enabled**, Apply. Your DDJ (or other) controller keeps its own mapping.
-4. **In LumenDMX**, Timing tab: Drive the BPM from **MIDI clock**, MIDI input
-   **IAC Driver Bus 1**. The status line shows the received clock BPM.
+4. **In LumenDMX**, Setup tab: Drive the BPM from **MIDI clock**, Clock /
+   timecode port **IAC Driver Bus 1**. The status line shows the received
+   clock BPM.
 
 ## Which deck it follows
 

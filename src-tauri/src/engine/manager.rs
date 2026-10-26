@@ -18,7 +18,8 @@ use super::state::{EngineState, Layer};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::TimecodeClock;
 use crate::graph::compile::{GraphPlan, Val};
-use crate::graph::eval::{GraphRuntime, Inputs, MidiEvent, MidiState};
+use crate::engine::midi::{MidiEvent, MidiState};
+use crate::graph::eval::{GraphRuntime, Inputs};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 use crate::show::resolve::ResolvedPatch;
@@ -76,8 +77,21 @@ impl TickShared {
         };
         let audio = *self.audio.lock().unwrap();
         let plan = self.plan.lock().unwrap().clone();
-        let midi = self.midi.lock().unwrap();
-        let controls = self.controls.lock().unwrap();
+        // MIDI-pressed Flash buttons count as on for this tick even if a
+        // quick pad hit was released already. Lock order: midi, controls.
+        let pressed = self.midi.lock().unwrap().take_pressed();
+        let live = self.controls.lock().unwrap();
+        let latched;
+        let controls = if pressed.is_empty() {
+            &*live
+        } else {
+            let mut c = live.clone();
+            for id in &pressed {
+                c.insert(id.to_string(), 1.0);
+            }
+            latched = c;
+            &latched
+        };
         let inputs = Inputs {
             beats,
             prev_beats,
@@ -85,22 +99,13 @@ impl TickShared {
             bpm,
             dt_ms,
             audio,
-            midi: &midi,
-            controls: &controls,
+            controls,
             timecode_seconds,
             timecode_running,
         };
-        let tapped = {
-            let mut runtime = self.runtime.lock().unwrap();
-            let mut state = self.state.lock().unwrap();
-            runtime.run(&plan, &inputs, &mut state.layers);
-            runtime.take_taps() > 0
-        };
-        drop((midi, controls));
-        // One per tick at most: two in one tick would measure a 0ms interval.
-        if tapped {
-            self.tempo.lock().unwrap().tap_engine();
-        }
+        let mut runtime = self.runtime.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        runtime.run(&plan, &inputs, &mut state.layers);
     }
 
     fn graph_values(&self) -> GraphValues {
@@ -123,6 +128,8 @@ pub struct TimingHandles {
     pub timecode: Arc<Mutex<TimecodeClock>>,
     pub audio: Arc<Mutex<BandLevels>>,
     pub midi: Arc<Mutex<MidiState>>,
+    /// Playback-bar values, which bound MIDI moves.
+    pub controls: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl Default for EngineManager {
@@ -161,6 +168,7 @@ impl EngineManager {
             timecode: self.shared.timecode.clone(),
             audio: self.shared.audio.clone(),
             midi: self.shared.midi.clone(),
+            controls: self.shared.controls.clone(),
         }
     }
 
@@ -237,6 +245,7 @@ impl EngineManager {
 
     /// Swaps in a newly compiled graph; it runs from the next tick.
     pub fn set_graph(&self, plan: Arc<GraphPlan>) {
+        self.shared.midi.lock().unwrap().bindings = plan.midi_bindings.clone();
         *self.shared.plan.lock().unwrap() = plan;
     }
 
@@ -269,12 +278,6 @@ impl EngineManager {
 
     pub fn set_controls(&self, controls: HashMap<String, f32>) {
         *self.shared.controls.lock().unwrap() = controls;
-    }
-
-    /// The last MIDI controller or note received: (is_note, channel 1-16,
-    /// number). For MIDI learn.
-    pub fn last_midi(&self) -> Option<(bool, u8, u8)> {
-        self.shared.midi.lock().unwrap().last
     }
 
     /// MIDI channel messages received after `after` (a `seq`), for the

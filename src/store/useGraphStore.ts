@@ -8,6 +8,10 @@ interface GraphState {
   byKind: Partial<Record<NodeKind, NodeTypeInfo>>;
   /** Each node's live output values, by node id. */
   values: Record<string, number[][]>;
+  /** A node the editor should show and select (e.g. from the playback
+   * bar). `seq` makes asking again for the same node count. */
+  focus: { id: string; seq: number } | null;
+  focusNode: (id: string) => void;
   init: () => Promise<void>;
 }
 
@@ -15,6 +19,8 @@ export const useGraphStore = create<GraphState>((set) => ({
   nodeTypes: [],
   byKind: {},
   values: {},
+  focus: null,
+  focusNode: (id) => set((s) => ({ focus: { id, seq: (s.focus?.seq ?? 0) + 1 } })),
 
   init: async () => {
     try {

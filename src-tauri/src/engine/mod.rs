@@ -5,6 +5,7 @@ pub mod audio;
 pub mod commands;
 pub mod manager;
 pub mod merge;
+pub mod midi;
 pub mod state;
 pub mod tempo;
 pub mod timecode;

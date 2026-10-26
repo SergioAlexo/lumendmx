@@ -33,13 +33,12 @@ type Seen = { isNote: boolean; channel: number; number: number; value: number; a
 
 const seenKey = (isNote: boolean, channel: number, number: number) => `${isNote ? "n" : "c"}${channel}:${number}`;
 
-/** MIDI CC / MIDI Note nodes listening to this control (channel 0 is any). */
+/** Buttons and Faders bound to this control (channel 0 is any). */
 function listeners(nodes: NodeView[], s: Seen): NodeView[] {
   return nodes.filter((n) => {
-    if (n.kind !== (s.isNote ? "midiNote" : "midiCc")) return false;
-    const channel = Number(n.params.channel ?? 0);
-    const number = Number(n.params[s.isNote ? "note" : "controller"] ?? (s.isNote ? 36 : 1));
-    return (channel === 0 || channel === s.channel) && number === s.number;
+    if ((n.kind !== "button" && n.kind !== "fader") || n.params.midi !== (s.isNote ? "note" : "cc")) return false;
+    const channel = Number(n.params.midiChannel ?? 0);
+    return (channel === 0 || channel === s.channel) && Number(n.params.midiNumber ?? 0) === s.number;
   });
 }
 
@@ -93,9 +92,15 @@ export function MidiMonitor({ ports }: { ports: MidiPortInfo[] }) {
   const active = log.length > 0 && controls.some((c) => now - c.at < FRESH_MS);
   const portName = (id: string) => ports.find((p) => p.id === id)?.name ?? "Unplugged port";
 
+  /** A note becomes a Button, a CC a Fader, already bound to it. */
   const addNode = (s: Seen) =>
     void run(() =>
-      graphApi.addNode(s.isNote ? "midiNote" : "midiCc", { x: 0, y: 0 }, s.isNote ? { channel: s.channel, note: s.number } : { channel: s.channel, controller: s.number }),
+      graphApi.addNode(s.isNote ? "button" : "fader", { x: 0, y: 0 }, {
+        label: s.isNote ? `Note ${s.number}` : `CC ${s.number}`,
+        midi: s.isNote ? "note" : "cc",
+        midiChannel: s.channel,
+        midiNumber: s.number,
+      }),
     );
 
   return (
@@ -147,16 +152,16 @@ export function MidiMonitor({ ports }: { ports: MidiPortInfo[] }) {
                 <span className="text-right tabular-nums">{c.value}</span>
                 {users.length > 0 ? (
                   <span className="truncate" title={users.map((u) => String(u.params.label ?? u.id)).join(", ")}>
-                    {users.length === 1 ? (c.isNote ? "MIDI Note" : "MIDI CC") : `${users.length} nodes`}
+                    {users.length === 1 ? String(users[0].params.label ?? (users[0].kind === "fader" ? "Fader" : "Button")) : `${users.length} controls`}
                   </span>
                 ) : (
                   <button
                     className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
                     onClick={() => addNode(c)}
-                    title={`Add a ${c.isNote ? "MIDI Note" : "MIDI CC"} node set to this ${c.isNote ? "note" : "controller"} and channel`}
+                    title={`Add a ${c.isNote ? "Button" : "Fader"} bound to this ${c.isNote ? "note" : "controller"} and channel`}
                   >
                     <Plus className="h-3 w-3" />
-                    Add node
+                    Add {c.isNote ? "button" : "fader"}
                   </button>
                 )}
               </div>

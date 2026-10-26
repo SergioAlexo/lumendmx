@@ -46,7 +46,13 @@ function App() {
   const initUniverseStatuses = useUniverseStatusesStore((s) => s.init);
   const initUniverseChannels = useUniverseChannelsStore((s) => s.init);
   const [mainView, setMainView] = useState<MainView>("nodes");
+  const focus = useGraphStore((s) => s.focus);
   useShowShortcuts();
+
+  // Showing a node (right-click on the playback bar) needs the Nodes tab.
+  useEffect(() => {
+    if (focus) setMainView("nodes");
+  }, [focus]);
 
   useEffect(() => {
     if (!POPPED_OUT) {

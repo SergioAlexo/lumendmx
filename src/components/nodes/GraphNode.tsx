@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 import { Handle, Position, type NodeProps, type Node as FlowNode } from "@xyflow/react";
 import { AlertTriangle, Radio } from "lucide-react";
 import * as graphApi from "../../lib/graph";
-import * as timing from "../../lib/timing";
+import { learnMidi } from "../../lib/midiLearn";
 import { CATEGORY_COLORS, SOCKET_COLORS } from "../../lib/graph";
 import type { Group, NodeTypeInfo, NodeView, ParamValue, SocketInfo } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
@@ -10,10 +10,13 @@ import { useGraphStore } from "../../store/useGraphStore";
 import { EMPTY_GROUPS, useShowStore } from "../../store/useShowStore";
 import { ColorField, CurveEditor, ParamControl, ScrubNumber } from "./controls";
 import type { CurveMode } from "../../lib/curve";
+import { ExposeMenu, type ExposeTarget } from "./ExposeMenu";
+import { exposedSockets, socketKey, type FramePort } from "./frames";
 
 /** Params that only matter for some settings of the node: an LFO's curve
  * for Wave Custom, its width for the waves that use one. */
 function paramShown(view: NodeView, id: string): boolean {
+  if (id === "midiChannel" || id === "midiNumber") return (view.params.midi ?? "none") !== "none";
   if (view.kind !== "lfo") return true;
   const wave = String(view.params.waveform ?? "sine");
   if (id === "curve" || id === "curveMode") return wave === "custom";
@@ -28,6 +31,10 @@ export type GraphNodeData = {
   connected: string[];
   /** What drives the Enabled input, if linked: a node and its output index. */
   enabledBy?: { node: string; socket: number };
+  /** A collapsed frame's sockets (`frames.ts`). */
+  ports?: FramePort[];
+  /** Sits inside a frame, so its sockets can be exposed on it. */
+  framed?: boolean;
 };
 
 /** The input every node has (registry.rs ENABLED), shown in the header. */
@@ -82,31 +89,17 @@ function InputValue({ socket, value, onCommit }: { socket: SocketInfo; value: Pa
 }
 
 /** Waits for the next MIDI controller/note and points the node at it. */
-function MidiLearn({ nodeId, isNote }: { nodeId: string; isNote: boolean }) {
+/** Binds a Button (to a pad, key or button CC) or a Fader (to a knob or
+ * fader CC) to the next matching MIDI message. */
+function MidiLearn({ nodeId, isFader }: { nodeId: string; isFader: boolean }) {
   const run = useShowStore((s) => s.run);
   const [learning, setLearning] = useState(false);
 
   const learn = async () => {
     setLearning(true);
-    // Wait for a message newer than any already logged, not for a different
-    // control: moving the knob you touched last must still count.
-    const logged = await timing.midiEvents(0).catch(() => []);
-    let after = logged.length > 0 ? logged[logged.length - 1].seq : 0;
-    const started = Date.now();
-    const poll = async () => {
-      const events = await timing.midiEvents(after).catch(() => []);
-      if (events.length > 0) after = events[events.length - 1].seq;
-      const hit = events.find((e) => e.kind === (isNote ? "noteOn" : "cc"));
-      if (hit) {
-        await run(() => graphApi.setParams(nodeId, { channel: hit.channel, [isNote ? "note" : "controller"]: hit.number }));
-        setLearning(false);
-      } else if (Date.now() - started > 15_000) {
-        setLearning(false);
-      } else {
-        setTimeout(() => void poll(), 100);
-      }
-    };
-    void poll();
+    const hit = await learnMidi((e) => e.kind === "cc" || (!isFader && e.kind === "noteOn"));
+    if (hit) await run(() => graphApi.setParams(nodeId, { midi: hit.kind === "cc" ? "cc" : "note", midiChannel: hit.channel, midiNumber: hit.number }));
+    setLearning(false);
   };
 
   return (
@@ -116,16 +109,16 @@ function MidiLearn({ nodeId, isNote }: { nodeId: string; isNote: boolean }) {
         learning ? "animate-pulse bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/70",
       )}
       onClick={() => void learn()}
-      title={`Move a ${isNote ? "pad or key" : "knob or fader"} on your MIDI controller (a controller port chosen in Setup)`}
+      title={`${isFader ? "Move a knob or fader" : "Press a pad, key or button"} on your MIDI controller (a controller port chosen in Setup)`}
     >
       <Radio className="h-3 w-3" />
-      {learning ? "Waiting for MIDI…" : "Learn"}
+      {learning ? "Waiting for MIDI…" : "Learn MIDI"}
     </button>
   );
 }
 
 function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
-  const { view, info, connected, enabledBy } = data;
+  const { view, info, connected, enabledBy, framed } = data;
   const values = useGraphStore((s) => s.values[view.id]);
   const enabledLive = useGraphStore((s) => (enabledBy ? s.values[enabledBy.node]?.[enabledBy.socket]?.[0] : undefined));
   const enabledSocket = view.inputs.find((s) => s.id === ENABLED);
@@ -136,6 +129,17 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
   const setParam = (id: string, value: ParamValue) => void run(() => graphApi.setParams(view.id, { [id]: value }));
   const color = CATEGORY_COLORS[info?.category ?? ""] ?? "#555";
   const label = view.kind === "fader" || view.kind === "button" ? String(view.params.label ?? info?.label) : info?.label;
+  const exposed = exposedSockets(view);
+  const [exposing, setExposing] = useState<ExposeTarget | null>(null);
+  /** Right-click on a socket: expose it on the frame around the node, rename it or stop exposing it. */
+  const toggleExposed = (e: React.MouseEvent, side: "in" | "out", socket: string) => {
+    if (!framed) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setExposing({ node: view.id, side, socket, x: e.clientX, y: e.clientY });
+  };
+  const exposeHint = (side: "in" | "out", socket: string) =>
+    !framed ? undefined : exposed.has(socketKey(side, socket)) ? "Exposed on its frame. Right-click to rename it or stop exposing it" : "Right-click to expose this socket on its frame";
 
   return (
     <div
@@ -179,9 +183,14 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
 
       <div className="flex flex-col gap-1 py-1.5">
         {view.outputs.map((socket, i) => (
-          <div key={socket.id} className="relative flex h-5 items-center justify-end gap-2 px-3">
+          <div
+            key={socket.id}
+            className="relative flex h-5 items-center justify-end gap-2 px-3"
+            onContextMenu={(e) => toggleExposed(e, "out", socket.id)}
+            title={exposeHint("out", socket.id)}
+          >
             <Preview socket={socket} value={values?.[i]} />
-            <span>{socket.label}</span>
+            <span className={cn(exposed.has(`out:${socket.id}`) && "underline decoration-dotted underline-offset-2")}>{socket.label}</span>
             <Handle
               type="source"
               position={Position.Right}
@@ -209,14 +218,19 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
                   <ParamControl key={p.id} info={p} value={view.params[p.id]} groups={groups} onCommit={(v) => setParam(p.id, v)} />
                 ),
               )}
-            {(view.kind === "midiCc" || view.kind === "midiNote") && <MidiLearn nodeId={view.id} isNote={view.kind === "midiNote"} />}
+            {(view.kind === "button" || view.kind === "fader") && <MidiLearn nodeId={view.id} isFader={view.kind === "fader"} />}
           </div>
         )}
 
         {view.inputs.filter((socket) => socket.id !== ENABLED).map((socket) => {
           const linked = connected.includes(socket.id);
           return (
-            <div key={socket.id} className="relative flex min-h-5 items-center gap-2 px-3">
+            <div
+              key={socket.id}
+              className="relative flex min-h-5 items-center gap-2 px-3"
+              onContextMenu={(e) => toggleExposed(e, "in", socket.id)}
+              title={exposeHint("in", socket.id)}
+            >
               <Handle
                 type="target"
                 position={Position.Left}
@@ -224,7 +238,15 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
                 className="!h-2.5 !w-2.5 !border-black/60"
                 style={{ background: SOCKET_COLORS[socket.type] }}
               />
-              <span className={cn("shrink-0", linked || socket.default === null ? "" : "w-16 truncate text-muted-foreground")}>{socket.label}</span>
+              <span
+                className={cn(
+                  "shrink-0",
+                  linked || socket.default === null ? "" : "w-16 truncate text-muted-foreground",
+                  exposed.has(`in:${socket.id}`) && "underline decoration-dotted underline-offset-2",
+                )}
+              >
+                {socket.label}
+              </span>
               {!linked && socket.default !== null && (
                 <div className="min-w-0 flex-1">
                   <InputValue socket={socket} value={view.params[socket.id]} onCommit={(v) => setParam(socket.id, v)} />
@@ -235,6 +257,7 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
         })}
       </div>
 
+      {exposing && <ExposeMenu target={exposing} onClose={() => setExposing(null)} />}
       {view.issues.length > 0 && (
         <div className="border-t border-destructive/40 px-2 py-1 text-[10px] leading-snug text-destructive">{view.issues.join(" · ")}</div>
       )}

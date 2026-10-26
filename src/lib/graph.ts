@@ -64,10 +64,6 @@ export function controls(): Promise<Record<string, number>> {
   return invoke("graph_controls");
 }
 
-/** The last MIDI controller/note received: [isNote, channel 1-16, number]. */
-export function lastMidi(): Promise<[boolean, number, number] | null> {
-  return invoke("graph_last_midi");
-}
 
 /** Each node's live output values (~20Hz), by node id; each value is [x, y, z]. */
 export function onGraphValues(cb: (values: Record<string, number[][]>) => void) {

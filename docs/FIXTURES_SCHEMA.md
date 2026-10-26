@@ -1,4 +1,4 @@
-# Fixture schema, importers, and patch (Phase 4)
+# Fixture schema, importers, and patch
 
 See `src/fixtures/library/README.md` for the schema itself (fields, channel
 types, the optional 16-bit/capabilities/multi-cell/physical additions). This

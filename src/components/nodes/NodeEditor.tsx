@@ -26,6 +26,18 @@ import { Input } from "../ui/input";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { FRAME_MIN, FrameNode } from "./FrameNode";
 import { GraphNode, type GraphFlowNode, type GraphNodeData } from "./GraphNode";
+import {
+  crossedFrames,
+  exposedParam,
+  exposedSockets,
+  frameLayout,
+  framesAround,
+  inFrame,
+  portHandle,
+  resolveHandle,
+  socketKey,
+  type FramePort,
+} from "./frames";
 
 const nodeTypes = { graph: GraphNode, frame: FrameNode };
 
@@ -41,6 +53,17 @@ interface PendingLink {
   /** The dragged-from socket is an output ("source") or an input ("target"). */
   side: "source" | "target";
   type: SocketType;
+}
+
+type Link = { fromNode: string; fromSocket: string; toNode: string; toSocket: string };
+
+/** A link that crosses into or out of a frame through sockets that aren't
+ * exposed yet: the dialog asks to expose them (with a name) first. */
+interface ExposeRequest {
+  link: Link;
+  /** The link this one replaces (a reconnected wire), unplugged after. */
+  replaces?: { toNode: string; toSocket: string };
+  items: { node: string; side: "in" | "out"; socket: string; what: string; frames: string; name: string }[];
 }
 
 interface MenuState {
@@ -59,18 +82,24 @@ function toFlowNode(
   enabledBy: GraphNodeData["enabledBy"],
   previous?: GraphFlowNode,
   select?: boolean,
+  hidden?: boolean,
+  ports?: FramePort[],
+  framed?: boolean,
 ): GraphFlowNode {
   const frame = view.kind === "frame";
+  const collapsed = frame && view.params.collapsed === true;
   // Keep the local position (and a frame's size) while it's being dragged or resized.
   const live = previous?.dragging || previous?.resizing;
   return {
     id: view.id,
     type: frame ? "frame" : "graph",
     position: live ? previous!.position : { x: view.position.x, y: view.position.y },
-    selected: select || previous?.selected,
+    selected: !hidden && (select || previous?.selected),
     dragging: previous?.dragging,
-    data: { view, info, connected, enabledBy },
-    ...(frame && {
+    hidden,
+    data: { view, info, connected, enabledBy, ports, framed },
+    // Collapsed, a frame is an ordinary node: sized by its sockets.
+    ...(frame && !collapsed && {
       width: live ? previous!.width : Number(view.params.width ?? 400),
       height: live ? previous!.height : Number(view.params.height ?? 300),
       // Behind the nodes and links; only the header takes the pointer.
@@ -79,15 +108,6 @@ function toFlowNode(
       style: { pointerEvents: "none" as const },
     }),
   };
-}
-
-/** Whether node `n` lies entirely inside `frame`. */
-function inside(n: GraphFlowNode, frame: GraphFlowNode): boolean {
-  const w = n.measured?.width ?? n.width ?? 0;
-  const h = n.measured?.height ?? n.height ?? 0;
-  const fw = frame.width ?? frame.measured?.width ?? 0;
-  const fh = frame.height ?? frame.measured?.height ?? 0;
-  return n.position.x >= frame.position.x && n.position.y >= frame.position.y && n.position.x + w <= frame.position.x + fw && n.position.y + h <= frame.position.y + fh;
 }
 
 function Editor() {
@@ -113,6 +133,32 @@ function Editor() {
   }, []);
 
   const views = useMemo(() => new Map((graph?.nodes ?? []).map((v) => [v.id, v])), [graph]);
+  const layout = useMemo(() => frameLayout(graph?.nodes ?? [], graph?.edges ?? [], byKind), [graph, byKind]);
+
+  /** The nodes in frame `frameId` (wherever it is now), by their positions on the canvas. */
+  const members = (frameId: string, at?: { x: number; y: number }): GraphFlowNode[] => {
+    const view = views.get(frameId);
+    if (!view) return [];
+    const frame = { position: at ?? view.position, params: view.params };
+    return flow.getNodes().filter((n) => n.id !== frameId && inFrame(frame, n.position));
+  };
+
+  // Asked to show a node: centre on it and select only it. Waits until the
+  // node is on the canvas (the tab may have just opened).
+  const focus = useGraphStore((s) => s.focus);
+  const focused = useRef(0);
+  useEffect(() => {
+    if (!focus || focus.seq === focused.current) return;
+    // Hidden in a collapsed frame: show the frame.
+    const target = layout.owner.get(focus.id) ?? focus.id;
+    const node = nodes.find((n) => n.id === target);
+    if (!node) return;
+    focused.current = focus.seq;
+    setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === target })));
+    const w = node.measured?.width ?? node.width ?? 200;
+    const h = node.measured?.height ?? node.height ?? 100;
+    void flow.setCenter(node.position.x + w / 2, node.position.y + h / 2, { zoom: Math.max(flow.getZoom(), 1), duration: 300 });
+  }, [focus, nodes, flow, layout]);
 
   useEffect(() => {
     if (!graph) return;
@@ -129,46 +175,124 @@ function Editor() {
     selectNext.current = new Set();
     setNodes((prev) => {
       const byId = new Map(prev.map((n) => [n.id, n]));
-      const next = graph.nodes.map((v) => toFlowNode(v, byKind[v.kind], connected.get(v.id) ?? [], enabledBy.get(v.id), byId.get(v.id), select.has(v.id)));
+      const next = graph.nodes.map((v) =>
+        toFlowNode(
+          v,
+          byKind[v.kind],
+          connected.get(v.id) ?? [],
+          enabledBy.get(v.id),
+          byId.get(v.id),
+          select.has(v.id),
+          layout.owner.has(v.id),
+          layout.ports.get(v.id),
+          v.kind !== "frame" && framesAround(graph.nodes, v.id).length > 0,
+        ),
+      );
       // A spawned preset replaces the selection.
       return select.size > 0 ? next.map((n) => ({ ...n, selected: select.has(n.id) })) : next;
     });
-  }, [graph, byKind]);
+  }, [graph, byKind, layout]);
 
   const socketType = useCallback(
     (nodeId: string | null | undefined, socketId: string | null | undefined, side: "source" | "target"): SocketType | undefined => {
-      const view = nodeId ? views.get(nodeId) : undefined;
-      return (side === "source" ? view?.outputs : view?.inputs)?.find((s) => s.id === socketId)?.type;
+      if (!nodeId || !socketId) return undefined;
+      const real = resolveHandle(nodeId, socketId);
+      const view = views.get(real.node);
+      return (side === "source" ? view?.outputs : view?.inputs)?.find((s) => s.id === real.socket)?.type;
     },
     [views],
   );
 
   const edges: FlowEdge[] = useMemo(
     () =>
-      (graph?.edges ?? []).map((e) => ({
-        id: `${e.toNode}:${e.toSocket}`,
-        source: e.fromNode,
-        sourceHandle: e.fromSocket,
-        target: e.toNode,
-        targetHandle: e.toSocket,
-        style: { stroke: SOCKET_COLORS[socketType(e.fromNode, e.fromSocket, "source") ?? "number"], strokeWidth: 2 },
-      })),
-    [graph, socketType],
+      (graph?.edges ?? []).map((e) => {
+        // An end inside a collapsed frame attaches to the frame's socket for it.
+        const from = layout.owner.get(e.fromNode);
+        const to = layout.owner.get(e.toNode);
+        return {
+          id: `${e.toNode}:${e.toSocket}`,
+          source: from ?? e.fromNode,
+          sourceHandle: from ? portHandle("out", e.fromNode, e.fromSocket) : e.fromSocket,
+          target: to ?? e.toNode,
+          targetHandle: to ? portHandle("in", e.toNode, e.toSocket) : e.toSocket,
+          hidden: !!from && from === to,
+          data: { ...e },
+          style: { stroke: SOCKET_COLORS[socketType(e.fromNode, e.fromSocket, "source") ?? "number"], strokeWidth: 2 },
+        };
+      }),
+    [graph, socketType, layout],
   );
 
   const isValidConnection: IsValidConnection = useCallback(
     (c) => {
       const from = socketType(c.source, c.sourceHandle, "source");
       const to = socketType(c.target, c.targetHandle, "target");
-      return c.source !== c.target && !!from && !!to && feeds(from, to);
+      const real = (node: string, handle: string | null | undefined) => (handle ? resolveHandle(node, handle).node : node);
+      return real(c.source, c.sourceHandle) !== real(c.target, c.targetHandle) && !!from && !!to && feeds(from, to);
     },
     [socketType],
   );
 
-  const connect = (c: Connection) => {
-    if (!c.sourceHandle || !c.targetHandle) return;
-    void run(() => graphApi.connect({ fromNode: c.source, fromSocket: c.sourceHandle!, toNode: c.target, toSocket: c.targetHandle! }));
+  /** A connection drawn on the canvas, as a link between real nodes. */
+  const toEdge = (c: { source: string; sourceHandle?: string | null; target: string; targetHandle?: string | null }) => {
+    if (!c.sourceHandle || !c.targetHandle) return null;
+    const from = resolveHandle(c.source, c.sourceHandle);
+    const to = resolveHandle(c.target, c.targetHandle);
+    return { fromNode: from.node, fromSocket: from.socket, toNode: to.node, toSocket: to.socket };
   };
+
+  const [expose, setExpose] = useState<ExposeRequest | null>(null);
+
+  /** Links `link` (unplugging `replaces` after), unless it crosses a frame
+   * through a socket that isn't exposed: then asks first. */
+  const linkUp = (link: Link, replaces?: { toNode: string; toSocket: string }) => {
+    const all = graph?.nodes ?? [];
+    const { into, outOf } = crossedFrames(all, link.fromNode, link.toNode);
+    const items: ExposeRequest["items"] = [];
+    const ask = (node: string, side: "in" | "out", socket: string, frames: NodeView[]) => {
+      const view = views.get(node);
+      if (!view || frames.length === 0 || exposedSockets(view).has(socketKey(side, socket))) return;
+      const info = (side === "in" ? view.inputs : view.outputs).find((s) => s.id === socket);
+      const nodeName = String(view.params.label ?? byKind[view.kind]?.label ?? view.kind);
+      const what = `${side === "in" ? "Input" : "Output"} “${info?.label ?? socket}” of ${nodeName}`;
+      items.push({ node, side, socket, what, frames: frames.map((f) => `“${String(f.params.label ?? "Frame")}”`).join(", "), name: info?.label ?? socket });
+    };
+    ask(link.toNode, "in", link.toSocket, into);
+    ask(link.fromNode, "out", link.fromSocket, outOf);
+    if (items.length > 0) {
+      setExpose({ link, replaces, items });
+      return;
+    }
+    void run(async () => {
+      await graphApi.connect(link);
+      if (replaces && (replaces.toNode !== link.toNode || replaces.toSocket !== link.toSocket)) await graphApi.disconnect(replaces.toNode, replaces.toSocket);
+    });
+  };
+
+  const confirmExpose = () => {
+    if (!expose) return;
+    const { link, replaces, items } = expose;
+    setExpose(null);
+    void run(async () => {
+      for (const item of items) {
+        const view = views.get(item.node);
+        if (!view) continue;
+        const map = exposedSockets(view);
+        map.set(socketKey(item.side, item.socket), item.name.trim());
+        await graphApi.setParams(item.node, { exposed: exposedParam(map) });
+      }
+      await graphApi.connect(link);
+      if (replaces && (replaces.toNode !== link.toNode || replaces.toSocket !== link.toSocket)) await graphApi.disconnect(replaces.toNode, replaces.toSocket);
+    });
+  };
+
+  const connect = (c: Connection) => {
+    const edge = toEdge(c);
+    if (edge) linkUp(edge);
+  };
+
+  /** The real link a canvas edge draws. */
+  const realEdge = (e: FlowEdge) => e.data as unknown as { toNode: string; toSocket: string };
 
   const onNodesChange = (changes: NodeChange<GraphFlowNode>[]) => {
     // Deletion goes through onDelete, so the show stays the source of truth.
@@ -214,14 +338,11 @@ function Editor() {
       carried.current = null;
       return;
     }
-    const all = flow.getNodes();
     const draggedIds = new Set(dragged.map((n) => n.id));
     const nodes = new Map<string, { x: number; y: number; frame: string }>();
     for (const frame of frames) {
-      for (const n of all) {
-        if (n.id !== frame.id && !draggedIds.has(n.id) && !nodes.has(n.id) && inside(n, frame)) {
-          nodes.set(n.id, { ...n.position, frame: frame.id });
-        }
+      for (const n of members(frame.id, frame.position)) {
+        if (!draggedIds.has(n.id) && !nodes.has(n.id)) nodes.set(n.id, { ...n.position, frame: frame.id });
       }
     }
     carried.current = { frames: new Map(frames.map((f) => [f.id, { ...f.position }])), nodes };
@@ -280,6 +401,7 @@ function Editor() {
   const savePreset = async () => {
     const name = presetName?.trim();
     if (!name || selectedIds.length === 0) return;
+    // A selected frame brings the nodes inside it (the backend adds them).
     const saved = await run(() => graphApi.saveNodePreset(name, selectedIds));
     if (!saved) return;
     setPresetName(null);
@@ -292,7 +414,8 @@ function Editor() {
     const type = socketType(state.fromNode.id, state.fromHandle.id, side);
     if (!type) return;
     const point = "changedTouches" in event ? event.changedTouches[0] : event;
-    openMenu({ x: point.clientX, y: point.clientY }, { nodeId: state.fromNode.id, socketId: state.fromHandle.id, side, type });
+    const real = resolveHandle(state.fromNode.id, state.fromHandle.id);
+    openMenu({ x: point.clientX, y: point.clientY }, { nodeId: real.node, socketId: real.socket, side, type });
   };
 
   const duplicateSelected = async () => {
@@ -354,25 +477,22 @@ function Editor() {
           const ids = gone.map((n) => n.id);
           if (ids.length > 0) void run(() => graphApi.removeNodes(ids));
           for (const e of cut) {
-            if (!ids.includes(e.source) && !ids.includes(e.target) && e.targetHandle) {
-              void run(() => graphApi.disconnect(e.target, e.targetHandle!));
-            }
+            const real = realEdge(e);
+            if (!ids.includes(e.source) && !ids.includes(e.target)) void run(() => graphApi.disconnect(real.toNode, real.toSocket));
           }
         }}
         edgesReconnectable
         onReconnect={(old, next) => {
           // Connect first: unplugging can drop an Any node's spare input,
           // which may be the one being dropped onto.
-          void run(async () => {
-            if (next.sourceHandle && next.targetHandle) {
-              await graphApi.connect({ fromNode: next.source, fromSocket: next.sourceHandle, toNode: next.target, toSocket: next.targetHandle });
-            }
-            if (old.target !== next.target || old.targetHandle !== next.targetHandle) await graphApi.disconnect(old.target, old.targetHandle!);
-          });
+          const was = realEdge(old);
+          const edge = toEdge(next);
+          if (edge) linkUp(edge, was);
+          else void run(() => graphApi.disconnect(was.toNode, was.toSocket));
         }}
         onReconnectEnd={(_e, edge, _side, state) => {
           // Dragged off into empty space: unplug, like Blender.
-          if (!state.isValid && edge.targetHandle) void run(() => graphApi.disconnect(edge.target, edge.targetHandle!));
+          if (!state.isValid) void run(() => graphApi.disconnect(realEdge(edge).toNode, realEdge(edge).toSocket));
         }}
         onPaneContextMenu={(e) => {
           e.preventDefault();
@@ -455,6 +575,48 @@ function Editor() {
               nodes. Start with a Fixture Output aimed at a group, then feed it a Color and an LFO.
             </p>
           </div>
+        </div>
+      )}
+
+      {expose && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onPointerDown={() => setExpose(null)}>
+          <form
+            className="flex w-96 flex-col gap-3 rounded-md border border-border bg-card p-4 text-sm shadow-2xl"
+            onPointerDown={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              confirmExpose();
+            }}
+          >
+            <h3 className="font-semibold">Expose on the frame?</h3>
+            <p className="text-muted-foreground">This link crosses a frame. Its sockets on the frame need exposing first, so the frame shows them when it's collapsed.</p>
+            {expose.items.map((item, i) => (
+              <label key={`${item.node}:${item.side}:${item.socket}`} className="flex flex-col gap-1">
+                <span>
+                  {item.what}, on frame {item.frames}. Name:
+                </span>
+                <Input
+                  autoFocus={i === 0}
+                  value={item.name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    setExpose((x) => x && { ...x, items: x.items.map((it, j) => (j === i ? { ...it, name } : it)) });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setExpose(null);
+                  }}
+                />
+              </label>
+            ))}
+            <div className="flex justify-end gap-2">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setExpose(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" size="sm">
+                Expose and connect
+              </Button>
+            </div>
+          </form>
         </div>
       )}
 

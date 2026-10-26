@@ -9,7 +9,8 @@ use ts_rs::TS;
 
 use super::graph_ops::{prune_edges, tidy_any_inputs};
 use super::service::ShowService;
-use crate::graph::model::{Edge, Node, NodePosition};
+use crate::graph::model::{Edge, Node, NodePosition, ParamValue};
+use crate::graph::registry::NodeKind;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -28,7 +29,8 @@ impl ShowService {
         self.presets.lock().unwrap().clone()
     }
 
-    /// Saves `ids` (and the links between them) as a new preset.
+    /// Saves `ids` (and the links between them) as a new preset. A Frame
+    /// among them brings the nodes inside it (top-left corner in its box).
     pub fn save_node_preset(&self, name: &str, ids: &[String]) -> Result<NodePreset, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -37,11 +39,22 @@ impl ShowService {
         let preset = {
             let inner = self.inner.lock().unwrap();
             let graph = &inner.show.graph;
-            let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
-            let mut nodes: Vec<Node> = graph.nodes.iter().filter(|n| wanted.contains(n.id.as_str())).cloned().collect();
-            if nodes.len() != wanted.len() {
-                return Err("Some of those nodes no longer exist".to_string());
+            let mut wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+            if let Some(missing) = wanted.iter().find(|id| graph.node(id).is_none()) {
+                return Err(format!("No node {missing}"));
             }
+            let frames: Vec<&Node> = graph.nodes.iter().filter(|n| n.kind == NodeKind::Frame && wanted.contains(n.id.as_str())).collect();
+            for frame in frames {
+                let size = |id: &str, default: f32| frame.params.get(id).and_then(ParamValue::as_f32).unwrap_or(default);
+                let (w, h) = (size("width", 400.0), size("height", 300.0));
+                for n in &graph.nodes {
+                    let (dx, dy) = (n.position.x - frame.position.x, n.position.y - frame.position.y);
+                    if n.id != frame.id && (0.0..=w).contains(&dx) && (0.0..=h).contains(&dy) {
+                        wanted.insert(n.id.as_str());
+                    }
+                }
+            }
+            let mut nodes: Vec<Node> = graph.nodes.iter().filter(|n| wanted.contains(n.id.as_str())).cloned().collect();
             if nodes.is_empty() {
                 return Err("Select the nodes to save first".to_string());
             }
@@ -116,8 +129,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::graph::model::ParamValue;
-    use crate::graph::registry::NodeKind;
     use crate::show::graph_ops::ParamChanges;
     use crate::show::service::tests::service;
 
@@ -153,7 +164,17 @@ mod tests {
 
         service.undo().unwrap();
         assert_eq!(service.snapshot().graph.nodes.len(), 3);
+
+        // Saving a frame saves what's inside it.
+        let frame = service
+            .add_node(NodeKind::Frame, at(-10.0, -10.0), params(&[("width", ParamValue::Number(200.0)), ("height", ParamValue::Number(200.0))]))
+            .unwrap()
+            .id;
+        let framed = service.save_node_preset("Framed", std::slice::from_ref(&frame)).unwrap();
+        let mut kinds: Vec<_> = framed.nodes.iter().map(|n| n.kind).collect();
+        kinds.sort_by_key(|k| format!("{k:?}"));
+        assert_eq!(kinds, vec![NodeKind::Fan, NodeKind::Frame, NodeKind::Lfo], "the Output at x 300 is outside");
         service.delete_node_preset(&preset.id).unwrap();
-        assert!(service.node_presets().is_empty());
+        assert_eq!(service.node_presets().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Framed"]);
     }
 }

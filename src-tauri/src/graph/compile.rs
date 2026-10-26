@@ -14,6 +14,7 @@ use ts_rs::TS;
 use super::model::{Graph, Node, ParamValue};
 use super::registry::{self, NodeKind, SocketInfo, SocketType, DEFAULT_CURVE, MAX_SWITCH_INPUTS};
 use super::write::{parse_hex, TargetItem};
+use crate::engine::midi::{BoundControl, MidiBinding, MidiMessage};
 use crate::engine::waves::{Curve, CurveMode, Fan, PositionShape, Waveform};
 use crate::show::resolve::ResolvedPatch;
 use crate::showfile::schema::Group;
@@ -60,7 +61,6 @@ pub enum Config {
     /// `curve` is read once here and only used by `Waveform::Custom`.
     Lfo { waveform: Waveform, rate: Rate, width: f32, curve: Curve },
     Gain(f32),
-    Midi { channel: u8, number: u8 },
     Fan(Fan),
     Math { op: MathOp, clamp: bool },
     MapRange { from: (f32, f32), to: (f32, f32), clamp: bool },
@@ -137,6 +137,8 @@ pub struct GraphPlan {
     /// Non-varying nodes, in evaluation order.
     pub uniform_order: Vec<usize>,
     pub outputs: Vec<CompiledOutput>,
+    /// Buttons and Faders bound to MIDI.
+    pub midi_bindings: Vec<MidiBinding>,
 }
 
 fn param<'a>(node: &'a Node, id: &str) -> Option<&'a ParamValue> {
@@ -255,8 +257,6 @@ fn config(node: &Node) -> Config {
             curve: Curve::parse(text(node, "curve", DEFAULT_CURVE), curve_mode(text(node, "curveMode", "linear"))),
         },
         NodeKind::Audio => Config::Gain(number(node, "gain", 1.0)),
-        NodeKind::MidiCc => Config::Midi { channel: number(node, "channel", 0.0) as u8, number: number(node, "controller", 1.0) as u8 },
-        NodeKind::MidiNote => Config::Midi { channel: number(node, "channel", 0.0) as u8, number: number(node, "note", 36.0) as u8 },
         NodeKind::Fan => Config::Fan(Fan {
             groups: number(node, "groups", 0.0) as u32,
             blocks: number(node, "blocks", 0.0) as u32,
@@ -363,6 +363,28 @@ fn targets(node: &Node, patch: &ResolvedPatch, groups: &[Group]) -> (Vec<TargetI
     (items, problems)
 }
 
+/// A Button's or Fader's MIDI binding, if it has one.
+fn midi_binding(node: &Node) -> Option<MidiBinding> {
+    let message = match text(node, "midi", "none") {
+        "note" => MidiMessage::Note,
+        "cc" => MidiMessage::Cc,
+        _ => return None,
+    };
+    let control = match (node.kind, text(node, "mode", "flash")) {
+        (NodeKind::Fader, _) => BoundControl::Fader,
+        (NodeKind::Button, "toggle") => BoundControl::Toggle,
+        (NodeKind::Button, _) => BoundControl::Flash,
+        _ => return None,
+    };
+    Some(MidiBinding {
+        node: Arc::from(node.id.as_str()),
+        message,
+        channel: number(node, "midiChannel", 0.0).clamp(0.0, 16.0) as u8,
+        number: number(node, "midiNumber", 0.0).clamp(0.0, 127.0) as u8,
+        control,
+    })
+}
+
 pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (GraphPlan, Vec<GraphIssue>) {
     let mut issues = Vec::new();
     let mut issue = |node: &str, message: String| issues.push(GraphIssue { node: node.to_string(), message });
@@ -452,10 +474,6 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
     for &i in &order {
         let source_varying = nodes[i].inputs.iter().any(|s| matches!(s, Source::Link { node, .. } if nodes[*node].varying));
         nodes[i].varying = matches!(nodes[i].kind, NodeKind::FixtureIndex | NodeKind::Fan | NodeKind::Random) || source_varying;
-        // Only fixture-independent nodes run without an Output to drive them.
-        if nodes[i].kind == NodeKind::TapTempo && nodes[i].varying {
-            issue(&graph.nodes[i].id, "Tap can't depend on the fixture (Fixture Index, Fan, Random); it won't tap".to_string());
-        }
     }
 
     let position: HashMap<usize, usize> = order.iter().enumerate().map(|(p, &i)| (i, p)).collect();
@@ -513,5 +531,6 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
 
     let uniform_order =
         order.iter().copied().filter(|&i| !nodes[i].varying && !matches!(nodes[i].kind, NodeKind::Output | NodeKind::Frame)).collect();
-    (GraphPlan { nodes, uniform_order, outputs }, issues)
+    let midi_bindings = graph.nodes.iter().filter_map(midi_binding).collect();
+    (GraphPlan { nodes, uniform_order, outputs, midi_bindings }, issues)
 }

@@ -215,7 +215,7 @@ export function TimingSettingsPanel() {
           </div>
         )}
         <div className="grid grid-cols-[9rem_1fr] items-start gap-3 text-sm">
-          <span className="pt-0.5 text-muted-foreground" title="Ports MIDI CC and MIDI Note nodes read, merged">
+          <span className="pt-0.5 text-muted-foreground" title="Ports that Buttons and Faders bound to MIDI listen to, merged">
             Controller ports
           </span>
           <div className="flex flex-col gap-1">

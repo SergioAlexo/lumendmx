@@ -19,12 +19,9 @@ pub enum NodeKind {
     Time,
     Lfo,
     Audio,
-    MidiCc,
-    MidiNote,
     Fader,
     Button,
     Timecode,
-    TapTempo,
     FixtureIndex,
     Fan,
     Math,
@@ -49,18 +46,15 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 32] = [
+    pub const ALL: [NodeKind; 29] = [
         NodeKind::Number,
         NodeKind::Color,
         NodeKind::Time,
         NodeKind::Lfo,
         NodeKind::Audio,
-        NodeKind::MidiCc,
-        NodeKind::MidiNote,
         NodeKind::Fader,
         NodeKind::Button,
         NodeKind::Timecode,
-        NodeKind::TapTempo,
         NodeKind::FixtureIndex,
         NodeKind::Fan,
         NodeKind::Math,
@@ -227,6 +221,18 @@ fn bool_param(id: &str, label: &str, default: bool) -> ParamInfo {
     ParamInfo { id: id.into(), label: label.into(), kind: ParamKind::Bool, default: ParamValue::Bool(default) }
 }
 
+/// MIDI messages a Button or Fader can be bound to.
+pub const MIDI_BINDINGS: [&str; 3] = ["none", "note", "cc"];
+
+/// A Button's or Fader's MIDI binding: off until chosen (or learned).
+fn midi_params() -> Vec<ParamInfo> {
+    vec![
+        choice("midi", "MIDI", &MIDI_BINDINGS, "none"),
+        number("midiChannel", "MIDI channel", 0.0, 16.0, 1.0, 0.0),
+        number("midiNumber", "MIDI number", 0.0, 127.0, 1.0, 0.0),
+    ]
+}
+
 fn rate_params() -> Vec<ParamInfo> {
     vec![
         number("rate", "Rate", 0.0, 64.0, 0.25, 1.0),
@@ -313,37 +319,25 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             ],
             vec![number("gain", "Gain", 0.0, 4.0, 0.05, 1.0)],
         ),
-        NodeKind::MidiCc => (
-            "MIDI CC",
-            "Input",
-            "A MIDI controller (knob, fader) on the controller ports chosen in Setup, 0-1. Channel 0 listens on every channel.",
-            vec![],
-            vec![output("value", "Value", Number)],
-            vec![number("channel", "Channel", 0.0, 16.0, 1.0, 0.0), number("controller", "CC", 0.0, 127.0, 1.0, 1.0)],
-        ),
-        NodeKind::MidiNote => (
-            "MIDI Note",
-            "Input",
-            "A MIDI note (pad, key) on the controller ports chosen in Setup: Gate is on while it's held, Velocity is how hard it was hit (0-1). Channel 0 listens on every channel.",
-            vec![],
-            vec![output("gate", "Gate", Trigger), output("velocity", "Velocity", Number)],
-            vec![number("channel", "Channel", 0.0, 16.0, 1.0, 0.0), number("note", "Note", 0.0, 127.0, 1.0, 36.0)],
-        ),
         NodeKind::Fader => (
             "Fader",
             "Input",
-            "A fader on the playback bar, 0-1.",
+            "A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it.",
             vec![],
             vec![output("value", "Value", Number)],
-            vec![text_param("label", "Label", "Shown on the playback bar", "Fader")],
+            [vec![text_param("label", "Label", "Shown on the playback bar", "Fader")], midi_params()].concat(),
         ),
         NodeKind::Button => (
             "Button",
             "Input",
-            "A button on the playback bar: on while held (flash) or on/off per press (toggle).",
+            "A button on the playback bar: on while held (flash) or on/off per press (toggle). Bind it to a pad or key on a MIDI controller (a note, or a CC that's on at 64 and above) and the MIDI presses it.",
             vec![],
             vec![output("gate", "Gate", Trigger)],
-            vec![text_param("label", "Label", "Shown on the playback bar", "Button"), choice("mode", "Mode", &["flash", "toggle"], "flash")],
+            [
+                vec![text_param("label", "Label", "Shown on the playback bar", "Button"), choice("mode", "Mode", &["flash", "toggle"], "flash")],
+                midi_params(),
+            ]
+            .concat(),
         ),
         NodeKind::Timecode => (
             "Timecode",
@@ -351,14 +345,6 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             "The incoming timecode (MTC or LTC, chosen in Setup): position in seconds, and whether it's running.",
             vec![],
             vec![output("seconds", "Seconds", Number), output("running", "Running", Trigger)],
-            vec![],
-        ),
-        NodeKind::TapTempo => (
-            "Tap Tempo",
-            "Input",
-            "Taps the show tempo each time Tap turns on, like the TAP button: wire a MIDI Note or Button into it. Averages the last 4 taps (a gap over 2 seconds starts again) and lines the beat up with each tap. An external tempo source (audio, MIDI clock, Mixxx) overrides it. Tap can't depend on the fixture.",
-            vec![input("tap", "Tap", Trigger, n(0.0))],
-            vec![],
             vec![],
         ),
         NodeKind::FixtureIndex => (
@@ -446,7 +432,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Any => (
             "Any",
             "Math",
-            "On while any of its inputs is on: a Button and a MIDI pad driving the same thing. There's always a free input at the bottom; connect to it and another appears.",
+            "On while any of its inputs is on: say two Buttons driving the same thing. There's always a free input at the bottom; connect to it and another appears.",
             vec![],
             vec![],
             vec![],
@@ -514,7 +500,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Switch => (
             "Switch",
             "Switching",
-            "Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter, MIDI or a Fader to change looks live.",
+            "Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live.",
             vec![],
             vec![],
             vec![choice("type", "Type", &VALUE_TYPES, "color"), number("count", "Inputs", 2.0, MAX_SWITCH_INPUTS as f64, 1.0, 2.0)],
@@ -530,7 +516,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Frame => (
             "Frame",
             "Layout",
-            "A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them.",
+            "A labelled box to group nodes visually; it does nothing to the output. Dragging it moves the nodes inside it. Select nodes and press Cmd/Ctrl+J to frame them. Collapsed, it hides the nodes inside and shows the sockets they expose, under the names given, so a frame works like a node of your own. A node inside exposes sockets with its \"exposed\" param, JSON from socket to name: {\"in:rate\": \"Speed\", \"out:value\": \"\"} (empty: the socket's own name).",
             vec![],
             vec![],
             vec![
@@ -538,6 +524,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
                 choice("color", "Color", &FRAME_COLORS, "gray"),
                 number("width", "Width", 100.0, 10000.0, 1.0, 400.0),
                 number("height", "Height", 80.0, 10000.0, 1.0, 300.0),
+                bool_param("collapsed", "Collapsed", false),
             ],
         ),
         NodeKind::Output => (

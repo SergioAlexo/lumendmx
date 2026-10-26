@@ -21,9 +21,8 @@
 
 ## Preserving the FTDI path
 
-BUILD_PLAN.md is explicit: never regress the real hardware break, the
-time-critical thread priority, or the frame pacing on the FTDI Open DMX
-driver. Concretely, across this refactor:
+Never regress the real hardware break, the time-critical thread priority,
+or the frame pacing on the FTDI Open DMX driver. Concretely, across this refactor:
 
 - The break/MAB timing and the `set_break`/`clear_break` calls in
   `output::ftdi::write_dmx_frame` are byte-for-byte what `dmx.rs` had.
@@ -67,10 +66,7 @@ on-rig verification — see HARDWARE_CHECKS.md.
 
 `output::input::DmxInputManager` receives and decodes Art-Net and sACN input
 into per-universe frames, but does **not** merge that input into any
-universe's live output yet. BUILD_PLAN Phase 2 asks for input "with a merge
-option"; Phase 3 is where the real HTP/LTP merge engine gets built. Bolting a
-second, throwaway merge implementation onto `runner::UniverseOutput` now — the
-same code path the safety-critical FTDI driver runs through — was judged not
-worth the risk this late in the phase (see DECISIONS.md). The receive/decode
-side is real, tested, and reusable once that merge step is wired up, and
-independently useful for a future DMX input monitor (Phase 12).
+universe's live output. Merging it belongs in the engine's merge, not as a
+second merge bolted onto `runner::UniverseOutput`, the code path the
+safety-critical FTDI driver runs through (see DECISIONS.md). The
+receive/decode side is real, tested, and reusable once that's wired up.

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import * as engineApi from "../lib/engine";
+import { describeTrigger, isPress } from "../lib/midiLearn";
 import * as timing from "../lib/timing";
-import type { TimingStatus } from "../lib/showfile/generated";
+import type { MidiTrigger, TimingStatus } from "../lib/showfile/generated";
+import { MidiBindingMenu } from "./MidiBindingMenu";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
@@ -9,6 +11,57 @@ const POLL_MS = 50;
 const TIMING_POLL_MS = 500;
 /** The beat light stays lit for this fraction of each beat. */
 const BEAT_FLASH = 0.15;
+
+/** TAP, with a right-click menu to bind it to a MIDI pad or button (saved
+ * per machine with the timing settings). */
+function TapButton({ status, onStatus, onBpm }: { status: TimingStatus | null; onStatus: (s: TimingStatus) => void; onBpm: (bpm: number) => void }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const binding = status?.settings.tapMidi ?? null;
+
+  const bind = (tapMidi: MidiTrigger | null) => {
+    if (!status) return;
+    void timing
+      .timingConfigure({ ...status.settings, tapMidi })
+      .then(onStatus)
+      .catch(() => undefined);
+  };
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        className="relative font-semibold"
+        title={`Tap the tempo${binding ? ` (also ${describeTrigger(binding)})` : ""}. Right-click to bind a MIDI pad.`}
+        // pointerdown, not click: a tap should land when the finger lands.
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          void engineApi.tapTempo().then(onBpm).catch(() => undefined);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        TAP
+        {binding && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />}
+      </Button>
+      {menu && (
+        <MidiBindingMenu
+          x={menu.x}
+          y={menu.y}
+          title="Tap from MIDI"
+          binding={binding}
+          accept={isPress}
+          hint="Press a pad or button…"
+          noPorts={status?.settings.controllerPorts.length === 0}
+          onBind={bind}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
+  );
+}
 
 /** The global tempo (BUILD_PLAN Phase 7): BPM field, TAP, and a light on
  * every beat. BPM-synced effects and pixel maps follow it. */
@@ -72,15 +125,7 @@ export function TempoControl() {
         className="h-8 w-14 rounded border border-input bg-transparent px-1 text-right text-sm tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       <span className="text-xs text-muted-foreground">BPM</span>
-      <Button
-        size="sm"
-        variant="outline"
-        className="font-semibold"
-        // pointerdown, not click: a tap should land when the finger lands.
-        onPointerDown={() => void engineApi.tapTempo().then(setBpm).catch(() => undefined)}
-      >
-        TAP
-      </Button>
+      <TapButton status={timingStatus} onStatus={setTimingStatus} onBpm={setBpm} />
       {timingStatus && (
         <select
           aria-label="Tempo source"

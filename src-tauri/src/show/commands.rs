@@ -17,7 +17,7 @@ use super::resolve::ResolvedPatch;
 use super::service::{AddFixtures, FixtureUpdate, ShowService, ShowSink, ShowSnapshot};
 use crate::engine::manager::EngineManager;
 use crate::graph::compile::GraphPlan;
-use crate::graph::eval::MidiEvent;
+use crate::engine::midi::MidiEvent;
 use crate::graph::model::{Edge, Graph, Node, NodePosition};
 use crate::graph::registry::{node_types, NodeKind, NodeTypeInfo};
 use crate::output::config::DriverConfig;
@@ -258,13 +258,6 @@ pub fn graph_set_control(show: State<Arc<ShowService>>, id: String, value: f32) 
 #[tauri::command]
 pub fn graph_controls(engine: State<Arc<EngineManager>>) -> HashMap<String, f32> {
     engine.controls()
-}
-
-/// The last MIDI controller/note received, for MIDI learn:
-/// `[isNote, channel 1-16, number]`.
-#[tauri::command]
-pub fn graph_last_midi(engine: State<Arc<EngineManager>>) -> Option<(bool, u8, u8)> {
-    engine.last_midi()
 }
 
 #[tauri::command]

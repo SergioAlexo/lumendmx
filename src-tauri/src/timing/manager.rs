@@ -20,7 +20,11 @@ use super::mtc::{ClockEvent, MidiClockTracker, MtcDecoder};
 use crate::engine::audio::BandLevels;
 use crate::engine::manager::TimingHandles;
 use crate::engine::timecode::{parts_to_ms, TimecodeSource, TimecodeStatus};
+use crate::engine::midi::MidiTrigger;
 use crate::io::midi::{self, MidiInputHandle};
+
+/// Where MIDI tap times are measured from.
+static MIDI_CLOCK_ORIGIN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -55,9 +59,12 @@ pub struct TimingSettings {
     pub ltc_channel: u32,
     /// The MIDI port MIDI clock, MTC and Mixxx are read from.
     pub clock_port: Option<String>,
-    /// The MIDI ports the graph's MIDI CC / Note nodes read, all merged.
+    /// The MIDI ports bound Buttons and Faders listen to, all merged.
     /// May include the clock port.
     pub controller_ports: Vec<String>,
+    /// The pad or button (on a controller port) that taps the tempo.
+    #[serde(default)]
+    pub tap_midi: Option<MidiTrigger>,
 }
 
 impl Default for TimingSettings {
@@ -72,6 +79,7 @@ impl Default for TimingSettings {
             ltc_channel: 0,
             clock_port: None,
             controller_ports: Vec::new(),
+            tap_midi: None,
         }
     }
 }
@@ -191,6 +199,7 @@ impl TimingManager {
         let old = inputs.settings.clone();
         self.shared.lock().unwrap().tempo_source = Some(settings.tempo_source);
         self.handles.timecode.lock().unwrap().set_source(settings.timecode_source);
+        self.handles.midi.lock().unwrap().tap = settings.tap_midi;
 
         let want_audio = settings.audio_analysis || settings.tempo_source == TempoSource::Audio;
         let audio_changed =
@@ -312,13 +321,22 @@ impl TimingManager {
         let tempo = self.handles.tempo.clone();
         let clock = self.handles.timecode.clone();
         let control = self.handles.midi.clone();
+        let controls = self.handles.controls.clone();
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
         let mut mixxx = MixxxDecoder::new();
         let port_id = port.to_string();
+        // Taps from any port share one clock: every port's callback uses
+        // the same origin.
+        let started = *MIDI_CLOCK_ORIGIN;
         midi::open_input(port, move |stamp_us, msg| {
             if roles.controllers {
-                control.lock().unwrap().feed(&port_id, msg);
+                // Lock order as in the engine tick: midi, then controls.
+                // Both are released before tapping: the tick locks tempo first.
+                let tapped = control.lock().unwrap().feed(&port_id, msg, &mut controls.lock().unwrap());
+                if tapped {
+                    tempo.lock().unwrap().tap_midi(started.elapsed().as_secs_f64() * 1000.0);
+                }
             }
             if !roles.clock {
                 return;

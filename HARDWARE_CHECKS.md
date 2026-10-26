@@ -3,13 +3,9 @@
 Things a coding agent can't verify from here — either because they need the
 physical rig (see `FIXTURES.md`), or because they need the actual built
 desktop app rather than the browser-only dev preview this environment can
-drive. Check these off by hand; each entry says which phase added it.
+drive. Check these off by hand.
 
 ## Node-graph redesign (2026-10-20)
-
-Items further down about the command line, cuelists, presets, effects,
-pixel maps, the timeline, audio triggers and the 3D view refer to features
-that were removed; skip them.
 
 - [ ] **Detect controllers finds the rig.** With the FTDI widget (and/or an
       Enttec Pro, an Art-Net node) connected, Setup → Detect lists each one
@@ -29,9 +25,11 @@ that were removed; skip them.
 - [ ] **No stutter while editing.** Drag nodes, scrub numbers and rewire
       while an LFO runs: the output doesn't glitch (compiles happen off the
       tick, and the tick swaps plans atomically).
-- [ ] **MIDI Learn and the playback bar.** A MIDI CC node learns a knob on
-      the real controller and drives intensity; a Fader node's playback-bar
-      fader does the same; a flash Button blinks the rig while held.
+- [ ] **MIDI Learn and the playback bar.** A Fader's Learn MIDI binds a knob
+      on the real controller: turning it moves the playback-bar fader and
+      the intensity. A flash Button learned to a pad blinks the rig while
+      held, even on very quick hits; a toggle Button flips per hit. Clicking
+      on the bar still works alongside.
 - [ ] **An agent over MCP.** `claude mcp add --transport http lumendmx
       http://127.0.0.1:7410/mcp`, ask Claude Code for "a red/blue alternating
       chase on the beat across the pars": the nodes appear in the editor, the
@@ -75,10 +73,6 @@ that were removed; skip them.
 - [ ] **4 simultaneous universes.** Per the phase's own "done when": run 4
       universes at once (e.g. FTDI + Art-Net + sACN + a second Art-Net
       universe) and confirm all four keep outputting correctly under load.
-- [ ] **DMX input.** `output::input::DmxInputManager` receives and decodes
-      Art-Net/sACN input (unit-tested for the decode logic) but has no UI yet
-      and isn't merged into any output — there's nothing to check on the rig
-      for this one until Phase 3 (merge) and Phase 12 (DMX monitor UI) exist.
 
 ## Phase 3 — Engine core
 
@@ -87,13 +81,6 @@ that were removed; skip them.
       confirm the FTDI rig's output doesn't glitch — the 44Hz engine tick
       runs on its own thread, independent of the UI, but this needs an actual
       running app + rig to confirm, not just code inspection.
-- [ ] **Command line against the real patch.** Patch the 4 pars, then try
-      `1 THRU 4 @ FULL`, `1 THRU 4 @ 0`, and confirm all four actually go to
-      full/zero on the rig, not just that the command reports success.
-- [ ] **Two overlapping triggered Scenes on the real rig.** Trigger two
-      Scenes that both touch the same par's dimmer and a color channel;
-      confirm dimmer shows the brighter one (HTP) and color shows whichever
-      was triggered more recently (LTP), matching engine::merge's tests.
 
 ## Phase 4 — Fixture library and patch
 
@@ -111,181 +98,47 @@ that were removed; skip them.
       own fixture repository (not just this project's test fixture) to
       catch any real-world `.qxf` quirk the unit tests didn't cover.
 
-## Phase 5 — Groups, presets, palettes
+## Show persistence
 
-- [ ] **Record and apply a real Colour preset on the 4 pars.** Pick a color
-      with the wheel, record it, then apply it to a different par than the
-      one it was recorded from, and confirm the color actually matches (the
-      attribute->channel resolution per target fixture is the part that
-      can't be fully proven without real hardware to look at).
-- [ ] **Group master fader** on a real group of the 4 pars — confirm moving
-      the slider dims them together, and that it behaves like `GROUP N @
-      value` (an immediate set, not a live-riding scale) as documented in
-      DECISIONS.md, not something more than that.
-
-## Phase 6 — Cuelists, playback
-
-- [ ] **Record and step through a real Standard cuelist on the 4 pars.**
-      Select fixtures via the command line or the Cuelists tab's picker, set
-      a look, `RECORD CUE 1`, change the look, `RECORD CUE 2`, add a playback
-      from the Cuelists tab, and confirm `NEXT`/GO actually crossfades the
-      real par output over the recorded fade time — the crossfade math is
-      unit-tested, but real DMX output on the wire over that fade is not.
-- [ ] **Two playbacks on the same fixtures, one an Override cuelist.**
-      Confirm the Override playback's LTP channels always win over the
-      Standard one regardless of which was triggered more recently, matching
-      `OVERRIDE_PRIORITY_BASE`'s intent — this is unit-tested against the
-      merge logic in isolation but not against two real concurrent
-      `PlaybackRuntime`s ticking on the live engine thread.
-- [ ] **Chase auto-advance and tap-tempo on the real rig.** Create a Chase
-      cuelist across the 4 pars, add a playback, and confirm the BPM-driven
-      auto-advance actually paces visibly correct on real hardware, and that
-      `PlaybackBar`'s tap-tempo button converges to a sensible BPM after a
-      few taps (its averaging window and click-timestamp math haven't been
-      exercised outside this browser-preview environment's `performance.now`).
-- [ ] **Submaster fader behavior on a real fixture.** Confirm a Submaster
-      playback's fader directly scales its recorded (tracked) look on real
-      output, with no GO-stepping, as intended.
-
-## Phase 6 follow-up — Show persistence
-
-- [ ] **Groups/presets/cuelists survive Save → quit → Open.** In the built
-      app, record a group, a Colour preset, and a cuelist with a cue that
-      references that preset. Save, quit, relaunch, Open the file, and confirm
-      all three are back, and that updating the preset still changes the cue
-      (the link survived, it wasn't copied).
 - [ ] **Session restore on launch.** Make an unsaved change, wait for an
       autosave (~60s), quit without saving, relaunch: the app should reopen
       that work marked unsaved. Then Save, quit, relaunch: it should reopen
       the saved file, not an older autosave.
-
-## Phase 7 — Effects and pixel maps
-
-None of the Phase 7 UI has been opened in the real desktop app yet. The
-browser dev preview can't reach the Rust engine, so these checks cover the
-UI too, not just the rig.
-
-- [ ] **Colour fan wave on the 4 pars (the phase's done-when).** Effects
-      tab: pick pars 1→4, Waveform → Sine on `red`, Fan 360, BPM sync
-      1 beat/cycle, Run. The red should roll across the pars in order and
-      speed up/slow down with the top bar's BPM and TAP. The engine side is
-      covered by `a_bpm_synced_colour_fan_wave_runs_across_the_four_pars`;
-      this checks it on real DMX at 44Hz with no visible stepping.
-- [ ] **Dimmer effect under a playback fader.** Record a cue with a dimmer
-      effect (run it, then RECORD CUE with those pars selected), CLEAR,
-      play it back from the playback bar, and pull the fader down: the
-      effect should fade with it.
-- [ ] **Effect preset follows into cues.** Record an Effect preset, apply
-      it to pars, record a cue, CLEAR, GO the cue, then change the preset
-      (Load → edit → ↻): the running cue should change.
-- [ ] **Rainbow on a 10×10 virtual matrix.** Pixel maps tab: create a
-      10×10 map without mapping anything, Rainbow, BPM sync. The grid
-      preview should scroll a full rainbow every 4 beats.
-- [ ] **Pixel map on the pars.** Create a 4×1 map, Fill rows, Run: the
-      pars should show the rainbow with their dimmers up. The master slider
-      should dim them.
-- [ ] **GIF import.** Import a small animated GIF into a map and confirm it
-      plays at its natural speed and saves and reopens with the show.
-- [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
-      displayed BPM lands within about ±1 and the beat light sits on the
-      beat.
-
-## Phase 12 — Visualisation
-
-- [ ] **3D view in the desktop app.** Open the 3D tab in the built app (the
-      Tauri webview, not the browser preview): it should render the stage and
-      orbit smoothly. If it shows "The 3D view could not start", note the
-      platform and webview version (WebGL availability).
-- [ ] **Beams track the rig.** With the real rig patched, set colours and
-      intensity from the command line and playbacks: the plot dots and 3D
-      beams should match what the fixtures do. Check a moving head's pan and
-      tilt direction against the real fixture; if it is mirrored, toggle the
-      patch's invert pan/tilt.
-- [ ] **Frame rate.** With your full patch, the 3D tab should hold a steady
-      frame rate on the show laptop while a few effects run.
-- [ ] **Output sheet sources.** Run a cue, then take a fixture in the
-      programmer: its cells should change from the cuelist colour to the
-      programmer colour, and tracked values (not recorded in the current
-      cue) should show dimmer. Start an effect to see the effect colour.
-- [ ] **Touch dragging.** On a touch screen, drag fixtures in the Stage plot
-      with a finger and confirm it doesn't scroll the page.
-- [ ] **Positions persist.** Place fixtures, save, reopen: positions come back
-      in both the plot and 3D.
-
-## Playback and programmer completion
-
-Needs the desktop app (`npm run tauri dev`) and, where noted, a rig.
-
-- [ ] Playback bar: page through 1 to 40 with the arrows. Assign a cuelist to
-      a column on page 2, go back to page 1 and confirm it keeps running
-      (release on page change off), then turn the option on and confirm
-      leaving page 2 releases it.
-- [ ] Touch: every playback button and fader is comfortable to hit on a
-      touchscreen (44px minimum), the fader tracks a finger drag, and Flash
-      releases when the finger lifts or slides off.
-- [ ] Main playback: select a column, then GO / BACK / PAUSE act on it;
-      RELEASE ALL clears every page.
-- [ ] Grand master: with real fixtures at mixed levels, pulling GM down
-      dims dimmers proportionally and leaves colour/position alone; recording
-      a cue at GM 50% stores the unmastered values.
-- [ ] Rate master: a BPM-synced effect and a chase visibly speed up at 200%,
-      slow at 50% and freeze at 0%. A pixel map slows with it.
-- [ ] Rate fader mode on a playback with follows: 0% stops the cue timers,
-      100% halves every fade.
-- [ ] Delay in/out, follow, wait, link and loop on a real cuelist: watch the
-      timing against a stopwatch and confirm no flicker at the cue changes.
-- [ ] Mark (move-in-black) with moving heads: the next cue's pan/tilt/colour
-      is reached while the head is dark in the previous cue, with no visible
-      move when the cue fires. Check a head with a slow pan/tilt.
-- [ ] Programmer TIME: `TIME 3` then `1 THRU 4 @ 100` fades the pars in over
-      3 seconds on the output.
-- [ ] Blind: edits while blind change nothing on stage; `RECORD CUE` from blind
-      then GO shows exactly the blind edits.
-- [ ] Highlight: selected fixtures go full white and the rest dim; changing the
-      selection moves the highlight; turning it off restores the look.
-- [ ] Keyboard: every Alt shortcut on the keypad works on macOS and Windows
-      (Alt+letter can be eaten by the OS or the webview menu on some layouts).
 
 ## Phase 8 — Timing sources
 
 These need real audio, a MIDI device and the built desktop app (the unit
 tests use synthesized signals).
 
-- [ ] **Audio beat lock.** Timing tab: pick the line-in / loopback device,
+- [ ] **Audio beat lock.** Setup tab: pick the line-in / loopback device,
       set Tempo source to Audio, play a steady 4-on-the-floor track. After
       ~6 s the badge should read Locked and the top bar BPM should match the
-      track within ±1. Turn on "Chases run at the show tempo" and check a
-      chase follows it. Try a track with a long breakdown (the BPM should hold,
+      track within ±1. Try a track with a long breakdown (the BPM should hold,
       not wander) and a very quiet input.
 - [ ] **Device permissions.** On macOS the first capture asks for microphone
       access; confirm the prompt appears and that denying it shows an error in
-      the Timing tab instead of a crash. `src-tauri/Info.plist` supplies
+      the Setup tab instead of a crash. `src-tauri/Info.plist` supplies
       `NSMicrophoneUsageDescription`; check it ends up in the built bundle's
       Info.plist (the prompt never appearing means it didn't).
-- [ ] **Spectrum meters and triggers.** With Analysis on, the Low/Mid/High
-      bars should follow kick / vocals / hats. Add a trigger (Low → Flash
-      playback) with a playback running at fader 0: the rig should pulse on
-      kicks. Raise the gate until only the loudest kicks fire.
+- [ ] **Spectrum meters and the Audio node.** With Analysis on, the
+      Low/Mid/High bars should follow kick / vocals / hats, and an Audio
+      node's Low wired to an Output's intensity should pulse the rig on kicks.
 - [ ] **MIDI clock.** Send clock from a DAW or DJ app to a virtual MIDI port
-      (IAC / loopMIDI). Pick it as the Clock / timecode port and Tempo source MIDI clock: the BPM
-      should follow within 0.1 and Start should snap the beat light.
+      (IAC / loopMIDI). Pick it as the Clock / timecode port and Tempo source
+      MIDI clock: the BPM should follow within 0.1 and Start should snap the
+      beat light.
 - [ ] **Clock and controllers together.** Keep the clock running and tick a
       MIDI keyboard or controller under Controller ports (plus a second one,
       if you have it). Turn knobs and hit pads: they show in the MIDI monitor
-      with their port, and MIDI CC / Note nodes follow them, while the BPM
+      with their port, and bound Buttons / Faders follow them, while the BPM
       keeps following the clock. Notes/CCs sent on the clock port alone must
       not reach the nodes, and the keyboard must not move the BPM.
 - [ ] **MTC.** Send MTC from a DAW. Set Timecode source to MTC, select the
-      port: the Timing tab clock should track it. Make a Timecode cuelist,
-      give two cues times (Timeline tab) and confirm they fire as the DAW
-      passes those times, including after relocating backwards.
+      port: the Setup tab's clock and a Timecode node should track it,
+      including after relocating backwards.
 - [ ] **LTC.** Play an LTC file/generator into a line input, set the
       source to LTC and the right device/channel: the clock should lock within
       a second. Check 25 and 30 fps, and a quiet signal.
-- [ ] **Learn mode.** Internal clock playing, Learn on, GO a Timecode
-      cuelist's cues by hand; their times should be recorded on the Timeline.
-- [ ] **Timeline audio.** Load an MP3/WAV on the Timeline: waveform draws,
-      Play starts the audio from the playhead and keeps it in step, clicking
-      the ruler scrubs both, and dragging a cue block retimes it. Check a long
-      (10+ minute) file for decode time and memory.
-
+- [ ] **TAP latency.** Tap along to a track at a known BPM and confirm the
+      displayed BPM lands within about ±1 and the beat light sits on the
+      beat.
