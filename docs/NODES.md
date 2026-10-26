@@ -118,6 +118,13 @@ Outputs:
 - `seconds` Seconds (number)
 - `running` Running (trigger)
 
+### Tap Tempo (`tapTempo`)
+
+Taps the show tempo each time Tap turns on, like the TAP button: wire a MIDI Note or Button into it. Averages the last 4 taps (a gap over 2 seconds starts again) and lines the beat up with each tap. An external tempo source (audio, MIDI clock, Mixxx) overrides it. Tap can't depend on the fixture.
+
+Inputs:
+- `tap` Tap (trigger, default 0)
+
 ## Fixtures
 
 ### Fixture Index (`fixtureIndex`)

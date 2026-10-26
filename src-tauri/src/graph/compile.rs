@@ -452,6 +452,10 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
     for &i in &order {
         let source_varying = nodes[i].inputs.iter().any(|s| matches!(s, Source::Link { node, .. } if nodes[*node].varying));
         nodes[i].varying = matches!(nodes[i].kind, NodeKind::FixtureIndex | NodeKind::Fan | NodeKind::Random) || source_varying;
+        // Only fixture-independent nodes run without an Output to drive them.
+        if nodes[i].kind == NodeKind::TapTempo && nodes[i].varying {
+            issue(&graph.nodes[i].id, "Tap can't depend on the fixture (Fixture Index, Fan, Random); it won't tap".to_string());
+        }
     }
 
     let position: HashMap<usize, usize> = order.iter().enumerate().map(|(p, &i)| (i, p)).collect();

@@ -24,6 +24,7 @@ pub enum NodeKind {
     Fader,
     Button,
     Timecode,
+    TapTempo,
     FixtureIndex,
     Fan,
     Math,
@@ -48,7 +49,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 31] = [
+    pub const ALL: [NodeKind; 32] = [
         NodeKind::Number,
         NodeKind::Color,
         NodeKind::Time,
@@ -59,6 +60,7 @@ impl NodeKind {
         NodeKind::Fader,
         NodeKind::Button,
         NodeKind::Timecode,
+        NodeKind::TapTempo,
         NodeKind::FixtureIndex,
         NodeKind::Fan,
         NodeKind::Math,
@@ -349,6 +351,14 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             "The incoming timecode (MTC or LTC, chosen in Setup): position in seconds, and whether it's running.",
             vec![],
             vec![output("seconds", "Seconds", Number), output("running", "Running", Trigger)],
+            vec![],
+        ),
+        NodeKind::TapTempo => (
+            "Tap Tempo",
+            "Input",
+            "Taps the show tempo each time Tap turns on, like the TAP button: wire a MIDI Note or Button into it. Averages the last 4 taps (a gap over 2 seconds starts again) and lines the beat up with each tap. An external tempo source (audio, MIDI clock, Mixxx) overrides it. Tap can't depend on the fixture.",
+            vec![input("tap", "Tap", Trigger, n(0.0))],
+            vec![],
             vec![],
         ),
         NodeKind::FixtureIndex => (

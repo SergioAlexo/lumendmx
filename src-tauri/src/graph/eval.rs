@@ -3,7 +3,7 @@
 //! target's place in the list as context. Each Output node's values go
 //! through `write::write_item` into its own engine layer.
 //!
-//! Stateful nodes (Smooth, Envelope, Toggle, Counter, Random) keep their
+//! Stateful nodes (Smooth, Envelope, Toggle, Counter, Random, Tap Tempo) keep their
 //! state by node id and fixture, so it survives recompiles: editing one node
 //! doesn't reset a smoothing or a counter elsewhere.
 
@@ -182,6 +182,8 @@ pub struct GraphRuntime {
     /// Each node's outputs this tick (for varying nodes, at the first
     /// target that evaluated them), for the editor's live previews.
     preview: HashMap<Arc<str>, Vec<Val>>,
+    /// Tap Tempo taps since the engine last took them (`take_taps`).
+    taps: u32,
 }
 
 fn rate_cycles(rate: Rate, inputs: &Inputs) -> f64 {
@@ -214,6 +216,11 @@ fn bool_val(b: bool) -> Val {
 impl GraphRuntime {
     pub fn preview(&self) -> &HashMap<Arc<str>, Vec<Val>> {
         &self.preview
+    }
+
+    /// How many times a Tap Tempo node fired since the last call.
+    pub fn take_taps(&mut self) -> u32 {
+        std::mem::take(&mut self.taps)
     }
 
     /// The node's Enabled input (always its last) is on.
@@ -349,7 +356,7 @@ impl GraphRuntime {
             }
             (NodeKind::Any, Config::Count(count)) => out[0] = bool_val((0..*count).any(|i| num(i) > 0.5)),
             (NodeKind::Mix, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
-            (NodeKind::Random | NodeKind::Smooth | NodeKind::Envelope | NodeKind::Toggle | NodeKind::Counter, _) => {
+            (NodeKind::Random | NodeKind::Smooth | NodeKind::Envelope | NodeKind::Toggle | NodeKind::Counter | NodeKind::TapTempo, _) => {
                 return self.stateful(plan, idx, ctx, inputs);
             }
             _ => {}
@@ -361,6 +368,7 @@ impl GraphRuntime {
         let node = &plan.nodes[idx];
         let a = self.read(plan, node.inputs.first().unwrap_or(&Source::Const([0.0; 3])))[0];
         let b = node.inputs.get(1).map_or(0.0, |s| self.read(plan, s)[0]);
+        let enabled = self.enabled(plan, idx);
         let tick = self.tick;
         let state = self.state.entry((node.id.clone(), ctx.key)).or_default();
         if state.tick == tick && state.started {
@@ -420,6 +428,14 @@ impl GraphRuntime {
                 m[1] = b;
                 out[0][0] = m[2];
                 out[1][0] = if *steps > 1 { m[2] / (*steps - 1) as f32 } else { 0.0 };
+            }
+            _ if node.kind == NodeKind::TapTempo => {
+                // m[0] last trigger. Not on the first tick: a pad already
+                // held when the node appears isn't a tap.
+                if !first && enabled && rising(m[0], a) {
+                    self.taps += 1;
+                }
+                m[0] = a;
             }
             _ => {
                 // Toggle: m[0] last trigger, m[1] state.
@@ -800,6 +816,37 @@ mod tests {
         rig.controls.insert("button".into(), 0.0);
         rig.at(0.4);
         assert_eq!(rig.channel("out", 1), 0.0);
+    }
+
+    #[test]
+    fn tap_tempo_taps_once_per_press_without_an_output() {
+        let graph = Graph {
+            nodes: vec![node("pad", NodeKind::MidiNote, &[("note", ParamValue::Number(40.0))]), node("tap", NodeKind::TapTempo, &[])],
+            edges: vec![edge("pad", "gate", "tap", "tap")],
+        };
+        let mut rig = Rig::new(&graph, 1);
+        rig.at(0.1);
+        rig.midi.feed("test", &[0x90, 40, 100]);
+        rig.at(0.2);
+        rig.at(0.3); // still held: no new tap
+        assert_eq!(rig.runtime.take_taps(), 1);
+        rig.midi.feed("test", &[0x80, 40, 0]);
+        rig.at(0.4);
+        rig.midi.feed("test", &[0x90, 40, 100]);
+        rig.at(0.5);
+        assert_eq!(rig.runtime.take_taps(), 1);
+        assert_eq!(rig.runtime.take_taps(), 0, "taken");
+    }
+
+    #[test]
+    fn tap_tempo_fed_by_the_fixture_is_reported() {
+        let graph = Graph {
+            nodes: vec![node("idx", NodeKind::FixtureIndex, &[]), node("tap", NodeKind::TapTempo, &[])],
+            edges: vec![edge("idx", "position", "tap", "tap")],
+        };
+        let patch = resolve(&pars(1), &library());
+        let (_, issues) = compile(&graph, &patch, &[]);
+        assert!(issues.iter().any(|i| i.node == "tap"), "{issues:?}");
     }
 
     #[test]

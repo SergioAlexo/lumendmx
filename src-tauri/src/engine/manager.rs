@@ -90,9 +90,17 @@ impl TickShared {
             timecode_seconds,
             timecode_running,
         };
-        let mut runtime = self.runtime.lock().unwrap();
-        let mut state = self.state.lock().unwrap();
-        runtime.run(&plan, &inputs, &mut state.layers);
+        let tapped = {
+            let mut runtime = self.runtime.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
+            runtime.run(&plan, &inputs, &mut state.layers);
+            runtime.take_taps() > 0
+        };
+        drop((midi, controls));
+        // One per tick at most: two in one tick would measure a 0ms interval.
+        if tapped {
+            self.tempo.lock().unwrap().tap_engine();
+        }
     }
 
     fn graph_values(&self) -> GraphValues {
