@@ -218,9 +218,11 @@ impl GraphRuntime {
                 out[0] = [(center[0] + size * dx).clamp(0.0, 1.0), (center[1] + size * dy).clamp(0.0, 1.0), 0.0];
             }
             (NodeKind::PanTilt, _) => out[0] = [num(0), num(1), 0.0],
-            (NodeKind::Switch, Config::Count(count)) => {
+            (NodeKind::Switch, Config::Switch { count, channels }) => {
                 let pick = (num(0).round().max(0.0) as usize).min(count - 1);
-                out[0] = input(1 + pick);
+                for c in 0..*channels {
+                    out[c] = input(1 + pick * channels + c);
+                }
             }
             (NodeKind::Any, Config::Count(count)) => out[0] = bool_val((0..*count).any(|i| num(i) > 0.5)),
             (NodeKind::Mix, _) => out[0] = lerp(input(0), input(1), num(2).clamp(0.0, 1.0)),
@@ -400,6 +402,7 @@ mod tests {
             kind,
             position: NodePosition::default(),
             params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
+            frame: None,
         }
     }
 
@@ -545,6 +548,41 @@ mod tests {
         assert_eq!(rig.channel("out", 4), 255.0); // no new beat: still blue
         rig.at(2.1);
         assert_eq!(rig.channel("out", 2), 255.0); // wrapped back to red
+    }
+
+    #[test]
+    fn a_two_channel_switch_changes_intensity_and_colour_together() {
+        let graph = Graph {
+            nodes: vec![
+                node("pick", NodeKind::Fader, &[]),
+                node(
+                    "switch",
+                    NodeKind::Switch,
+                    &[
+                        ("type", ParamValue::Text("number".into())),
+                        ("type1", ParamValue::Text("color".into())),
+                        ("channels", ParamValue::Number(2.0)),
+                        ("in0", ParamValue::Number(1.0)),
+                        ("in0_1", ParamValue::Text("#ff0000".into())),
+                        ("in1", ParamValue::Number(0.5)),
+                        ("in1_1", ParamValue::Text("#0000ff".into())),
+                    ],
+                ),
+                output("out"),
+            ],
+            edges: vec![
+                edge("pick", "value", "switch", "index"),
+                edge("switch", "value", "out", "intensity"),
+                edge("switch", "value1", "out", "color"),
+            ],
+        };
+        let mut rig = Rig::new(&graph, 1);
+        rig.controls.insert("pick".into(), 0.0);
+        rig.at(0.5);
+        assert_eq!((rig.channel("out", 1), rig.channel("out", 2), rig.channel("out", 4)), (255.0, 255.0, 0.0)); // full red
+        rig.controls.insert("pick".into(), 1.0);
+        rig.at(1.0);
+        assert_eq!((rig.channel("out", 1), rig.channel("out", 2), rig.channel("out", 4)), (127.5, 0.0, 255.0)); // half blue
     }
 
     #[test]

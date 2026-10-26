@@ -174,10 +174,12 @@ pub const VALUE_TYPES: [&str; 3] = ["number", "color", "position"];
 pub const FRAME_COLORS: [&str; 7] = ["gray", "red", "orange", "yellow", "green", "blue", "purple"];
 /// Most inputs a Switch can have.
 pub const MAX_SWITCH_INPUTS: usize = 8;
+/// Most values a Switch can pass through side by side.
+pub const MAX_SWITCH_CHANNELS: usize = 8;
 /// Most inputs an Any node grows to.
 pub const MAX_ANY_INPUTS: usize = 64;
 /// Most outputs any node has.
-pub const MAX_OUTPUTS: usize = 5;
+pub const MAX_OUTPUTS: usize = 8;
 
 fn n(v: f64) -> ParamValue {
     ParamValue::Number(v)
@@ -253,6 +255,18 @@ fn value_default(ty: SocketType) -> ParamValue {
         SocketType::Color => text("#000000"),
         _ => n(0.0),
     }
+}
+
+/// A Switch's settings: how many inputs and channels, and each channel's
+/// type and name (channel 1 is "type"/"label", the rest "type1"/"label1"...).
+fn switch_params() -> Vec<ParamInfo> {
+    let mut params = vec![number("count", "Inputs", 2.0, MAX_SWITCH_INPUTS as f64, 1.0, 2.0), number("channels", "Channels", 1.0, MAX_SWITCH_CHANNELS as f64, 1.0, 1.0)];
+    for c in 0..MAX_SWITCH_CHANNELS {
+        let (type_id, label_id) = if c == 0 { ("type".to_string(), "label".to_string()) } else { (format!("type{c}"), format!("label{c}")) };
+        params.push(choice(&type_id, &format!("Type {}", c + 1), &VALUE_TYPES, if c == 0 { "color" } else { "number" }));
+        params.push(text_param(&label_id, &format!("Name {}", c + 1), &format!("Channel {}, shown on its sockets", c + 1), ""));
+    }
+    params
 }
 
 /// The node type's description and default sockets.
@@ -500,10 +514,10 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Switch => (
             "Switch",
             "Switching",
-            "Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live.",
+            "Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live. With more than one Channel, every input is a row of values (say intensity and colour) and the whole row switches together.",
             vec![],
             vec![],
-            vec![choice("type", "Type", &VALUE_TYPES, "color"), number("count", "Inputs", 2.0, MAX_SWITCH_INPUTS as f64, 1.0, 2.0)],
+            switch_params(),
         ),
         NodeKind::Mix => (
             "Mix",
@@ -559,6 +573,11 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
     info
 }
 
+/// How many values a Switch passes side by side.
+pub fn switch_channels(params: &BTreeMap<String, ParamValue>) -> usize {
+    params.get("channels").and_then(ParamValue::as_f32).unwrap_or(1.0).clamp(1.0, MAX_SWITCH_CHANNELS as f32) as usize
+}
+
 fn param_text<'a>(params: &'a BTreeMap<String, ParamValue>, id: &str, default: &'a str) -> &'a str {
     params.get(id).and_then(ParamValue::as_text).unwrap_or(default)
 }
@@ -591,11 +610,32 @@ pub fn any_inputs(params: &BTreeMap<String, ParamValue>) -> usize {
 pub fn sockets(kind: NodeKind, params: &BTreeMap<String, ParamValue>) -> (Vec<SocketInfo>, Vec<SocketInfo>) {
     match kind {
         NodeKind::Switch => {
-            let ty = value_type(param_text(params, "type", "color"));
             let count = params.get("count").and_then(ParamValue::as_f32).unwrap_or(2.0).clamp(2.0, MAX_SWITCH_INPUTS as f32) as usize;
+            let channels = switch_channels(params);
+            // Channel 0 keeps the plain ids (in0, value), the others add a suffix.
+            let channel: Vec<(SocketType, String)> = (0..channels)
+                .map(|c| {
+                    let (type_key, label_key, default) = if c == 0 { ("type".to_string(), "label".to_string(), "color") } else { (format!("type{c}"), format!("label{c}"), "number") };
+                    let type_name = param_text(params, &type_key, default);
+                    let name = param_text(params, &label_key, "").trim();
+                    let name = if name.is_empty() { type_name[..1].to_uppercase() + &type_name[1..] } else { name.to_string() };
+                    (value_type(type_name), name)
+                })
+                .collect();
             let mut inputs = vec![input("index", "Index", SocketType::Number, n(0.0))];
-            inputs.extend((0..count).map(|i| input(&format!("in{i}"), &format!("{i}"), ty, value_default(ty))));
-            (inputs, vec![output("value", "Value", ty)])
+            for i in 0..count {
+                for (c, (ty, name)) in channel.iter().enumerate() {
+                    let id = if c == 0 { format!("in{i}") } else { format!("in{i}_{c}") };
+                    let label = if channels == 1 { format!("{i}") } else { format!("{name} {i}") };
+                    inputs.push(input(&id, &label, *ty, value_default(*ty)));
+                }
+            }
+            let outputs = channel
+                .iter()
+                .enumerate()
+                .map(|(c, (ty, name))| output(&if c == 0 { "value".to_string() } else { format!("value{c}") }, if channels == 1 { "Value" } else { name }, *ty))
+                .collect();
+            (inputs, outputs)
         }
         NodeKind::Any => {
             let inputs = (0..any_inputs(params)).map(|i| input_only(&format!("in{i}"), &format!("{}", i + 1), SocketType::Trigger)).collect();
@@ -729,6 +769,20 @@ mod tests {
         let (inputs, outputs) = node_sockets(NodeKind::Switch, &params);
         assert_eq!(inputs.len(), 5);
         assert_eq!(outputs[0].ty, SocketType::Position);
+
+        // Two channels: every input becomes a row of an intensity and a colour.
+        let mut params = BTreeMap::new();
+        params.insert("type".to_string(), text("number"));
+        params.insert("type1".to_string(), text("color"));
+        params.insert("label".to_string(), text("Intensity"));
+        params.insert("count".to_string(), n(3.0));
+        params.insert("channels".to_string(), n(2.0));
+        let (inputs, outputs) = node_sockets(NodeKind::Switch, &params);
+        let ids: Vec<&str> = inputs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["index", "in0", "in0_1", "in1", "in1_1", "in2", "in2_1", "enabled"]);
+        assert_eq!(inputs[1].label, "Intensity 0");
+        assert_eq!(inputs[2].ty, SocketType::Color);
+        assert_eq!(outputs.iter().map(|s| (s.id.as_str(), s.ty)).collect::<Vec<_>>(), vec![("value", SocketType::Number), ("value1", SocketType::Color)]);
 
         let mut params = BTreeMap::new();
         params.insert("attributes".to_string(), text("Zoom, gobo, color"));

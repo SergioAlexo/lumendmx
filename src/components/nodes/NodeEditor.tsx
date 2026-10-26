@@ -31,8 +31,7 @@ import {
   exposedParam,
   exposedSockets,
   frameLayout,
-  framesAround,
-  inFrame,
+  descendants,
   portHandle,
   resolveHandle,
   socketKey,
@@ -135,12 +134,10 @@ function Editor() {
   const views = useMemo(() => new Map((graph?.nodes ?? []).map((v) => [v.id, v])), [graph]);
   const layout = useMemo(() => frameLayout(graph?.nodes ?? [], graph?.edges ?? [], byKind), [graph, byKind]);
 
-  /** The nodes in frame `frameId` (wherever it is now), by their positions on the canvas. */
-  const members = (frameId: string, at?: { x: number; y: number }): GraphFlowNode[] => {
-    const view = views.get(frameId);
-    if (!view) return [];
-    const frame = { position: at ?? view.position, params: view.params };
-    return flow.getNodes().filter((n) => n.id !== frameId && inFrame(frame, n.position));
+  /** The nodes in frame `frameId`, at any depth, as they are on the canvas now. */
+  const members = (frameId: string): GraphFlowNode[] => {
+    const inside = descendants(graph?.nodes ?? [], frameId);
+    return flow.getNodes().filter((n) => inside.has(n.id));
   };
 
   // Asked to show a node: centre on it and select only it. Waits until the
@@ -185,7 +182,7 @@ function Editor() {
           select.has(v.id),
           layout.owner.has(v.id),
           layout.ports.get(v.id),
-          v.kind !== "frame" && framesAround(graph.nodes, v.id).length > 0,
+          v.kind !== "frame" && v.frame != null,
         ),
       );
       // A spawned preset replaces the selection.
@@ -341,7 +338,7 @@ function Editor() {
     const draggedIds = new Set(dragged.map((n) => n.id));
     const nodes = new Map<string, { x: number; y: number; frame: string }>();
     for (const frame of frames) {
-      for (const n of members(frame.id, frame.position)) {
+      for (const n of members(frame.id)) {
         if (!draggedIds.has(n.id) && !nodes.has(n.id)) nodes.set(n.id, { ...n.position, frame: frame.id });
       }
     }

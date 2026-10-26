@@ -86,10 +86,15 @@ impl ShowService {
     pub fn add_node(&self, kind: NodeKind, position: NodePosition, params: ParamChanges) -> Result<Node, String> {
         self.edit("Add node", |inner| {
             let graph = &mut inner.show.graph;
-            let mut node = Node { id: graph.next_id(), kind, position, params: BTreeMap::new() };
+            let mut node = Node { id: graph.next_id(), kind, position, params: BTreeMap::new(), frame: None };
             apply_params(&mut node, params);
-            graph.nodes.push(node.clone());
-            Ok(node)
+            let id = node.id.clone();
+            graph.nodes.push(node);
+            graph.reframe(&id);
+            if kind == NodeKind::Frame {
+                graph.refit(&id);
+            }
+            Ok(graph.node(&id).expect("just added").clone())
         })
     }
 
@@ -100,6 +105,7 @@ impl ShowService {
             if let Some(missing) = ids.iter().find(|id| graph.node(id).is_none()) {
                 return Err(format!("No node {missing}"));
             }
+            graph.release_from(&ids.iter().cloned().collect());
             graph.nodes.retain(|n| !ids.contains(&n.id));
             graph.edges.retain(|e| !ids.contains(&e.from_node) && !ids.contains(&e.to_node));
             tidy_any_inputs(graph);
@@ -154,7 +160,11 @@ impl ShowService {
         self.edit("Edit node", |inner| {
             let graph = &mut inner.show.graph;
             let node = graph.node_mut(id).ok_or_else(|| format!("No node {id}"))?;
+            let resized = node.kind == NodeKind::Frame && (changes.contains_key("width") || changes.contains_key("height"));
             apply_params(node, changes);
+            if resized {
+                graph.refit(id);
+            }
             tidy_any_inputs(graph);
             let node = graph.node(id).expect("found above").clone();
             prune_edges(graph);
@@ -164,9 +174,18 @@ impl ShowService {
 
     pub fn move_nodes(&self, moves: &[NodeMove]) -> Result<(), String> {
         self.edit("Move nodes", |inner| {
+            let graph = &mut inner.show.graph;
             for m in moves {
-                let node = inner.show.graph.node_mut(&m.id).ok_or_else(|| format!("No node {}", m.id))?;
+                let node = graph.node_mut(&m.id).ok_or_else(|| format!("No node {}", m.id))?;
                 node.position = m.position;
+            }
+            // A node moved along with its frame stays in it; any other lands in the frame under it.
+            let moved: HashSet<&str> = moves.iter().map(|m| m.id.as_str()).collect();
+            for m in moves {
+                let carried = graph.node(&m.id).and_then(|n| n.frame.as_deref()).is_some_and(|f| moved.contains(f) || moved.iter().any(|a| graph.is_inside(f, a)));
+                if !carried {
+                    graph.reframe(&m.id);
+                }
             }
             Ok(())
         })
@@ -180,6 +199,8 @@ impl ShowService {
             if let Some(dup) = graph.nodes.iter().find(|n| !seen.insert(n.id.as_str())) {
                 return Err(format!("Node id {} is used twice", dup.id));
             }
+            graph.infer_frames_if_unset();
+            graph.sanitize_frames();
             tidy_any_inputs(&mut graph);
             prune_edges(&mut graph);
             inner.show.graph = graph;
@@ -288,5 +309,75 @@ mod tests {
         service.set_control(&fader, 0.7).unwrap();
         assert!(service.set_control(&lfo, 0.7).is_err());
         assert_eq!(sink.controls.lock().unwrap()[&fader], 0.7);
+    }
+
+    fn frame(service: &ShowService, x: f32, y: f32, size: f32) -> String {
+        let params = [("width", ParamValue::Number(size as f64)), ("height", ParamValue::Number(size as f64))];
+        service.add_node(NodeKind::Frame, NodePosition { x, y }, params.iter().map(|(k, v)| (k.to_string(), Some(v.clone()))).collect()).unwrap().id
+    }
+
+    fn at(service: &ShowService, x: f32, y: f32) -> String {
+        service.add_node(NodeKind::Number, NodePosition { x, y }, ParamChanges::new()).unwrap().id
+    }
+
+    fn parent(service: &ShowService, id: &str) -> Option<String> {
+        service.snapshot().graph.nodes.iter().find(|n| n.node.id == id).unwrap().node.frame.clone()
+    }
+
+    fn collapse(service: &ShowService, id: &str) {
+        service.set_params(id, [("collapsed".to_string(), Some(ParamValue::Bool(true)))].into()).unwrap();
+    }
+
+    #[test]
+    fn a_node_joins_the_frame_it_is_dropped_in_and_leaves_when_dropped_outside() {
+        let (service, _) = service();
+        let f = frame(&service, 0.0, 0.0, 200.0);
+        let n = at(&service, 50.0, 50.0);
+        assert_eq!(parent(&service, &n), Some(f.clone()));
+        service.move_nodes(&[NodeMove { id: n.clone(), position: NodePosition { x: 500.0, y: 500.0 } }]).unwrap();
+        assert_eq!(parent(&service, &n), None);
+    }
+
+    #[test]
+    fn overlapping_collapsed_frames_do_not_swap_nodes() {
+        let (service, _) = service();
+        let (a, b) = (frame(&service, 0.0, 0.0, 200.0), frame(&service, 1000.0, 0.0, 200.0));
+        let (na, nb) = (at(&service, 50.0, 50.0), at(&service, 1050.0, 50.0));
+        collapse(&service, &a);
+        collapse(&service, &b);
+        // Drag B, with its node, so their hidden boxes overlap.
+        let moves = [
+            NodeMove { id: b.clone(), position: NodePosition { x: 100.0, y: 0.0 } },
+            NodeMove { id: nb.clone(), position: NodePosition { x: 150.0, y: 50.0 } },
+        ];
+        service.move_nodes(&moves).unwrap();
+        assert_eq!(parent(&service, &na), Some(a.clone()));
+        assert_eq!(parent(&service, &nb), Some(b.clone()));
+        assert_eq!(parent(&service, &b), None, "B's top-left lies in A's hidden box but B isn't in A");
+    }
+
+    #[test]
+    fn resizing_a_frame_takes_in_and_lets_go_of_nodes() {
+        let (service, _) = service();
+        let f = frame(&service, 0.0, 0.0, 100.0);
+        let (inside, outside) = (at(&service, 10.0, 10.0), at(&service, 150.0, 10.0));
+        assert_eq!((parent(&service, &inside), parent(&service, &outside)), (Some(f.clone()), None));
+        let size = |n: f64| -> ParamChanges { [("width".to_string(), Some(ParamValue::Number(n)))].into() };
+        service.set_params(&f, size(200.0)).unwrap();
+        assert_eq!(parent(&service, &outside), Some(f.clone()));
+        service.set_params(&f, size(50.0)).unwrap();
+        assert_eq!(parent(&service, &outside), None);
+        assert_eq!(parent(&service, &inside), Some(f));
+    }
+
+    #[test]
+    fn removing_a_frame_hands_its_nodes_to_the_frame_around_it() {
+        let (service, _) = service();
+        let outer = frame(&service, 0.0, 0.0, 400.0);
+        let inner = frame(&service, 10.0, 10.0, 100.0);
+        let n = at(&service, 20.0, 20.0);
+        assert_eq!((parent(&service, &inner), parent(&service, &n)), (Some(outer.clone()), Some(inner.clone())));
+        service.remove_nodes(std::slice::from_ref(&inner)).unwrap();
+        assert_eq!(parent(&service, &n), Some(outer));
     }
 }

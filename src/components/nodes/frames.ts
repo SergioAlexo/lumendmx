@@ -32,12 +32,33 @@ export function resolveHandle(node: string, handle: string): { node: string; soc
   return m ? { node: m[2], socket: m[3] } : { node, socket: handle };
 }
 
-/** A node belongs to a frame when its top-left corner lies inside the
- * frame's (expanded) box. */
-export function inFrame(frame: { position: { x: number; y: number }; params: NodeView["params"] }, p: { x: number; y: number }): boolean {
-  const w = Number(frame.params.width ?? 400);
-  const h = Number(frame.params.height ?? 300);
-  return p.x >= frame.position.x && p.y >= frame.position.y && p.x <= frame.position.x + w && p.y <= frame.position.y + h;
+/** The frames around a node, innermost first, by the membership the backend
+ * keeps (`NodeView.frame`). */
+export function ancestors(nodes: NodeView[], id: string): NodeView[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const chain: NodeView[] = [];
+  for (let at = byId.get(id)?.frame; at && chain.length < nodes.length; at = byId.get(at)?.frame) {
+    const frame = byId.get(at);
+    if (!frame) break;
+    chain.push(frame);
+  }
+  return chain;
+}
+
+/** Every node inside frame `id`, at any depth. */
+export function descendants(nodes: NodeView[], id: string): Set<string> {
+  const found = new Set<string>();
+  const stack = [id];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    for (const n of nodes) {
+      if (n.frame === frame && !found.has(n.id)) {
+        found.add(n.id);
+        stack.push(n.id);
+      }
+    }
+  }
+  return found;
 }
 
 /** The node's exposed sockets, by key ("in:rate") → the name shown on the
@@ -60,38 +81,24 @@ export function exposedParam(map: Map<string, string>): string {
   return JSON.stringify(Object.fromEntries(map));
 }
 
-/** Frames whose box contains node `id`. */
-export function framesAround(nodes: NodeView[], id: string): NodeView[] {
-  const node = nodes.find((n) => n.id === id);
-  if (!node) return [];
-  return nodes.filter((f) => f.kind === "frame" && f.id !== id && inFrame(f, node.position));
-}
-
 /** Frames a link from `from` to `to` crosses into or out of: around exactly one end. */
 export function crossedFrames(nodes: NodeView[], from: string, to: string): { into: NodeView[]; outOf: NodeView[] } {
-  const a = new Set(framesAround(nodes, from).map((f) => f.id));
-  const b = new Set(framesAround(nodes, to).map((f) => f.id));
-  return {
-    into: framesAround(nodes, to).filter((f) => !a.has(f.id)),
-    outOf: framesAround(nodes, from).filter((f) => !b.has(f.id)),
-  };
+  const fromFrames = ancestors(nodes, from);
+  const toFrames = ancestors(nodes, to);
+  const a = new Set(fromFrames.map((f) => f.id));
+  const b = new Set(toFrames.map((f) => f.id));
+  return { into: toFrames.filter((f) => !a.has(f.id)), outOf: fromFrames.filter((f) => !b.has(f.id)) };
 }
 
 export function frameLayout(nodes: NodeView[], edges: Edge[], byKind: Partial<Record<NodeKind, NodeTypeInfo>>): FrameLayout {
-  const collapsed = nodes.filter((n) => n.kind === "frame" && n.params.collapsed === true);
   const owner = new Map<string, string>();
   const ports = new Map<string, FramePort[]>();
-  if (collapsed.length === 0) return { owner, ports };
+  if (!nodes.some((n) => n.kind === "frame" && n.params.collapsed === true)) return { owner, ports };
 
-  // Hidden: inside any collapsed frame. Shown by the outermost one, i.e.
-  // the containing collapsed frame that isn't hidden itself.
-  const containing = new Map<string, NodeView[]>();
+  // Hidden: inside any collapsed frame. Shown by the outermost one.
   for (const n of nodes) {
-    const frames = collapsed.filter((f) => f.id !== n.id && inFrame(f, n.position));
-    if (frames.length > 0) containing.set(n.id, frames);
-  }
-  for (const [id, frames] of containing) {
-    owner.set(id, (frames.find((f) => !containing.has(f.id)) ?? frames[0]).id);
+    const collapsedAround = ancestors(nodes, n.id).filter((f) => f.params.collapsed === true);
+    if (collapsedAround.length > 0) owner.set(n.id, collapsedAround[collapsedAround.length - 1].id);
   }
 
   const views = new Map(nodes.map((n) => [n.id, n]));

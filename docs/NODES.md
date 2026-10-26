@@ -338,7 +338,7 @@ Outputs:
 
 ### Switch (`switch`)
 
-Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live.
+Passes one of its inputs through: Index 0 picks the first, 1 the second ... Drive Index from a Counter or a Fader to change looks live. With more than one Channel, every input is a row of values (say intensity and colour) and the whole row switches together.
 
 Inputs:
 - `index` Index (number, default 0)
@@ -349,8 +349,24 @@ Outputs:
 - `value` Value (color)
 
 Params:
-- `type` Type: number / color / position, default `color`
 - `count` Inputs: number 2 to 8, default 2
+- `channels` Channels: number 1 to 8, default 1
+- `type` Type 1: number / color / position, default `color`
+- `label` Name 1: text: Channel 1, shown on its sockets, default (empty)
+- `type1` Type 2: number / color / position, default `number`
+- `label1` Name 2: text: Channel 2, shown on its sockets, default (empty)
+- `type2` Type 3: number / color / position, default `number`
+- `label2` Name 3: text: Channel 3, shown on its sockets, default (empty)
+- `type3` Type 4: number / color / position, default `number`
+- `label3` Name 4: text: Channel 4, shown on its sockets, default (empty)
+- `type4` Type 5: number / color / position, default `number`
+- `label4` Name 5: text: Channel 5, shown on its sockets, default (empty)
+- `type5` Type 6: number / color / position, default `number`
+- `label5` Name 6: text: Channel 6, shown on its sockets, default (empty)
+- `type6` Type 7: number / color / position, default `number`
+- `label6` Name 7: text: Channel 7, shown on its sockets, default (empty)
+- `type7` Type 8: number / color / position, default `number`
+- `label7` Name 8: text: Channel 8, shown on its sockets, default (empty)
 
 ### Mix (`mix`)
 

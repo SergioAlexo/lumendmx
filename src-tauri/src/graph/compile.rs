@@ -70,8 +70,10 @@ pub enum Config {
     Steps(u32),
     Gradient { stops: Vec<Val>, wrap: bool },
     Shape { shape: PositionShape, rate: Rate },
-    /// Switch: how many value inputs follow the index. Any: how many inputs.
+    /// Any: how many inputs.
     Count(usize),
+    /// Switch: how many rows of inputs follow the index, and how many values each row has.
+    Switch { count: usize, channels: usize },
     /// Index into `GraphPlan::outputs`.
     Output(usize),
 }
@@ -283,7 +285,10 @@ fn config(node: &Node) -> Config {
         },
         NodeKind::Shape => Config::Shape { shape: shape(text(node, "shape", "circle")), rate: rate(node) },
         NodeKind::Any => Config::Count(registry::any_inputs(&node.params)),
-        NodeKind::Switch => Config::Count(number(node, "count", 2.0).clamp(2.0, MAX_SWITCH_INPUTS as f32) as usize),
+        NodeKind::Switch => Config::Switch {
+            count: number(node, "count", 2.0).clamp(2.0, MAX_SWITCH_INPUTS as f32) as usize,
+            channels: registry::switch_channels(&node.params),
+        },
         _ => Config::None,
     }
 }

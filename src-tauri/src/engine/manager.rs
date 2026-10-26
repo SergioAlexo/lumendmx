@@ -323,7 +323,7 @@ mod tests {
     use crate::showfile::schema::PatchedFixture;
 
     fn node(id: &str, kind: NodeKind, params: &[(&str, ParamValue)]) -> Node {
-        Node { id: id.into(), kind, position: NodePosition::default(), params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect() }
+        Node { id: id.into(), kind, position: NodePosition::default(), params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(), frame: None }
     }
 
     fn edge(from: &str, fs: &str, to: &str, ts: &str) -> Edge {

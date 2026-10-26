@@ -12,4 +12,9 @@ id: string, kind: NodeKind, position: NodePosition,
  * Settings by param id. Also holds the value of an unconnected input,
  * under the input socket's id. Missing entries use the defaults.
  */
-params: { [key: string]: ParamValue }, };
+params: { [key: string]: ParamValue }, 
+/**
+ * The Frame this node sits in, if any. Kept apart from positions so a
+ * collapsed frame's hidden box can't claim nodes it only overlaps.
+ */
+frame: string | null, };

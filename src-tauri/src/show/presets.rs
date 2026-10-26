@@ -9,7 +9,7 @@ use ts_rs::TS;
 
 use super::graph_ops::{prune_edges, tidy_any_inputs};
 use super::service::ShowService;
-use crate::graph::model::{Edge, Node, NodePosition, ParamValue};
+use crate::graph::model::{Edge, Node, NodePosition};
 use crate::graph::registry::NodeKind;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -30,7 +30,7 @@ impl ShowService {
     }
 
     /// Saves `ids` (and the links between them) as a new preset. A Frame
-    /// among them brings the nodes inside it (top-left corner in its box).
+    /// among them brings the nodes inside it.
     pub fn save_node_preset(&self, name: &str, ids: &[String]) -> Result<NodePreset, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -43,17 +43,9 @@ impl ShowService {
             if let Some(missing) = wanted.iter().find(|id| graph.node(id).is_none()) {
                 return Err(format!("No node {missing}"));
             }
-            let frames: Vec<&Node> = graph.nodes.iter().filter(|n| n.kind == NodeKind::Frame && wanted.contains(n.id.as_str())).collect();
-            for frame in frames {
-                let size = |id: &str, default: f32| frame.params.get(id).and_then(ParamValue::as_f32).unwrap_or(default);
-                let (w, h) = (size("width", 400.0), size("height", 300.0));
-                for n in &graph.nodes {
-                    let (dx, dy) = (n.position.x - frame.position.x, n.position.y - frame.position.y);
-                    if n.id != frame.id && (0.0..=w).contains(&dx) && (0.0..=h).contains(&dy) {
-                        wanted.insert(n.id.as_str());
-                    }
-                }
-            }
+            let frames: Vec<&str> = graph.nodes.iter().filter(|n| n.kind == NodeKind::Frame && wanted.contains(n.id.as_str())).map(|n| n.id.as_str()).collect();
+            let inside: HashSet<String> = frames.into_iter().flat_map(|f| graph.descendants(f)).collect();
+            wanted.extend(inside.iter().map(String::as_str));
             let mut nodes: Vec<Node> = graph.nodes.iter().filter(|n| wanted.contains(n.id.as_str())).cloned().collect();
             if nodes.is_empty() {
                 return Err("Select the nodes to save first".to_string());
@@ -103,7 +95,20 @@ impl ShowService {
                     kind: node.kind,
                     position: NodePosition { x: position.x + node.position.x, y: position.y + node.position.y },
                     params: node.params.clone(),
+                    frame: None,
                 });
+            }
+            // The copies keep the preset's frames; a frame the preset
+            // lacks is whichever one the copy lands in.
+            for node in &preset.nodes {
+                let new_id = &new_ids[node.id.as_str()];
+                let inner_frame = node.frame.as_deref().and_then(|f| new_ids.get(f)).cloned();
+                if let Some(n) = graph.node_mut(new_id) {
+                    n.frame = inner_frame;
+                }
+            }
+            for node in preset.nodes.iter().filter(|n| n.frame.as_deref().and_then(|f| new_ids.get(f)).is_none()) {
+                graph.reframe(&new_ids[node.id.as_str()]);
             }
             for e in &preset.edges {
                 if let (Some(from), Some(to)) = (new_ids.get(e.from_node.as_str()), new_ids.get(e.to_node.as_str())) {
@@ -129,6 +134,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::graph::model::ParamValue;
     use crate::show::graph_ops::ParamChanges;
     use crate::show::service::tests::service;
 

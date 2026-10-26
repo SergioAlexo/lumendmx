@@ -407,6 +407,8 @@ impl ShowService {
         self.sink.set_beat_offset(show.settings.beat_offset_ms);
         self.sink.set_controls(show.controls.iter().map(|(k, v)| (k.clone(), *v)).collect());
         inner.show = show;
+        inner.show.graph.infer_frames_if_unset();
+        inner.show.graph.sanitize_frames();
         inner.path = path;
         inner.undo.clear();
         inner.redo.clear();
