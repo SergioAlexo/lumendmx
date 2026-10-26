@@ -5,6 +5,8 @@ import { curveValue, formatCurve, parseCurve, type CurveMode, type CurvePoint } 
 import type { Group, ParamInfo, ParamValue } from "../../lib/showfile/generated";
 import { BEAT_PRESETS, parseLength, rateLabel } from "../../lib/beatRate";
 import { CONSTANTS, FUNCTIONS, OPERATORS } from "../../lib/expressionHelp";
+import { fanOffsets, type FanSettings } from "../../lib/waves";
+import { WAVE_H, WAVE_W, WaveDots, WaveGrid, waveValue, waveY } from "./WavePreview";
 import { colorAt, formatStops, parseStops, stopsCss, type Stop } from "../../lib/gradient";
 import { cn } from "../../lib/utils";
 
@@ -130,8 +132,6 @@ export function ColorField({ value, onCommit }: { value: string; onCommit: (v: s
   );
 }
 
-const CURVE_W = 184;
-const CURVE_H = 64;
 /** How near (px) a press must land to grab a point. */
 const CURVE_GRAB = 7;
 
@@ -141,32 +141,36 @@ export function CurveEditor({
   value,
   mode,
   playhead,
+  fan,
+  count = 8,
   onCommit,
 }: {
   value: string;
   mode: CurveMode;
   /** Where in the cycle the LFO is (0-1), from its live preview. */
   playhead?: number;
+  /** The Fan feeding the LFO, for a dot per fixture. */
+  fan?: FanSettings;
+  count?: number;
   onCommit: (value: string) => void;
 }) {
   const [draft, setDraft] = useState<CurvePoint[] | null>(null);
   const drag = useRef<{ index: number; moved: boolean } | null>(null);
   const points = draft ?? parseCurve(value);
   const sorted = [...points].sort((a, b) => a[0] - b[0]);
+  const offsets = fan ? fanOffsets(fan, count) : [0];
 
   // Pointer position in curve space (0-1), whatever the editor's zoom.
   const at = (e: React.PointerEvent | React.MouseEvent): CurvePoint => {
     const r = (e.currentTarget as SVGElement).getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    const y = Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height));
+    const y = Math.min(1, Math.max(0, waveValue(((e.clientY - r.top) / r.height) * WAVE_H)));
     return [x, y];
   };
   const hit = (e: React.PointerEvent | React.MouseEvent, list: CurvePoint[]) => {
     const r = (e.currentTarget as SVGElement).getBoundingClientRect();
-    const scale = r.width / CURVE_W;
-    return list.findIndex(
-      ([x, y]) => Math.hypot(r.left + x * r.width - e.clientX, r.top + (1 - y) * r.height - e.clientY) <= CURVE_GRAB * scale,
-    );
+    const scale = r.width / WAVE_W;
+    return list.findIndex(([x, y]) => Math.hypot(r.left + x * r.width - e.clientX, r.top + (waveY(y) / WAVE_H) * r.height - e.clientY) <= CURVE_GRAB * scale);
   };
   const remove = (e: React.MouseEvent) => {
     const list = parseCurve(value);
@@ -174,15 +178,12 @@ export function CurveEditor({
     if (i >= 0 && list.length > 1) onCommit(formatCurve(list.filter((_, j) => j !== i)));
   };
 
-  const line = Array.from({ length: CURVE_W + 1 }, (_, i) => {
-    const y = curveValue(sorted, mode, Math.min(i / CURVE_W, 1 - 1e-9));
-    return `${i},${((1 - y) * CURVE_H).toFixed(1)}`;
-  }).join(" L");
+  const line = Array.from({ length: WAVE_W + 1 }, (_, i) => `${i},${waveY(curveValue(sorted, mode, Math.min(i / WAVE_W, 1 - 1e-9))).toFixed(1)}`).join(" L");
 
   return (
     <svg
-      width={CURVE_W}
-      height={CURVE_H}
+      width={WAVE_W}
+      height={WAVE_H}
       className="nodrag nowheel cursor-crosshair rounded bg-muted"
       aria-label="Curve: drag points, click to add, double-click to remove"
       onPointerDown={(e) => {
@@ -216,13 +217,11 @@ export function CurveEditor({
         remove(e);
       }}
     >
-      <path d={`M0,${CURVE_H} L${line} L${CURVE_W},${CURVE_H} Z`} className="fill-primary/15" />
-      <path d={`M${line}`} className="fill-none stroke-primary" strokeWidth={1.5} />
-      {playhead !== undefined && (
-        <line x1={playhead * CURVE_W} x2={playhead * CURVE_W} y1={0} y2={CURVE_H} className="stroke-foreground/50" strokeWidth={1} />
-      )}
+      <WaveGrid />
+      <path d={`M${line}`} fill="none" stroke="#a1a1a1" strokeWidth={1.5} />
+      <WaveDots playhead={playhead} offsets={offsets} valueAt={(p) => curveValue(sorted, mode, Math.min(p, 1 - 1e-9))} />
       {points.map(([x, y], i) => (
-        <circle key={i} cx={x * CURVE_W} cy={(1 - y) * CURVE_H} r={3.5} className="fill-background stroke-primary" strokeWidth={1.5} />
+        <circle key={i} cx={x * WAVE_W} cy={waveY(y)} r={3} className="fill-muted" stroke="#a1a1a1" strokeWidth={1.5} />
       ))}
     </svg>
   );

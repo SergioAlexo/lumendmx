@@ -288,22 +288,24 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
             {view.outputs.map((socket, i) => outputRow(socket, i))}
         {info && info.params.length > 0 && (
           <div className="flex flex-col gap-1 px-3">
-            {view.kind === "lfo" && view.params.waveform !== "custom" && (
-              <WavePreview wave={waveSettings(view.params)} playhead={values?.[1]?.[0]} fan={fanFeeding(graph, view.id)} count={targetFixtureCount(graph, groups, view.id)} />
-            )}
+            {view.kind === "lfo" &&
+              (view.params.waveform === "custom" ? (
+                <CurveEditor
+                  value={String(view.params.curve ?? info.params.find((q) => q.id === "curve")?.default ?? "")}
+                  mode={String(view.params.curveMode ?? "linear") as CurveMode}
+                  playhead={values?.[1]?.[0]}
+                  fan={fanFeeding(graph, view.id)}
+                  count={targetFixtureCount(graph, groups, view.id)}
+                  onCommit={(v) => setParam("curve", v)}
+                />
+              ) : (
+                <WavePreview wave={waveSettings(view.params)} playhead={values?.[1]?.[0]} fan={fanFeeding(graph, view.id)} count={targetFixtureCount(graph, groups, view.id)} />
+              ))}
             {view.kind === "fan" && <FanPreview fan={fanSettings(view.params)} count={targetFixtureCount(graph, groups, view.id)} />}
             {info.params
-              .filter((p) => paramShown(view, p.id))
+              .filter((p) => paramShown(view, p.id) && p.kind !== "curve")
               .map((p) =>
-                p.kind === "curve" ? (
-                  <CurveEditor
-                    key={p.id}
-                    value={String(view.params[p.id] ?? p.default)}
-                    mode={String(view.params.curveMode ?? "linear") as CurveMode}
-                    playhead={values?.[1]?.[0]}
-                    onCommit={(v) => setParam(p.id, v)}
-                  />
-                ) : (view.kind === "lfo" || view.kind === "shape") && p.id === "rate" && String(view.params.unit ?? "beats") === "beats" ? (
+                (view.kind === "lfo" || view.kind === "shape") && p.id === "rate" && String(view.params.unit ?? "beats") === "beats" ? (
                   <BeatRateField key={p.id} rate={Number(view.params.rate ?? p.default)} onCommit={(v) => setParam(p.id, v)} />
                 ) : view.kind === "gradient" && p.id === "stops" ? (
                   <GradientEditor

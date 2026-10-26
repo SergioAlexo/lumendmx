@@ -3,10 +3,43 @@ import type { CurveMode } from "../../lib/curve";
 import { fanOffsets, lfoValue, type FanSettings, type WaveSettings } from "../../lib/waves";
 import type { Group, GraphView } from "../../lib/showfile/generated";
 
-const W = 184;
+/** The plot every wave on a node shares: preset waves and the custom editor draw alike. */
+export const WAVE_W = 184;
+export const WAVE_H = 44;
+const WAVE_PAD = 3;
+const W = WAVE_W;
+const H = WAVE_H;
+
+/** Height on the plot for a value 0-1. */
+export const waveY = (v: number) => WAVE_PAD + (1 - v) * (H - 2 * WAVE_PAD);
+/** The value 0-1 at a height on the plot, the other way. */
+export const waveValue = (y: number) => 1 - (y - WAVE_PAD) / (H - 2 * WAVE_PAD);
 
 /** Fixtures from first (bright) to last (dim), so a chase's direction reads. */
 const dotColor = (i: number, count: number) => `hsl(200 80% ${Math.round(75 - (count > 1 ? i / (count - 1) : 0) * 40)}%)`;
+
+/** The 0 and 1 lines behind a wave. */
+export function WaveGrid() {
+  return (
+    <>
+      <line x1={0} x2={W} y1={waveY(0)} y2={waveY(0)} stroke="currentColor" strokeOpacity={0.12} />
+      <line x1={0} x2={W} y1={waveY(1)} y2={waveY(1)} stroke="currentColor" strokeOpacity={0.12} />
+    </>
+  );
+}
+
+/** A dot on the wave where it is now: one, or one per fixture of a Fan. */
+export function WaveDots({ playhead, offsets, valueAt }: { playhead: number | undefined; offsets: number[]; valueAt: (p: number) => number }) {
+  if (playhead === undefined) return null;
+  return (
+    <>
+      {offsets.map((o, i) => {
+        const p = (((playhead + o) % 1) + 1) % 1;
+        return <circle key={i} cx={p * W} cy={waveY(valueAt(p))} r={offsets.length > 1 ? 2.5 : 3.5} fill={offsets.length > 1 ? dotColor(i, offsets.length) : "#8ab4ff"} />;
+      })}
+    </>
+  );
+}
 
 /** Fixtures in a "1-8, 12" list. */
 function listedFixtures(text: string): number {
@@ -63,8 +96,7 @@ export function waveSettings(params: Record<string, unknown>): WaveSettings {
 /** One cycle of an LFO's wave, with a dot where it is now. With a Fan in
  * front, a dot per fixture, each a little ahead or behind: the chase. */
 export function WavePreview({ wave, playhead, fan, count }: { wave: WaveSettings; playhead: number | undefined; fan?: FanSettings; count: number }) {
-  const H = 44;
-  const y = (v: number) => 3 + (1 - v) * (H - 6);
+  const y = waveY;
   const line = useMemo(() => {
     const points: string[] = [];
     for (let i = 0; i <= W; i++) {
@@ -78,8 +110,7 @@ export function WavePreview({ wave, playhead, fan, count }: { wave: WaveSettings
 
   return (
     <svg width={W} height={H} className="rounded bg-muted" aria-label="One cycle of the wave">
-      <line x1={0} x2={W} y1={y(0)} y2={y(0)} stroke="currentColor" strokeOpacity={0.12} />
-      <line x1={0} x2={W} y1={y(1)} y2={y(1)} stroke="currentColor" strokeOpacity={0.12} />
+      <WaveGrid />
       {line ? (
         <path d={line} fill="none" stroke="#a1a1a1" strokeWidth={1.5} />
       ) : (
@@ -87,13 +118,7 @@ export function WavePreview({ wave, playhead, fan, count }: { wave: WaveSettings
           a new random value each cycle
         </text>
       )}
-      {playhead !== undefined &&
-        line &&
-        offsets.map((o, i) => {
-          const p = (((playhead + o) % 1) + 1) % 1;
-          const v = lfoValue(wave, p) ?? 0;
-          return <circle key={i} cx={p * W} cy={y(v)} r={offsets.length > 1 ? 2.5 : 3.5} fill={offsets.length > 1 ? dotColor(i, offsets.length) : "#8ab4ff"} />;
-        })}
+      {line && <WaveDots playhead={playhead} offsets={offsets} valueAt={(p) => lfoValue(wave, p) ?? 0} />}
     </svg>
   );
 }
