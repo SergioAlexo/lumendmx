@@ -4,6 +4,7 @@ import { AlertTriangle, Minus, Plus, Radio } from "lucide-react";
 import * as graphApi from "../../lib/graph";
 import { learnMidi } from "../../lib/midiLearn";
 import { CATEGORY_COLORS, SOCKET_COLORS } from "../../lib/graph";
+import { hexToHsv, hsvToHex } from "../../lib/hsv";
 import type { Group, NodeTypeInfo, NodeView, ParamValue, SocketInfo } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 import { useGraphStore } from "../../store/useGraphStore";
@@ -286,6 +287,14 @@ function GraphNodeImpl({ data, selected }: NodeProps<GraphFlowNode>) {
         ) : (
           <>
             {view.outputs.map((socket, i) => outputRow(socket, i))}
+            {view.kind === "hsv" && (
+              <div className="px-3">
+                <ColorField
+                  value={hsvToHex(Number(view.params.h ?? 0), Number(view.params.s ?? 1), Number(view.params.v ?? 1))}
+                  onCommit={(hex) => void run(() => graphApi.setParams(view.id, { ...hexToHsv(hex) }))}
+                />
+              </div>
+            )}
         {info && info.params.length > 0 && (
           <div className="flex flex-col gap-1 px-3">
             {view.kind === "lfo" &&

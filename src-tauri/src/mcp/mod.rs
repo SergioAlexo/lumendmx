@@ -285,7 +285,7 @@ mod tests {
         client.call("add_fixtures", serde_json::json!({ "fixtureType": "par", "universe": 1, "count": 2 })).await;
         let group = client.call("create_group", serde_json::json!({ "name": "Pars", "fixture_numbers": [1, 2] })).await;
         let out = client.call("add_node", serde_json::json!({ "kind": "output", "x": 800, "params": { "group": group["id"] } })).await;
-        let color = client.call("add_node", serde_json::json!({ "kind": "color", "params": { "color": "#00ff00" } })).await;
+        let color = client.call("add_node", serde_json::json!({ "kind": "hsv", "params": { "h": 0.3333 } })).await;
         let one = client.call("add_node", serde_json::json!({ "kind": "number" })).await;
         for (from, socket, to) in [(&color, "color", "color"), (&one, "value", "intensity")] {
             client

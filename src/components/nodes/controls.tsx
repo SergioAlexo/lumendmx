@@ -266,8 +266,6 @@ export function ParamControl({
           ))}
         </select>
       );
-    case "color":
-      return <ColorField value={String(v)} onCommit={onCommit} />;
     case "group":
       return (
         <select

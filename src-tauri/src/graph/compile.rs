@@ -253,7 +253,6 @@ fn constant(node: &Node, socket: &SocketInfo) -> Val {
 fn config(node: &Node) -> Config {
     match node.kind {
         NodeKind::Number => Config::Value([number(node, "value", 1.0), 0.0, 0.0]),
-        NodeKind::Color => Config::Value(parse_hex(text(node, "color", "#ffffff")).unwrap_or([1.0; 3])),
         NodeKind::Lfo => Config::Lfo {
             waveform: waveform(text(node, "waveform", "sine")),
             rate: rate(node),

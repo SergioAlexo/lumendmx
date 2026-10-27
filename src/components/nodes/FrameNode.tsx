@@ -10,7 +10,7 @@ import type { GraphFlowNode } from "./GraphNode";
 import { ExposeMenu, type ExposeTarget } from "./ExposeMenu";
 import { exposedParam, exposedSockets, socketKey, type FramePort } from "./frames";
 
-/** Mirrors FRAME_COLORS in src-tauri/src/graph/registry.rs. */
+/** The named colours; a frame's `color` is one of these or any "#rrggbb". */
 export const FRAME_COLORS: Record<string, string> = {
   gray: "#6b7280",
   red: "#dc2626",
@@ -20,6 +20,14 @@ export const FRAME_COLORS: Record<string, string> = {
   blue: "#2563eb",
   purple: "#9333ea",
 };
+
+const HEX = /^#[0-9a-f]{6}$/i;
+
+/** The CSS colour of a frame's `color` param. */
+export function frameColor(value: unknown): string {
+  const v = String(value ?? "gray");
+  return HEX.test(v) ? v : (FRAME_COLORS[v] ?? FRAME_COLORS.gray);
+}
 
 export const FRAME_MIN = { width: 100, height: 80 };
 
@@ -107,7 +115,8 @@ function FrameNodeImpl({ id, data, selected }: NodeProps<GraphFlowNode>) {
   const run = useShowStore((s) => s.run);
   const [draft, setDraft] = useState<string | null>(null);
   const label = String(view.params.label ?? "Frame");
-  const color = FRAME_COLORS[String(view.params.color ?? "gray")] ?? FRAME_COLORS.gray;
+  const color = frameColor(view.params.color);
+  const custom = HEX.test(String(view.params.color));
   const setParam = (params: graphApi.ParamChanges) => void run(() => graphApi.setParams(id, params));
 
   const commit = () => {
@@ -211,6 +220,14 @@ function FrameNodeImpl({ id, data, selected }: NodeProps<GraphFlowNode>) {
                   onClick={() => setParam({ color: name })}
                 />
               ))}
+              <label
+                className={cn("relative ml-0.5 flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full border", custom ? "border-white" : "border-black/40")}
+                style={{ background: "conic-gradient(#ef4444, #eab308, #22c55e, #06b6d4, #3b82f6, #d946ef, #ef4444)" }}
+                title="Custom colour"
+              >
+                {custom && <span className="h-1.5 w-1.5 rounded-full border border-black/40" style={{ backgroundColor: color }} />}
+                <input type="color" className="absolute inset-0 h-full w-full cursor-pointer opacity-0" value={color} onChange={(e) => setParam({ color: e.target.value })} />
+              </label>
             </span>
           )}
         </div>

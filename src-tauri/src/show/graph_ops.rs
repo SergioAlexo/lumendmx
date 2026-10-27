@@ -281,7 +281,7 @@ mod tests {
         let mut params = ParamChanges::new();
         params.insert("count".into(), Some(ParamValue::Number(3.0)));
         let switch = service.add_node(NodeKind::Switch, NodePosition::default(), params).unwrap().id;
-        let color = add(&service, NodeKind::Color);
+        let color = add(&service, NodeKind::Hsv);
         service.connect(edge(&color, "color", &switch, "in2")).unwrap();
         let mut shrink = ParamChanges::new();
         shrink.insert("count".into(), None); // back to the default of 2

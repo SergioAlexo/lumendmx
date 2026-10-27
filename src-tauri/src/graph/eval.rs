@@ -126,7 +126,7 @@ impl GraphRuntime {
         let num = |s: usize| input(s)[0];
         let mut out = ZERO;
         match (&node.kind, &node.config) {
-            (NodeKind::Number | NodeKind::Color, Config::Value(v)) => out[0] = *v,
+            (NodeKind::Number, Config::Value(v)) => out[0] = *v,
             (NodeKind::Time, _) => {
                 // rem_euclid, not fract: a negative beat offset can put the beat below 0.
                 out[0][0] = inputs.beats.rem_euclid(1.0) as f32;

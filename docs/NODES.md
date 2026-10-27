@@ -14,16 +14,6 @@ Outputs:
 Params:
 - `value` Value: number -1000 to 1000, default 1
 
-### Color (`color`)
-
-A fixed colour.
-
-Outputs:
-- `color` Color (color)
-
-Params:
-- `color` Color: colour, default `#ffffff`
-
 ### Time (`time`)
 
 The show clock. Beat and Bar run 0-1 over each beat and each 4-beat bar at the show BPM; On beat fires once per beat.
@@ -282,7 +272,7 @@ Outputs:
 
 ### HSV (`hsv`)
 
-Builds a colour from hue (0-1 around the colour wheel), saturation and value.
+Builds a colour from hue (0-1 around the colour wheel), saturation and value. Pick the colour on the node, or feed any of the three to move it: a fixed colour, a hue that cycles, a colour that dims.
 
 Inputs:
 - `h` Hue (number, default 0)
@@ -424,7 +414,7 @@ A labelled box to group nodes visually; it does nothing to the output. Dragging 
 
 Params:
 - `label` Label: text: Shown at the top, default `Frame`
-- `color` Color: gray / red / orange / yellow / green / blue / purple, default `gray`
+- `color` Color: text: A name (gray, red, orange, yellow, green, blue, purple) or #rrggbb, default `gray`
 - `width` Width: number 100 to 10000, default 400
 - `height` Height: number 80 to 10000, default 300
 - `collapsed` Collapsed: on/off, default false

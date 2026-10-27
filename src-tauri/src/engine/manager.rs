@@ -422,7 +422,7 @@ mod tests {
             nodes: vec![
                 node("half", NodeKind::Number, &[("value", ParamValue::Number(0.5))]),
                 node("fader", NodeKind::Fader, &[]),
-                node("red", NodeKind::Color, &[("color", ParamValue::Text("#ff0000".into()))]),
+                node("red", NodeKind::Hsv, &[("h", ParamValue::Number(0.0))]),
                 node("a", NodeKind::Output, &[("fixtures", fixtures.clone())]),
                 node("b", NodeKind::Output, &[("fixtures", fixtures), ("priority", ParamValue::Number(5.0))]),
             ],

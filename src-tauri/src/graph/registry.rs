@@ -15,7 +15,6 @@ use super::model::ParamValue;
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub enum NodeKind {
     Number,
-    Color,
     Time,
     Lfo,
     Audio,
@@ -47,9 +46,8 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 30] = [
+    pub const ALL: [NodeKind; 29] = [
         NodeKind::Number,
-        NodeKind::Color,
         NodeKind::Time,
         NodeKind::Lfo,
         NodeKind::Audio,
@@ -130,8 +128,6 @@ pub enum ParamKind {
     /// Free text; `hint` describes the format.
     Text { hint: String },
     Choice { options: Vec<String> },
-    /// "#rrggbb".
-    Color,
     /// A group id (0: none).
     Group,
     /// A drawn wave: points `"x:y, x:y"`, each 0-1.
@@ -173,7 +169,6 @@ pub const SHAPES: [&str; 5] = ["circle", "figure8", "ballyhoo", "panSaw", "tiltS
 pub const MATH_OPS: [&str; 10] = ["add", "subtract", "multiply", "divide", "min", "max", "power", "modulo", "invert", "abs"];
 pub const COMPARE_OPS: [&str; 3] = ["greater", "less", "equal"];
 pub const VALUE_TYPES: [&str; 3] = ["number", "color", "position"];
-pub const FRAME_COLORS: [&str; 7] = ["gray", "red", "orange", "yellow", "green", "blue", "purple"];
 /// Most inputs a Switch can have.
 pub const MAX_SWITCH_INPUTS: usize = 8;
 /// Most values a Switch can pass through side by side.
@@ -282,14 +277,6 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             vec![],
             vec![output("value", "Value", Number)],
             vec![number("value", "Value", -1000.0, 1000.0, 0.01, 1.0)],
-        ),
-        NodeKind::Color => (
-            "Color",
-            "Input",
-            "A fixed colour.",
-            vec![],
-            vec![output("color", "Color", Color)],
-            vec![ParamInfo { id: "color".into(), label: "Color".into(), kind: ParamKind::Color, default: text("#ffffff") }],
         ),
         NodeKind::Time => (
             "Time",
@@ -480,7 +467,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Hsv => (
             "HSV",
             "Colour",
-            "Builds a colour from hue (0-1 around the colour wheel), saturation and value.",
+            "Builds a colour from hue (0-1 around the colour wheel), saturation and value. Pick the colour on the node, or feed any of the three to move it: a fixed colour, a hue that cycles, a colour that dims.",
             vec![input("h", "Hue", Number, n(0.0)), input("s", "Saturation", Number, n(1.0)), input("v", "Value", Number, n(1.0))],
             vec![output("color", "Color", Color)],
             vec![],
@@ -545,7 +532,7 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
             vec![],
             vec![
                 text_param("label", "Label", "Shown at the top", "Frame"),
-                choice("color", "Color", &FRAME_COLORS, "gray"),
+                text_param("color", "Color", "A name (gray, red, orange, yellow, green, blue, purple) or #rrggbb", "gray"),
                 number("width", "Width", 100.0, 10000.0, 1.0, 400.0),
                 number("height", "Height", 80.0, 10000.0, 1.0, 300.0),
                 bool_param("collapsed", "Collapsed", false),
@@ -739,7 +726,6 @@ fn nodes_markdown() -> String {
                     ParamKind::Bool => "on/off".to_string(),
                     ParamKind::Text { hint } => format!("text: {hint}"),
                     ParamKind::Choice { options } => options.join(" / "),
-                    ParamKind::Color => "colour".to_string(),
                     ParamKind::Group => "group id (0 = none)".to_string(),
                     ParamKind::Curve => "points `x:y`, comma-separated".to_string(),
                 };

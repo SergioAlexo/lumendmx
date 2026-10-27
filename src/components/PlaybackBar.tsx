@@ -1,3 +1,4 @@
+import { Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import * as graphApi from "../lib/graph";
 import { describeTrigger, isPress } from "../lib/midiLearn";
@@ -54,8 +55,13 @@ function FlashButton({ view, value, onChange }: { view: NodeView; value: number;
   return (
     <button
       className={cn(
-        "h-11 w-20 select-none truncate rounded-md border px-2 text-xs font-semibold uppercase tracking-wide transition-colors",
-        on ? "border-primary bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "border-border bg-muted text-muted-foreground hover:text-foreground",
+        "flex h-11 select-none items-center gap-1.5 border text-xs font-semibold uppercase tracking-wide transition-colors",
+        toggle
+          ? cn("w-24 rounded-full pl-3 pr-3", on ? "border-primary/70 bg-primary/15 text-foreground" : "border-border bg-muted text-muted-foreground hover:text-foreground")
+          : cn(
+              "w-20 rounded-md px-2",
+              on ? "border-primary bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "border-border bg-muted text-muted-foreground hover:text-foreground",
+            ),
       )}
       title={`${toggle ? "Toggle" : "Flash: on while held"}. ${SHOW_NODE_HINT}`}
       onPointerDown={(e) => {
@@ -69,15 +75,22 @@ function FlashButton({ view, value, onChange }: { view: NodeView; value: number;
         held.current = false;
       }}
     >
-      {label(view)}
+      {toggle ? (
+        <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", on ? "bg-primary shadow-[0_0_6px_1px] shadow-primary" : "bg-muted-foreground/40")} />
+      ) : (
+        <Zap className="h-3 w-3 shrink-0" />
+      )}
+      <span className="min-w-0 truncate">{label(view)}</span>
     </button>
   );
 }
 
-/** The bottom bar: one control per Fader and Button node in the graph, in
+/** The bottom bar: one control per Fader and Button node in the graph being edited, in
  * the order they sit on the canvas (left to right). */
 export function PlaybackBar() {
-  const nodes = useShowStore((s) => s.show?.graph.nodes);
+  // The draft's controls while there is one: it's a copy of the playing graph plus the edits,
+  // and its buttons drive the draft preview (controls are shared by node id).
+  const nodes = useShowStore((s) => (s.show?.draft ?? s.show?.graph)?.nodes);
   const [values, setValue] = useControls();
   const focusNode = useGraphStore((s) => s.focusNode);
   const run = useShowStore((s) => s.run);

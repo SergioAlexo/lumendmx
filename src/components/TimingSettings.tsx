@@ -145,8 +145,9 @@ export function TimingSettingsPanel() {
           <span className="flex items-center gap-2">
             <input
               type="checkbox"
-              checked={s.audioAnalysis}
+              checked={s.audioAnalysis || s.tempoSource === "audio"}
               disabled={s.tempoSource === "audio"}
+              title={s.tempoSource === "audio" ? "On while the BPM is driven from the audio input" : undefined}
               onChange={(e) => apply({ audioAnalysis: e.target.checked })}
             />
             Listen to the input (needed by Audio nodes)
