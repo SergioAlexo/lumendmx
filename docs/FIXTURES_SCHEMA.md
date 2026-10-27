@@ -1,4 +1,4 @@
-# Fixture schema, importers, and patch (Phase 4)
+# Fixture schema, importers, and patch
 
 See `src/fixtures/library/README.md` for the schema itself (fields, channel
 types, the optional 16-bit/capabilities/multi-cell/physical additions). This
@@ -13,8 +13,8 @@ doc covers the importers and the patch model that sit around it.
   `wheels` object, and the full capability-type vocabulary (Pan/Tilt,
   ColorIntensity, ShutterStrobe, WheelSlot, Prism, Focus/Zoom/Iris/Frost,
   Speed, Effect, Maintenance, NoFunction). Matrix/pixel fixtures
-  (`matrix`/`templateChannels`) are rejected with a clear error — that needs
-  Phase 7's Pixel Map, not this importer.
+  (`matrix`/`templateChannels`) are rejected with a clear error; they
+  aren't supported.
 - `src/lib/fixtures/importers/qlcplus.ts` — QLC+ `.qxf` (XML, via
   `DOMParser`). QLC+'s `Group` is a broad category (Colour/Beam/Gobo/Pan/
   Tilt/Shutter/Speed/Effect/Maintenance/Nothing) with no structured color
@@ -30,39 +30,26 @@ Both are unit-tested against realistic (not toy) fixture data — see their
 `.test.ts` files. Neither ships "the full OFL/QLC+ catalog" bundled; see
 DECISIONS.md for why.
 
-## Patch model (schema v3)
+## Patch model
 
-`PatchedFixture` (`src/store/usePatchStore.ts`, mirrored in
-`src-tauri/src/showfile/schema.rs`) now carries:
+`PatchedFixture` (`src-tauri/src/showfile/schema.rs`; the patch is owned by
+Rust's `ShowService`, see docs/ENGINE.md) carries:
 
-- `universe`: which universe this fixture is patched into. Every fixture was
-  implicitly universe 1 through Phase 3; Setup can now manage more than one.
-- `fixtureNumber`: a stable, user-assignable number the command line's
-  `1 THRU 8` etc. resolves against (see docs/ENGINE.md) — replaces Phase 3's
-  "just patch order" placeholder. `usePatchStore.nextFixtureNumber()` suggests
-  the next unused one; the patch form lets you override it.
-- `invertPan`/`invertTilt`/`swapPanTilt`: booleans, editable from a patched
-  fixture's detail panel when it has pan/tilt channels. Not yet consumed by
-  anything (there's no motion-control math to apply them to until fixtures
-  are addressed by attribute rather than raw channel), but the data is there
-  for when that lands.
+- `fixtureId` / `modeIndex`: the library type and mode.
+- `universe` and `address`: one universe per controller, so this also says
+  which controller the fixture is on.
+- `fixtureNumber`: unique across the show. Groups and the graph's Output
+  nodes (`"fixtures": "1-8, 12"`) refer to fixtures by it; renumbering a
+  fixture updates the groups it's in.
+- `invertPan`/`invertTilt`/`swapPanTilt`: applied when an Output node writes
+  a position.
 
-The patch panel (`FixturePatchPanel.tsx`) adds, over Phase 1-3's version:
+Rust resolves each fixture's attributes to channels from the library the
+frontend pushes (`show/resolve.rs`): `type` → attribute, `fineOffset` → the
+16-bit LSB, `cell` → per-cell channel sets (an Output can light cells
+separately), `defaultValue` → the channel's rest value, `capabilities` →
+strobe ranges and colour-wheel slots.
 
-- A universe picker and auto-suggested next-free address (computed from
-  what's already patched in that universe), recomputed as you change
-  fixture/mode/universe unless you've typed your own address.
-- Address collision detection: patching or re-patching into an address range
-  that overlaps another fixture in the same universe is blocked with a
-  message naming the conflicting fixture(s).
-- Re-patch: change an existing fixture's universe/address in place from its
-  detail panel, instead of unpatch-then-repatch.
-- Live channel values now come from `useUniverseChannelsStore`, which caches
-  the engine's per-universe frames — needed once a fixture could be on any
-  universe, not just the one `useDmxStore` tracks for the top bar's
-  quick-connect UI.
-
-Not built: a drag-onto-a-universe-grid visual patch view. Collision
-detection, auto-addressing and re-patch cover the same underlying mistakes a
-grid view prevents; the visual is additive polish layered on the same
-operations, not a different capability.
+The Fixtures tab's Patch view adds fixtures (several at once, with
+auto-picked addresses and numbers), edits them inline, and refuses address
+overlaps naming the conflicting fixture.

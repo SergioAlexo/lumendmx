@@ -20,7 +20,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-http = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
@@ -31,12 +30,16 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ts-rs = "9"
 socket2 = { version = "0.5", features = ["all"] }
-image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
-base64 = "0.22"
 cpal = "0.18"
 midir = "0.11"
+rmcp = { version = "3.6", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["net", "rt", "macros"] }
+tokio-util = "0.7"
+schemars = "1"
 
 [dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

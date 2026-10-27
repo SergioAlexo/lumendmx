@@ -3,10 +3,11 @@
 //! `manager::OutputManager` builds drivers from — the same JSON shape lives on
 //! disk and in memory.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub enum SacnDestination {
@@ -15,7 +16,7 @@ pub enum SacnDestination {
     Unicast { address: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/lib/showfile/generated/")]
 pub enum DriverConfig {

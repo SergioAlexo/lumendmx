@@ -1,33 +1,53 @@
 # LumenDMX
 
-AI-driven DMX512 lighting controller for live electronic music. Natural-language
-scene/chase generation (Programmer Mode) plus real-time AI tweaks to the running
-universe during a set (Live AI Mode), with a hardware output loop that never
-glitches regardless of what the UI or an LLM is doing.
+DMX512 lighting controller for live electronic music. You build the show as
+a **node graph**, in the style of Blender or Unity: data sources (the beat,
+audio, MIDI, playback-bar faders) flow through effect, colour and switching
+nodes into fixtures. An AI agent can do the same through the built-in MCP
+server. Hardware output runs in its own loop and never glitches, whatever
+the UI is doing.
+
+## The app
+
+Three tabs, plus the playback bar at the bottom:
+
+- **Setup**: universes and the DMX controller each one outputs through
+  (with detection of USB interfaces and Art-Net nodes); the tempo source,
+  audio and MIDI inputs; the MCP server; app updates.
+- **Fixtures**: the patch, listed per universe/controller. The **Patch** view
+  edits fixtures, **Values** shows what each fixture is outputting, **Raw
+  DMX** shows each universe's 512 channels. Groups (ordered fixture sets)
+  sit on the right.
+- **Nodes**: the graph editor. Shift+A or right-click adds nodes. Drag
+  between typed sockets to link them, or drag a link onto empty canvas to
+  add a connected node. Every node shows its live values.
+- **Playback bar**: one fader or flash/toggle button per Fader/Button node.
+
+See [docs/ENGINE.md](docs/ENGINE.md) for how it works, [docs/NODES.md](docs/NODES.md)
+for every node type, and [docs/MCP.md](docs/MCP.md) for connecting an AI agent.
 
 ## Stack
 
-- **Frontend:** React 19 + Vite + TypeScript + Tailwind CSS v4, Zustand for state.
-- **Desktop shell:** Tauri v2 (Rust).
-- **Hardware:** `serialport` crate driving an FTDI USB-to-DMX adapter with a real
-  hardware break (not a baud-switch fake-out); a dedicated, time-critical-priority
-  Rust thread reads a shared `Arc<Mutex<[u8;512]>>` universe and blasts DMX512
-  frames at a steady ~30Hz, fully decoupled from the UI/AI (see
-  `src-tauri/src/dmx.rs`).
-- **Fixtures:** JSON fixture definitions in `src/fixtures/library/` (one file per
-  fixture, community-contributable -- see the README there), loaded into a runtime
-  registry (`src/lib/fixtures/`). The Fixture Patch panel turns those definitions
-  plus a DMX address into per-channel controls, instead of raw channel numbers.
-- **MIDI:** Web MIDI API in the frontend, with hot-swap support and a "MIDI Learn"
-  binding flow (`src/store/useMidiStore.ts`).
-- **AI:** pluggable adapters for Ollama (local), OpenAI, Gemini, and Anthropic, all
-  targeting one shared JSON schema (`src/lib/ai/`).
+- **Frontend:** React 19 + Vite + TypeScript + Tailwind CSS v4, Zustand for
+  state, React Flow (`@xyflow/react`) for the node editor.
+- **Desktop shell:** Tauri v2 (Rust). Rust owns the show (patch, groups,
+  graph, undo, files) and the engine. The UI is a view over it.
+- **Output:** FTDI Open DMX (host-generated break), Enttec DMX USB Pro,
+  Art-Net, sACN, one driver per universe, each on its own thread
+  (`src-tauri/src/output/`).
+- **Engine:** compiles the node graph and evaluates it at 44Hz, per fixture
+  where needed, merging outputs HTP/LTP (`src-tauri/src/graph/`,
+  `src-tauri/src/engine/`).
+- **Fixtures:** JSON definitions in `src/fixtures/library/` plus imports
+  (Open Fixture Library, QLC+ `.qxf`, or the built-in editor).
+- **Timing:** tap/manual BPM, audio beat detection, MIDI clock, Mixxx
+  (`docs/mixxx/`), MTC and LTC timecode (`src-tauri/src/timing/`).
+- **MCP:** the official Rust SDK (`rmcp`), streamable HTTP on 127.0.0.1
+  (`src-tauri/src/mcp/`).
 - **Design system:** ported from
-  [sergioalexo/design-system](https://github.com/sergioalexo/design-system) -- HSL
-  token pairs (light/dark) mapped through Tailwind v4 `@theme inline` in
-  `src/index.css`, CVA-based primitives in `src/components/ui/`. Dark is the only
-  active mode (`<body class="dark">` in `index.html`); the light tokens stay
-  defined for parity with the shared system but aren't wired to a toggle.
+  [sergioalexo/design-system](https://github.com/sergioalexo/design-system):
+  HSL token pairs mapped through Tailwind v4 `@theme inline` in
+  `src/index.css`, CVA-based primitives in `src/components/ui/`. Dark only.
 
 ## Running it
 
@@ -36,18 +56,19 @@ npm install
 npm run tauri dev
 ```
 
-Requires the Rust toolchain (`rustc`/`cargo`) for the Tauri backend. `npm run dev`
-alone runs just the Vite frontend in a regular browser for UI iteration -- native
-calls (serial ports, DMX output) no-op gracefully outside the Tauri runtime.
+Requires the Rust toolchain (`rustc`/`cargo`). `npm run dev` alone runs just
+the Vite frontend in a browser; native calls fail gracefully outside Tauri.
 
-## Known MVP limitations
+Tests: `npm test` (frontend) and `cargo test` in `src-tauri/` (engine, graph,
+show, MCP end to end). After changing a node type, regenerate the node
+reference with `UPDATE_DOCS=1 cargo test nodes_doc`.
 
-Carried over from the PRD review, not yet addressed:
+## Known limitations
 
-- Single DMX universe (512 channels), no Art-Net/sACN network output.
-- Fixture library covers simple typed channels (dimmer/color/strobe/function/etc);
-  no pan/tilt range calibration, gobo wheel tables, or multi-instance macros yet.
-- AI API keys are stored in `localStorage`, not the OS keychain.
-- Concurrently triggering two Scenes/Chases that touch the same channel will fight
-  over it -- no channel-ownership/priority model yet.
-- OTA update rollback/skip-during-a-show flow is not implemented.
+- Show files from the pre-graph development builds (format 8 and older)
+  can't be opened.
+- Custom fixture types live in the app's local storage, not in the show
+  file, so a show using them needs them imported on another machine too.
+- The MCP server has no authentication beyond being localhost-only.
+- Fader/Button nodes can't be bound to MIDI directly. Use a MIDI CC/Note node
+  (with Learn) instead.

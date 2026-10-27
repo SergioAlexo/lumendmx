@@ -1,7 +1,8 @@
 # Decisions
 
-One line (or a short paragraph) per call made without stopping to ask, per
-`BUILD_PLAN.md`'s ground rules. Newest at the bottom.
+One line (or a short paragraph) per call made without stopping to ask.
+Newest at the bottom. Decisions about features that were later removed
+are gone with them (they're in git history).
 
 ## Phase 1 — Foundations
 
@@ -164,159 +165,14 @@ One line (or a short paragraph) per call made without stopping to ask, per
   buffer — needed once a fixture could be patched to any universe, not only
   the first one.
 
-## Phase 5 — Groups, presets, palettes
+## Show persistence
 
-- **"Group master" is the same operation as `GROUP N @ value` on the command
-  line, not a continuously-multiplying scaling layer.** A true multiplicative
-  master (everything under it gets scaled, live, regardless of what sets it)
-  would need restructuring `engine::merge`'s pipeline so every layer's value
-  passes through any group masters affecting its fixtures before HTP/LTP
-  resolution — a real, more invasive change. What's here instead: moving the
-  slider re-applies the group's intensity directly, same as typing the
-  command. Good enough for "a fader that dims a group," not for "a fader that
-  rides on top of whatever a chase is doing to that group."
-- **Presets are attribute-keyed (e.g. "red", "pan"), not raw-channel-keyed.**
-  Recording captures each attribute's *currently rendered* (post-merge)
-  value; applying resolves attribute -> channel fresh per **target** fixture
-  via `PatchIndexEntry.attribute_channels`. This is what makes "global/per-
-  fixture-type/per-fixture" presets in BUILD_PLAN's wording actually mean
-  something — the same "Deep Blue" preset can apply to any fixture with
-  red/green/blue channels, not just the one it was recorded from.
-- **`apply_preset` always re-reads the preset by id — never caches or copies
-  its values anywhere.** This is the actual mechanism behind "updating a
-  preset changes every cue that references it"; proven by a unit test
-  (`updating_a_preset_changes_what_every_future_lookup_sees`) rather than by
-  a real cue, since cuelists are Phase 6. Phase 6 reuses `apply_preset`/the
-  lookup-by-id pattern as-is rather than inventing a second mechanism.
-- **The Palettes panel has its own fixture picker, not a shared "current
-  selection".** There's no cross-tab/global selection state yet (the patch
-  panel's selection is local component state); building that just so Groups/
-  Presets could "use the current selection" would be more new infrastructure
-  than this phase needs — a self-contained picker does the same job.
-- **Color picker uses HSV internally, not true HSI**, with a "Brightness"
-  slider standing in for HSI's intensity axis — same wheel interaction (hue =
-  angle, saturation = radius) BUILD_PLAN's "HSI wheel" asks for, well-known
-  conversion math (unit-tested), without chasing a less-common color model
-  for no visible difference in this UI. CMY faders weren't added: redundant
-  with RGB for this app's channel-based model.
-- **No preset thumbnails beyond a plain color swatch.** Colour presets show
-  their recorded color; other families show a plain tile with the preset's
-  name. Real thumbnails (e.g. a gobo image, a position indicator) need
-  per-family rendering that isn't worth building before Phase 6 gives
-  presets an actual consumer.
-
-## Phase 6 — Cuelists, playback
-
-- **Cue playbacks share `EngineState.playbacks` with legacy Scene/Chase/FX
-  assets**, keyed by a `"cue-playback-{id}"` prefix instead of a second merge
-  path — both go through the exact same HTP/LTP logic in `merge.rs`. Adding
-  a parallel "cue layer" concept would have meant either duplicating the
-  merge rules or making `merge_universe` aware of two different layer
-  sources; reusing the one abstraction it already has was simpler and
-  already proven correct by Phase 3's tests.
-- **Override cuelists get a priority tier (`OVERRIDE_PRIORITY_BASE =
-  1_000_000_000`), not a special merge case.** This falls out of the same
-  "priority determines LTP" rule everything else uses — an override cuelist
-  just starts its priority counter a billion higher than standard playbacks,
-  still strictly below the programmer's `i64::MAX`.
-- **The command line's `RECORD CUE`/`UPDATE`/`DELETE CUE`/`NEXT`/`PREV` now
-  execute for real** (they only parsed through Phase 3-5). They operate
-  against a "current cuelist" (`engine_set_current_cuelist`) the Cuelists tab
-  sets when you open one — there's still no cross-tab selection state (see
-  Phase 5's decision above), so this is the smallest thing that makes the
-  command line's cue syntax actually do something, without inventing a
-  bigger selection-sharing mechanism this phase doesn't need elsewhere.
-- **`UPDATE` re-captures whichever cue `RECORD CUE` last touched.** The
-  grammar (designed in Phase 3, before cuelists existed) gives `UPDATE` no
-  number of its own — `exact(1, Command::UpdateCue)`. Rather than change a
-  grammar an earlier phase already committed to and unit-tested, `UPDATE`
-  tracks the last-recorded cue number per `ProgrammerContext`.
-- **`COPY`/`MOVE` still don't execute.** Same root cause as `UPDATE`: the
-  existing grammar parses them with zero arguments, so there's no target cue
-  number to copy/move to. Inventing new syntax for this (e.g. `COPY 1 TO 2`)
-  wasn't specified by anything this project has already committed to, and
-  guessing wrong would mean redoing both the parser and its existing passing
-  tests. Left as a clear "not implemented" error rather than a silent no-op
-  or a guessed syntax.
-- **`RECORD CUE`'s fade time comes from the last `TIME n` command**, applied
-  to both fade-in and fade-out — the grammar has no separate in/out syntax
-  (`TIME` takes one number). This is also what finally gives `TIME` an
-  effect; Phase 3 introduced it as a stored-but-inert value specifically
-  pending this.
-- **A playback's `current_cue_number` is polled (`PlaybackBar` on a 250ms
-  interval), not pushed as an event.** Every other piece of the UI that
-  needs the engine's live output (universe frames, universe/channel status)
-  has a `listen`-based push event; playback status doesn't get one this
-  phase. A 250ms-polled fader/cue readout is unnecessary for a phase whose
-  actual complexity was the engine model itself; adding a new
-  `engine://...` event class is a small, low-risk follow-up if playback UI
-  responsiveness turns out to matter later.
-- **Playback bar covers fader modes and Flash; pages/rate-master/main-
-  playback-GO-BACK-PAUSE-RELEASE-ALL do not exist.** `FaderMode` (Intensity
-  Master / Crossfade, `engine_playback_set_fader_mode`) and a per-slot Flash
-  button (bump to full while held, restore on release — a frontend-only
-  fader manipulation, no new engine state) are real, working per-slot
-  controls, since BUILD_PLAN names both explicitly. A "rate" fader mode
-  (playback speed, distinct from a crossfade position) has no defined
-  meaning yet outside a Chase's BPM, so it wasn't invented. Paged banks (20+
-  pages) and a distinct "main playback" fader with a global RELEASE ALL are
-  real UI infrastructure BUILD_PLAN also asks for that a single scrollable
-  row of slots doesn't provide — deferred as genuinely unbuilt, not silently
-  dropped; see `PlaybackBar`'s own doc comment.
-- **Submaster cuelists have no GO/cue-stepping UI**; `create_playback` just
-  puts them on cue 0 (tracked) immediately and the fader scales that.
-  Building a distinct "submaster" playback slot UI (vs. the standard
-  GO/Back/Release row `PlaybackBar` shows for every kind) is deferred —
-  the standard controls simply don't do much for a kind that has only one
-  effective state, which is an acceptable rough edge, not a broken feature.
-- **Timecode cuelists behave exactly like Standard (manual GO only).**
-  Nothing drives playback from an external clock — LTC/MTC input is
-  explicitly Phase 8's scope, not guessed at here.
-- **`Cue.delay_in_ms` and `Cue.mark` are modeled but not acted on.** Both
-  fields exist on `Cue` and cross the Tauri boundary via `CueDto`, but
-  nothing currently sets `delay_in_ms` to a non-zero value (no UI field for
-  it) or reads it in `PlaybackRuntime::go` (a cue's fade always starts
-  immediately), and `mark` (move-in-black) has no UI checkbox and no engine
-  effect — `cues.rs`'s own doc comment already flagged this. Per-attribute
-  timing (different fade times for different channels within one cue) and
-  follow/wait/auto-follow/links/loops between cues aren't modeled at all.
-  All of these are genuine, real-timing features, not stubs that fake
-  correctness — they're left as explicit gaps rather than a half-working
-  approximation, since BUILD_PLAN's own "done when" for this phase (a
-  20-cue tracking cuelist plays back correctly, a chase follows tapped BPM)
-  doesn't require them and they're each substantial enough to deserve their
-  own real design pass rather than a rushed addition here.
-- **The "Triggers" tab is the renamed Phase 3/4 `TriggerGrid`** (legacy
-  Scene/Chase/FX one-shot triggers), kept as its own tab distinct from the
-  new "Cuelists" tab rather than merged into it — they're different data
-  models (`LightAsset` vs. `Cuelist`/`Cue`) with different lifecycles, and
-  conflating them in one screen would have been more confusing than two
-  clearly-named tabs.
-
-## Phase 6 follow-up — Show persistence
-
-- **Groups, presets and cuelists are saved in the show file (schema v4)
-  through the engine, not a frontend store.** The engine owns this data at
-  runtime, so Save calls `engine_export_show_data` and Open/New call
-  `engine_load_show_data`. A second copy in a Zustand store would just be a
-  second source of truth to keep in sync. Ids are kept on load so cue→preset
-  references stay valid, and new ids continue after the highest loaded one.
-- **Cuelists are stored in the flattened `CuelistDto` shape**, the same one
-  the UI already uses, because `Cue.values` is keyed by `(universe, channel)`
-  tuples, which can't be JSON object keys.
-- **Dirty tracking for engine data uses a polled revision counter**
-  (`engine_show_data_revision`), not change events. Every engine edit bumps
-  it; the frontend compares it to the revision at the last save/load. It's
-  one cheap integer read and doesn't need a new event channel.
-- **Playbacks aren't saved.** They're runtime state (which cue is live,
-  fader positions), and loading a show drops running cue playbacks since
-  they point at the outgoing cuelists.
 - **On launch, the app restores whichever is newer: the newest autosave or
   the last opened/saved show** (`showfile_restore_session`). An autosave is
   reattached to its show's path (if it has one) and marked dirty, so recovered
   work is never silently treated as saved.
 
-## Phase 7 — Effects engine and pixel mapping
+## Tempo
 
 - **A minimal global tempo was built here, not in Phase 8.** Phase 7's
   done-when needs "BPM-synced", and the only BPM so far was per chase
@@ -329,175 +185,6 @@ One line (or a short paragraph) per call made without stopping to ask, per
   jump to a new phase. Hz-rate effects use the engine's elapsed seconds
   directly, so changing an effect's Hz *does* jump its phase. That's
   acceptable for a parameter you set while programming, not while running.
-- **Effects run inside the owning layer** (`Layer.fx_values` beat
-  `Layer.values`), not as a separate post-merge pass. That way an effect in
-  an Override cuelist wins like an Override, and a dimmer effect is HTP
-  like any dimmer, with no new merge rules to reason about.
-- **Effects don't track.** `RECORD CUE` captures a literal for every
-  channel of the selected fixtures, so a tracked effect could never be
-  stopped by a later cue. A cue runs only its own effects. Re-record an
-  effect into each cue that should have it; when it's the same programmer
-  effect (same id), GO between those cues doesn't interrupt it.
-- **A new effect on an attribute replaces the old one for those fixtures**
-  instead of stacking two effects on the same channel. That matches what a
-  programmer expects from re-applying an effect. Stacking still happens
-  across layers (a cue's effect plus a programmer effect).
-- **Editing a preset-linked running effect unlinks it.** It's no longer
-  playing the preset's definition, so following later preset edits would
-  overwrite the live edit. Use ↻ on the preset to push the edit into the
-  preset instead.
-- **Effect presets hold a whole effect definition** (`Preset.effect`)
-  rather than attribute values. The Palettes tab's Effect family no longer
-  offers "record from selection" (it would have recorded plain values);
-  recording happens in the Effects tab.
-- **Pan/tilt effects drive the coarse channel only.** The patch index
-  carries one channel per attribute, and fine channels aren't modelled
-  there yet. Fine-channel output is part of the 16-bit work for moving
-  heads.
-- **"Step" is four equal levels and "pulse" a smooth bump over `width`%.**
-  The plan names both without defining them; these are the common
-  meanings.
-- **The intensity-master fader moved from `PlaybackRuntime::render` to the
-  merge** (`Layer.intensity_scale`). Otherwise a dimmer effect on a cue
-  would ignore its playback's fader.
-- **Pixel-map media is decoded in Rust and scaled at import.** The `image`
-  crate (MIT/Apache) handles PNG/JPEG/GIF. Frames are stored at the map's
-  size as base64 RGB in the show file, so a show stays self-contained and
-  small, and a later map resize resamples (nearest-neighbour). Imports are
-  capped at 8 MB and 300 frames.
-- **Video onto the grid was skipped.** It needs ffmpeg or a platform
-  decoder, which is a large native dependency for a feature a GIF covers
-  for most DJ-set use. Recorded here per the "skip and note" rule.
-- **The scriptable generator (sandboxed JS) was skipped.** The plan marks
-  it optional, and doing it properly means embedding a JS engine (e.g.
-  `boa`) with time and memory limits in the engine thread. The eight
-  built-in generators cover the plan's list.
-- **Pixel maps aren't recordable into cues yet.** They run from the Pixel
-  maps tab as their own playback layers, with a master. Triggering a map
-  from a cue or a playback-bar slot belongs with the playback-bar pages
-  work (still open from Phase 6) or the Virtual Console (Phase 10).
-- **The fire generator steps at `height` steps per cycle** and catches up
-  at most four steps per tick, so after a long pause it doesn't spend a
-  tick simulating seconds of flames.
-
-## Phase 12 — Visualisation
-
-- **Stage positions live on `PatchedFixture` (`stage`, optional), schema v6.**
-  They follow the fixture when it is re-patched or removed, and `usePatchStore`
-  already round-trips through the show file. Metres, x across, y upstage, z
-  height. The stage is a fixed 12 x 8 x 6 m box for now; a configurable stage
-  size is a later nicety.
-- **Unplaced fixtures get an automatic layout, not a stored one.** A fresh
-  patch shows up on the plot and in 3D immediately; positions are written to
-  the show only once the user drags a fixture or presses "Save layout".
-- **Source attribution is a separate polled query, not part of the frame
-  event.** The tick and the 20Hz frame stay exactly as cheap as before;
-  the Output sheet polls `engine_get_universe_sources` at 4Hz while it is open.
-  "Tracked" is computed from the cuelist (values in earlier cues but not the
-  current one on a tracking cuelist), not stored on the layer.
-- **Selection is keyed by fixture number and pushed into the engine, one way.**
-  Reading the engine's selection back would need a new event or polling for
-  little gain; the plot is the only writer today.
-- **Dragging positions is not undoable.** Positions don't affect output, and
-  the undo stack is for patch edits.
-- **Zoom maps 0 to the narrow end of the definition's beam-angle range.**
-  Definitions don't say which end is which; this is the usual convention.
-  Pan/tilt use the definition's degree range, defaulting to 540/270.
-- **The 3D view uses unlit materials with additive cones.** "Volumetric-lite":
-  a translucent cone per beam plus a floor pool, no shadows or fog, so
-  hundreds of fixtures stay cheap. three.js, @react-three/fiber and
-  @react-three/drei are all MIT.
-- **3D in "its own window" is not done.** It is a tab like the others; a
-  separate OS window needs the multi-window work in Phase 13's preferences.
-  The 3D chunk is lazy-loaded (about 950 kB, 254 kB gzipped) so the main
-  bundle only grew by the new panels.
-- **Gobo and colour-wheel images are not rendered.** Colour wheels tint the
-  beam when the definition gives a slot colour; gobo patterns are skipped.
-
-## Playback and programmer completion
-
-This finishes the items Phase 3 and Phase 6 left partial. It supersedes the
-Phase 3 and Phase 6 notes above that say pages, rate master, delay/follow/
-link/mark, per-attribute timing, TIME, blind, highlight and `COPY`/`MOVE`
-are not built.
-
-- **Cue timing is per channel, decided by what the channel is.** Intensity
-  (HTP) channels use the cue's in-timing when rising and out-timing when
-  falling; all other attributes use an optional attribute fade/delay, which
-  falls back to the in-timing. "Intensity versus other attributes" was the
-  minimum asked for; finer per-attribute timing (a different time for pan
-  than for colour) would add columns without changing the engine model.
-  A cue's `fade_out_ms` used to be recorded but ignored; it now applies to
-  falling intensity. Cues recorded by the command line set in and out to the
-  same `TIME`, so they behave as before.
-- **Follow and wait are two fields, not one.** `follow` counts from the
-  cue's start, `wait` from the end of its fade (what many consoles call
-  auto-follow versus wait). A cue may set either; whichever is due first
-  fires. A manual GO still works at any time and restarts the timers.
-- **Links with a loop count.** `link_to` redirects the next GO (manual or
-  automatic) to a cue number; `loop_count = n` takes the link n times and
-  then continues in order, `None` loops forever. "Jump to cue N" without a
-  loop count is just a link.
-- **Mark is applied in the engine, only on dark fixtures.** It needs to know
-  which channel is a fixture's intensity, so the manager derives a `PlayInfo`
-  from the patch index and HTP set. The pre-position happens once the
-  previous cue's fade is complete, and only for the sequentially next cue
-  (not for a link target). A fixture with no dimmer channel is never marked,
-  because "dark" can't be known.
-- **Playback pages are 40 pages of 10 columns**, saved in the show file
-  (schema v7). A playback sits on exactly one page/column. Playbacks on
-  other pages keep running when you change page unless "release on page
-  change" is on, which releases only the page being left. Shown columns are
-  empty slots with an "Assign" menu, and the 44px minimum touch size applies
-  to every playback button.
-- **Main playback = the selected column.** Clicking a column's name selects
-  it; the large GO / BACK / PAUSE act on it, and RELEASE ALL releases every
-  playback on every page. There is no separate main-playback fader: each
-  column already has its own.
-- **The rate master is 0-200% of normal speed, not a BPM.** It scales the
-  tempo clock the tick integrates (so BPM and Hz effects and pixel maps
-  follow) and a chase's step timer. It deliberately doesn't touch crossfade
-  times. The rate *fader mode* is per playback: 0-100% maps to 0-2x with 50%
-  normal, and scales that playback's own fades, delays, follows and chase
-  steps. Switching a playback to rate mode sets its fader to 50%.
-- **The grand master multiplies HTP channels of the final output** (so it
-  also dims the programmer and effects) and is excluded from anything that is
-  recorded. It is not saved in the show, like blackout: it is a performance
-  control, and a show that opens at 0% would look broken.
-- **Programmer TIME applies to command-line intensity edits and preset
-  applies**, fading from the programmer's current value or, if it has none,
-  from what the channel outputs now. Slider drags don't fade (a drag is
-  already a continuous move). TIME stays set until changed (`TIME 0`), as
-  it already did for RECORD, rather than being consumed by the next edit.
-  Blind edits never fade.
-- **Blind is a second programmer layer that nothing merges.** Recording
-  while blind stores only the channels edited in it (a "record what you see"
-  would record the live output, defeating the point). Toggling blind keeps
-  the blind layer; CLEAR empties the layer being edited.
-- **Highlight is an output-stage overlay.** Selected fixtures get full
-  intensity and open white (RGBW up, CMY down); other fixtures' intensity is
-  dimmed to 25% (lowlight is part of highlight here, not a second key). It
-  never enters a layer, so it can't be recorded. It does not move pan/tilt
-  or open a shutter, because only generic channel names are known.
-- **`COPY CUE a @ b` and `MOVE CUE a @ b`** (with `AT` as an alternative to
-  `@`). A bare `COPY`/`MOVE` still parses so the earlier grammar tests hold,
-  and answers with a usage hint. Both replace a cue already at `b`. Cue
-  numbers typed on the command line go through their shortest decimal form,
-  so `1.2` is the same cue number as 1.2 entered in the cue sheet.
-- **Keyboard shortcuts use Alt plus a letter**, shown in each key's
-  tooltip, because plain letters would collide with typing into any field.
-  Digits, `+`, `-`, `.` outside a text field type into the command line.
-  Escape in the command line clears the text, then runs CLEAR. A global
-  Escape is not bound, so it can't clear the programmer while closing a
-  dialog.
-- **Show file v7.** Adds `playbacks` and `releaseOnPageChange`; cue timing
-  fields are optional and need no rewriting (`upgrade_6_to_7` adds the two
-  top-level keys). Built as v6 and renumbered on merge, after the stage
-  positions (v6).
-- **Not done:** an attribute encoder bar, per-attribute timing finer than
-  "intensity versus the rest", move-in-black for link targets, a main
-  playback fader, saving the masters in the show, and a push event for
-  playback status (still polled).
 
 ## Phase 8 — Timing sources
 
@@ -513,9 +200,6 @@ are not built.
   chase at half speed is musically fine).
 - **Only locked estimates move the tempo.** Four consecutive estimates within
   1.5 BPM; until then the BPM holds its last value rather than wandering.
-- **Chases follow the show tempo only when asked** (`chases_follow_tempo`,
-  default off), so existing shows and per-chase BPMs don't change under a
-  user. With it on, every chase runs at the global BPM.
 - **Manual and Tap are separate selector entries but behave the same**: both
   mean "nothing automatic". Tap and the BPM field work in every mode, though
   an automatic source overwrites them on its next estimate.
@@ -525,26 +209,62 @@ are not built.
   which the project rules out. Revisit if Ableton's terms change or a
   clean-room, permissively licensed implementation appears. MIDI clock (which
   Ableton Live and most DJ software can send) covers the same need.
-- **Pioneer Pro DJ Link is research only** (docs/research/PRO_DJ_LINK.md).
-- **Timecode is chase-style, not edge-triggered.** A Timecode cuelist always
-  shows the cue whose time most recently passed, so scrubbing, locating and
-  starting mid-show land on the right look. The cost: a manual GO is
-  overridden at the next tick while the clock is running.
-- **Cue times are milliseconds, not hh:mm:ss:ff.** Frame rate is a property of
-  the incoming signal, so storing ms keeps a show valid whichever source is
-  used. The UI shows frames at the source's rate. Show file schema 6.
+- **Pioneer Pro DJ Link was skipped.** Its protocol is only known from
+  reverse engineering and needs real CDJs to build against.
+
 - **Timecode source, devices and audio triggers aren't saved in the show.**
   Device ids differ per machine, and triggers point at playback ids that exist
   only for a session (playbacks aren't saved either). The Timing tab is
   per-session. Persisting machine settings belongs with a settings store.
-- **The Timeline plays audio in the webview**, kept within 0.2 s of the engine
-  clock. Nothing frame-accurate depends on it. One audio track and one
-  cuelist are shown at a time; function/chase blocks and multiple tracks are
-  left for later.
-- **Audio flash is a level, not a gate.** The playback follows the band
-  (gate, attack, release) rather than flipping to full, so a kick drum gives
-  a pulse shaped like the kick.
 - **LTC is decoded from a mono channel with zero crossings.** It copes with
   fractional bit lengths and low levels; it does not handle reverse play or
   29.97 drop-frame labelling (30 fps is assumed).
+
+## Node-graph redesign (2026-10-20)
+
+- **Three tabs, no programmer.** The UI had grown one tab per engine phase
+  (13 tabs plus a sidebar), which made it clunky to use. The show is now a node graph. The command line,
+  cuelists, presets, the effects engine, pixel maps, the timeline, audio
+  triggers, stage plot, 3D view, DMX monitor and the built-in AI chat were
+  removed, front and back. The playback bar stays as faders and buttons
+  that are graph inputs, and looks are switched inside the graph
+  (Switch/Mix nodes) rather than by cues.
+- **Rust owns the show.** Patch, groups, universes and the graph moved from
+  frontend stores into `show::ShowService`, because the MCP server and the UI
+  must edit the same thing with one undo history. Undo is a snapshot stack
+  over patch + groups + graph (they're small). Universes aren't undoable:
+  they reconfigure hardware.
+- **The frontend still owns the fixture library** and pushes it to Rust:
+  imports (OFL, QLC+) and the fixture editor are TypeScript, and Rust only
+  needs channel offsets, attributes, defaults and capabilities.
+- **Per-fixture, shader-style evaluation** instead of an effects engine with
+  spread/groups/blocks/wings parameters: nodes upstream of an Output run once
+  per target with that target's index, so Fan (which keeps the old
+  groups/blocks/wings maths) or Fixture Index feeding an LFO's phase gives
+  the same fanned effects, and composes with everything else.
+  Fixture-independent nodes run once per tick.
+- **One registry for node types** (`graph/registry.rs`). The editor renders
+  generic nodes from it, MCP clients read it via `list_node_types`, and
+  docs/NODES.md is generated from it. Nothing about a node is duplicated in
+  TypeScript.
+- **Only connected Output inputs are written.** An Output with just a colour
+  linked leaves intensity to other outputs. That's what makes layering
+  several outputs on the same fixtures useful.
+- **Show format 9 starts fresh**; older development formats are refused with
+  a clear message rather than migrated (backward compatibility wasn't needed).
+- **MCP over streamable HTTP inside the app**, not a stdio sidecar: the
+  server has to reach the live show, and HTTP lets any number of clients
+  connect to the running app. rmcp's default Host allowlist (localhost) is
+  the DNS-rebinding protection. It's on by default, since that's the point
+  of having it built in.
+- **MIDI moved to Rust** (midir): the graph's MIDI nodes read the same port
+  as MIDI clock and MTC. The Web MIDI note→asset mapping went with the
+  legacy assets.
+- **MIDI binds to Buttons and Faders, not nodes** (2026-10-26). The MIDI CC
+  and MIDI Note nodes were removed: a Button or Fader takes a MIDI binding
+  (note or CC, channel, number; or Learn) and the MIDI moves its
+  playback-bar value, so a pad and a click are the same press and the bar
+  shows what the controller did. A quick pad hit on a flash Button is
+  latched until the next tick so it's never missed. Shows with the old
+  nodes don't load (no migration; nothing depends on them yet).
 

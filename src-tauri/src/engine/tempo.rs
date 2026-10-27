@@ -30,6 +30,16 @@ pub struct TempoStatus {
     pub beat: f64,
 }
 
+/// Whose clock a tap's timestamp is on. Taps on different clocks can't be
+/// averaged, so switching starts a new measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TapClock {
+    /// The caller's (the TAP button's `performance.now()`).
+    Caller,
+    /// When the MIDI tap message arrived.
+    Midi,
+}
+
 #[derive(Debug, Clone)]
 pub struct Tempo {
     bpm: f32,
@@ -39,6 +49,7 @@ pub struct Tempo {
     seconds: f64,
     /// Timestamps (ms, caller's clock) of recent taps.
     taps: Vec<f64>,
+    tap_clock: TapClock,
 }
 
 impl Default for Tempo {
@@ -49,7 +60,7 @@ impl Default for Tempo {
 
 impl Tempo {
     pub fn new() -> Self {
-        Self { bpm: DEFAULT_BPM, beat: 0.0, seconds: 0.0, taps: Vec::new() }
+        Self { bpm: DEFAULT_BPM, beat: 0.0, seconds: 0.0, taps: Vec::new(), tap_clock: TapClock::Caller }
     }
 
     pub fn bpm(&self) -> f32 {
@@ -90,6 +101,19 @@ impl Tempo {
     /// beat — tapping along to music puts synced effects on the downbeat,
     /// not just at the right speed. Returns the (possibly unchanged) BPM.
     pub fn tap(&mut self, now_ms: f64) -> f32 {
+        self.tap_on(TapClock::Caller, now_ms)
+    }
+
+    /// A tap from the MIDI tap trigger, `now_ms` on a clock of the caller's.
+    pub fn tap_midi(&mut self, now_ms: f64) -> f32 {
+        self.tap_on(TapClock::Midi, now_ms)
+    }
+
+    fn tap_on(&mut self, clock: TapClock, now_ms: f64) -> f32 {
+        if clock != self.tap_clock {
+            self.taps.clear();
+            self.tap_clock = clock;
+        }
         if self.taps.last().is_some_and(|&last| now_ms - last > TAP_RESET_MS || now_ms <= last) {
             self.taps.clear();
         }
@@ -145,6 +169,17 @@ mod tests {
         tempo.tap(0.0);
         assert_eq!(tempo.bpm(), DEFAULT_BPM);
         assert_eq!(tempo.beat(), 3.0);
+    }
+
+    #[test]
+    fn midi_taps_dont_mix_with_button_taps() {
+        let mut tempo = Tempo::new();
+        tempo.tap(100.0);
+        tempo.tap(600.0); // button: 500ms = 120 BPM
+        for i in 0..4 {
+            tempo.tap_midi(5_000.0 + 400.0 * i as f64); // 400ms apart = 150 BPM
+        }
+        assert!((tempo.bpm() - 150.0).abs() < 0.01);
     }
 
     #[test]

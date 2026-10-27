@@ -1,81 +1,91 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { SquareArrowOutUpRight } from "lucide-react";
 import { TopBar } from "./components/TopBar";
-import { TriggerGrid } from "./components/TriggerGrid";
-import { CuePanel } from "./components/CuePanel";
-import { PlaybackBar } from "./components/PlaybackBar";
-import { AiSettings } from "./components/AiSettings";
-import { SystemPanel } from "./components/SystemPanel";
-import { FixturePatchPanel } from "./components/FixturePatchPanel";
-import { ProgrammerPanel } from "./components/ProgrammerPanel";
-import { CommandLine } from "./components/CommandLine";
-import { LiveAiConsole } from "./components/LiveAiConsole";
+import { useShowShortcuts } from "./components/ShowMenu";
+import { FixturesPanel } from "./components/fixtures/FixturesPanel";
 import { SetupPanel } from "./components/SetupPanel";
-import { PalettesPanel } from "./components/PalettesPanel";
-import { EffectsPanel } from "./components/EffectsPanel";
-import { PixelMapPanel } from "./components/PixelMapPanel";
-import { DmxMonitor } from "./components/DmxMonitor";
-import { LiveSheet } from "./components/LiveSheet";
-import { StagePlot } from "./components/StagePlot";
-import { TimingPanel } from "./components/TimingPanel";
-import { TimelinePanel } from "./components/TimelinePanel";
+import { NodeEditor } from "./components/nodes/NodeEditor";
+import { PlaybackBar } from "./components/PlaybackBar";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
+import { type MainView, VIEW_LABELS, popOut, poppedOutView } from "./lib/windows";
 import { useDmxStore } from "./store/useDmxStore";
-import { useMidiStore } from "./store/useMidiStore";
 import { useAppUpdateStore } from "./store/useAppUpdateStore";
+import { useGraphStore } from "./store/useGraphStore";
 import { useShowStore } from "./store/useShowStore";
 import { useUniverseStatusesStore } from "./store/useUniverseStatusesStore";
 import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
 
-// three.js is only fetched when the 3D tab is first opened.
-const Visualizer3D = lazy(() => import("./components/Visualizer3D"));
+/** Set once per window: a popped-out tab shows just that view. The top bar
+ * and playback bar stay in the main window. */
+const POPPED_OUT = poppedOutView();
 
-type MainView = "fixtures" | "cues" | "cuelists" | "palettes" | "effects" | "pixelmaps" | "stage" | "visualizer" | "livesheet" | "monitor" | "timing" | "timeline" | "setup";
+function ViewPanel({ view }: { view: MainView }) {
+  return view === "setup" ? <SetupPanel /> : view === "fixtures" ? <FixturesPanel /> : <NodeEditor />;
+}
 
-const VIEW_LABELS: Record<MainView, string> = {
-  fixtures: "Fixtures",
-  cues: "Triggers",
-  cuelists: "Cuelists",
-  palettes: "Palettes",
-  effects: "Effects",
-  pixelmaps: "Pixel maps",
-  stage: "Stage plot",
-  visualizer: "3D",
-  livesheet: "Output",
-  monitor: "DMX monitor",
-  timing: "Timing",
-  timeline: "Timeline",
-  setup: "Setup",
-};
+function ErrorBanner() {
+  const error = useShowStore((s) => s.error);
+  if (!error) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-1.5 text-xs text-destructive">
+      <span>{error}</span>
+      <button className="underline-offset-2 hover:underline" onClick={() => useShowStore.setState({ error: null })}>
+        Dismiss
+      </button>
+    </div>
+  );
+}
 
 function App() {
   const init = useDmxStore((s) => s.init);
-  const initMidi = useMidiStore((s) => s.init);
   const checkForAppUpdate = useAppUpdateStore((s) => s.checkNow);
   const initShow = useShowStore((s) => s.init);
+  const initGraph = useGraphStore((s) => s.init);
   const showLoadCount = useShowStore((s) => s.loadCount);
   const initUniverseStatuses = useUniverseStatusesStore((s) => s.init);
   const initUniverseChannels = useUniverseChannelsStore((s) => s.init);
-  const [mainView, setMainView] = useState<MainView>("fixtures");
+  const [mainView, setMainView] = useState<MainView>("nodes");
+  const focus = useGraphStore((s) => s.focus);
+  useShowShortcuts();
+
+  // Showing a node (right-click on the playback bar) needs the Nodes tab.
+  useEffect(() => {
+    if (focus) setMainView("nodes");
+  }, [focus]);
 
   useEffect(() => {
-    void init();
-    void initMidi();
-    void checkForAppUpdate();
+    if (!POPPED_OUT) {
+      void init();
+      void checkForAppUpdate();
+    }
     void initShow();
+    void initGraph();
     void initUniverseStatuses();
     void initUniverseChannels();
-  }, [init, initMidi, checkForAppUpdate, initShow, initUniverseStatuses, initUniverseChannels]);
+  }, [init, checkForAppUpdate, initShow, initGraph, initUniverseStatuses, initUniverseChannels]);
+
+  // Keyed on show loads, so panels drop local state (selection, drafts)
+  // belonging to the previous show.
+  if (POPPED_OUT) {
+    return (
+      <div className="flex h-screen flex-col bg-background">
+        <ErrorBanner />
+        <div key={showLoadCount} className="flex-1 overflow-hidden">
+          <ViewPanel view={POPPED_OUT} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen flex-col bg-background">
       <TopBar />
-      <div className="flex flex-1 overflow-hidden">
-        <main className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex gap-1 border-b border-border px-4 py-2">
-            {(Object.keys(VIEW_LABELS) as MainView[]).map((view) => (
+      <main className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex gap-1 border-b border-border px-4 py-2">
+          {(Object.keys(VIEW_LABELS) as MainView[]).map((view) => (
+            <div key={view} className="group flex items-center">
               <Button
-                key={view}
                 size="sm"
                 variant={mainView === view ? "default" : "ghost"}
                 className={cn("uppercase", mainView !== view && "text-muted-foreground")}
@@ -83,52 +93,24 @@ function App() {
               >
                 {VIEW_LABELS[view]}
               </Button>
-            ))}
-          </div>
-          {/* Keyed on show loads: panels fetch engine data (cuelists, presets,
-              groups) on mount, so remount them when a different show loads. */}
-          <div key={showLoadCount} className="flex-1 overflow-hidden">
-            {mainView === "fixtures" ? (
-              <FixturePatchPanel />
-            ) : mainView === "cues" ? (
-              <TriggerGrid />
-            ) : mainView === "cuelists" ? (
-              <CuePanel />
-            ) : mainView === "palettes" ? (
-              <PalettesPanel />
-            ) : mainView === "effects" ? (
-              <EffectsPanel />
-            ) : mainView === "pixelmaps" ? (
-              <PixelMapPanel />
-            ) : mainView === "stage" ? (
-              <StagePlot />
-            ) : mainView === "visualizer" ? (
-              <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading 3D view...</div>}>
-                <Visualizer3D />
-              </Suspense>
-            ) : mainView === "livesheet" ? (
-              <LiveSheet />
-            ) : mainView === "monitor" ? (
-              <DmxMonitor />
-            ) : mainView === "timing" ? (
-              <TimingPanel />
-            ) : mainView === "timeline" ? (
-              <TimelinePanel />
-            ) : (
-              <SetupPanel />
-            )}
-          </div>
-          <PlaybackBar />
-        </main>
-        <aside className="flex w-80 flex-col overflow-y-auto border-l border-border bg-card">
-          <AiSettings />
-          <SystemPanel />
-          <CommandLine />
-          <ProgrammerPanel />
-          <div className="flex-1" />
-          <LiveAiConsole />
-        </aside>
-      </div>
+              <Button
+                size="iconSm"
+                variant="ghost"
+                title={`Open ${VIEW_LABELS[view]} in a new window`}
+                className="text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [&_svg]:size-3.5"
+                onClick={() => void popOut(view).catch((err) => useShowStore.setState({ error: `Couldn't open window: ${err}` }))}
+              >
+                <SquareArrowOutUpRight />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <ErrorBanner />
+        <div key={showLoadCount} className="flex-1 overflow-hidden">
+          <ViewPanel view={mainView} />
+        </div>
+        <PlaybackBar />
+      </main>
     </div>
   );
 }

@@ -1,18 +1,12 @@
-//! The lighting engine core: HTP/LTP merge, the programmer, the command
-//! line, and frame-accurate legacy asset playback. See docs/ENGINE.md.
+//! The lighting engine core: HTP/LTP merge, the global clocks, and the tick
+//! that sends merged frames to the outputs. See docs/ENGINE.md.
 
-pub mod audio_reactive;
-pub mod command_line;
+pub mod audio;
 pub mod commands;
-pub mod cues;
-pub mod effects;
-pub mod groups;
-pub mod legacy_playback;
 pub mod manager;
 pub mod merge;
-pub mod pixelmap;
-pub mod playback;
-pub mod presets;
+pub mod midi;
 pub mod state;
 pub mod tempo;
 pub mod timecode;
+pub mod waves;

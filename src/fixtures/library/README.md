@@ -64,9 +64,9 @@ A channel can also carry:
 - `fineOffset`: the offset of this channel's fine/LSB pair, for a 16-bit
   (coarse + fine) channel — `offset` is the coarse/MSB one.
 - `cell`: which repeated segment this channel belongs to, for a fixture with
-  multiple individually-controllable pixels/cells. This is just enough to
-  group a multi-cell fixture's channels for patching; full pixel-map
-  addressing is a separate, later feature (see BUILD_PLAN Phase 7).
+  multiple individually-controllable pixels/cells. A Fixture Output node
+  lights the cells together, or each separately ("Each cell separately"),
+  so effects can run along a bar.
 - `capabilities`: for a channel whose DMX range actually subdivides into
   different behaviors (a strobe that's "open" below 10 and strobes at an
   increasing rate above it; a color/gobo wheel's discrete slots), a list of
