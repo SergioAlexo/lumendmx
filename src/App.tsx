@@ -8,7 +8,7 @@ import { NodeEditor } from "./components/nodes/NodeEditor";
 import { PlaybackBar } from "./components/PlaybackBar";
 import { Button } from "./components/ui/button";
 import { cn } from "./lib/utils";
-import { type MainView, VIEW_LABELS, popOut, poppedOutView } from "./lib/windows";
+import { type MainView, type PopView, VIEW_LABELS, popOut, poppedOutView } from "./lib/windows";
 import { useDmxStore } from "./store/useDmxStore";
 import { useAppUpdateStore } from "./store/useAppUpdateStore";
 import { useGraphStore } from "./store/useGraphStore";
@@ -20,7 +20,8 @@ import { useUniverseChannelsStore } from "./store/useUniverseChannelsStore";
  * and playback bar stay in the main window. */
 const POPPED_OUT = poppedOutView();
 
-function ViewPanel({ view }: { view: MainView }) {
+function ViewPanel({ view }: { view: PopView }) {
+  if (view === "controls") return <PlaybackBar popped />;
   return view === "setup" ? <SetupPanel /> : view === "fixtures" ? <FixturesPanel /> : <NodeEditor />;
 }
 
