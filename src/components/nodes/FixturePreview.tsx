@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Group, PatchedFixture } from "../../lib/showfile/generated";
 import { cn } from "../../lib/utils";
 import { useAllFixtures } from "../../store/useFixtureLibraryStore";
@@ -10,6 +10,29 @@ import { channelValues, findMode, strobeHz, strobeStyle, swatchColor } from "../
 import type { FixtureDefinition } from "../../lib/fixtures/types";
 
 const COLLAPSED_KEY = "lumendmx-fixture-preview-collapsed";
+const FOLDED_KEY = "lumendmx-fixture-preview-folded";
+
+/** The sections folded shut (by key), remembered per machine. */
+function useFolded(): [Set<string>, (key: string) => void] {
+  const [folded, setFolded] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "[]") as string[]);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggle = (key: string) => {
+    const next = new Set(folded);
+    if (!next.delete(key)) next.add(key);
+    setFolded(next);
+    try {
+      localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+    } catch {
+      // Not remembered; still toggles for this session.
+    }
+  };
+  return [folded, toggle];
+}
 
 function useCollapsed(): [boolean, (collapsed: boolean) => void] {
   const [collapsed, setCollapsed] = useState(() => {
@@ -81,9 +104,13 @@ export function FixturePreview() {
   const library = useAllFixtures();
   const groups = useShowStore((s) => s.show?.groups ?? EMPTY_GROUPS);
   const [collapsed, setCollapsed] = useCollapsed();
+  const [folded, toggleFolded] = useFolded();
   const draft = useEditedGraph().view === "draft";
   const fixtures = useMemo(() => [...(patch ?? [])].sort((a, b) => a.fixtureNumber - b.fixtureNumber), [patch]);
   const parts = useMemo(() => sections(fixtures, groups), [fixtures, groups]);
+
+  // The unnamed section (no groups at all) has no header to fold by.
+  const isFolded = (part: Section) => part.name !== null && folded.has(part.key);
 
   if (collapsed) {
     return (
@@ -114,16 +141,26 @@ export function FixturePreview() {
         {parts.map((part) => (
           <section key={part.key} className="flex flex-col gap-1.5">
             {part.name !== null && (
-              <h4 className="flex items-baseline justify-between border-b border-border pb-0.5 text-[11px] font-medium">
-                <span className="truncate">{part.name}</span>
-                <span className="text-muted-foreground">{part.fixtures.length}</span>
+              <h4 className="border-b border-border pb-0.5 text-[11px] font-medium">
+                <button
+                  className="flex w-full items-center gap-1 text-left hover:text-foreground"
+                  onClick={() => toggleFolded(part.key)}
+                  aria-expanded={!isFolded(part)}
+                  title={isFolded(part) ? "Show this group's fixtures" : "Hide this group's fixtures"}
+                >
+                  {isFolded(part) ? <ChevronRight className="h-3 w-3 shrink-0" /> : <ChevronDown className="h-3 w-3 shrink-0" />}
+                  <span className="min-w-0 flex-1 truncate">{part.name}</span>
+                  <span className="text-muted-foreground">{part.fixtures.length}</span>
+                </button>
               </h4>
             )}
-            <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(36px, 1fr))" }}>
-              {part.fixtures.map((f) => (
-                <Cell key={f.fixtureNumber} fixture={f} library={library} draft={draft} />
-              ))}
-            </div>
+            {!isFolded(part) && (
+              <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(36px, 1fr))" }}>
+                {part.fixtures.map((f) => (
+                  <Cell key={f.fixtureNumber} fixture={f} library={library} draft={draft} />
+                ))}
+              </div>
+            )}
           </section>
         ))}
       </div>
