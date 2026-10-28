@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,9 @@ pub struct TimingSettings {
     /// The pad or button (on a controller port) that taps the tempo.
     #[serde(default)]
     pub tap_midi: Option<MidiTrigger>,
+    /// The pad or button (on a controller port) that toggles the blackout.
+    #[serde(default)]
+    pub blackout_midi: Option<MidiTrigger>,
 }
 
 impl Default for TimingSettings {
@@ -80,6 +84,7 @@ impl Default for TimingSettings {
             clock_port: None,
             controller_ports: Vec::new(),
             tap_midi: None,
+            blackout_midi: None,
         }
     }
 }
@@ -199,7 +204,11 @@ impl TimingManager {
         let old = inputs.settings.clone();
         self.shared.lock().unwrap().tempo_source = Some(settings.tempo_source);
         self.handles.timecode.lock().unwrap().set_source(settings.timecode_source);
-        self.handles.midi.lock().unwrap().tap = settings.tap_midi;
+        {
+            let mut midi = self.handles.midi.lock().unwrap();
+            midi.tap = settings.tap_midi;
+            midi.blackout = settings.blackout_midi;
+        }
 
         let want_audio = settings.audio_analysis || settings.tempo_source == TempoSource::Audio;
         let audio_changed =
@@ -322,6 +331,7 @@ impl TimingManager {
         let clock = self.handles.timecode.clone();
         let control = self.handles.midi.clone();
         let controls = self.handles.controls.clone();
+        let blackout = self.handles.blackout.clone();
         let mut mtc = MtcDecoder::new();
         let mut midi_clock = MidiClockTracker::new();
         let mut mixxx = MixxxDecoder::new();
@@ -333,9 +343,12 @@ impl TimingManager {
             if roles.controllers {
                 // Lock order as in the engine tick: midi, then controls.
                 // Both are released before tapping: the tick locks tempo first.
-                let tapped = control.lock().unwrap().feed(&port_id, msg, &mut controls.lock().unwrap());
-                if tapped {
+                let pressed = control.lock().unwrap().feed(&port_id, msg, &mut controls.lock().unwrap());
+                if pressed.tap {
                     tempo.lock().unwrap().tap_midi(started.elapsed().as_secs_f64() * 1000.0);
+                }
+                if pressed.blackout {
+                    blackout.fetch_xor(true, Ordering::Relaxed);
                 }
             }
             if !roles.clock {

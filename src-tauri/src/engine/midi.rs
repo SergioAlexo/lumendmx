@@ -85,6 +85,13 @@ pub struct MidiBinding {
     pub control: BoundControl,
 }
 
+/// Which of the global triggers a message pressed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Pressed {
+    pub tap: bool,
+    pub blackout: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct MidiState {
     /// Recent channel messages, oldest first.
@@ -94,6 +101,8 @@ pub struct MidiState {
     pub bindings: Vec<MidiBinding>,
     /// What taps the tempo, from the timing settings.
     pub tap: Option<MidiTrigger>,
+    /// What toggles the blackout, from the timing settings.
+    pub blackout: Option<MidiTrigger>,
     /// Notes / controllers currently held down: (message, channel 1-16, number).
     held: HashSet<(MidiMessage, u8, u8)>,
     /// Flash buttons pressed since the last tick. The tick sees them on even
@@ -104,19 +113,19 @@ pub struct MidiState {
 impl MidiState {
     /// A message from the MIDI port `port` (its id): logs it and moves any
     /// control bound to it in `controls` (playback-bar values by node id).
-    /// Returns whether it was a press of the tap trigger.
-    pub fn feed(&mut self, port: &str, msg: &[u8], controls: &mut HashMap<String, f32>) -> bool {
+    /// Returns which global trigger (tap, blackout) it pressed, if any.
+    pub fn feed(&mut self, port: &str, msg: &[u8], controls: &mut HashMap<String, f32>) -> Pressed {
         self.record(port, msg);
         let [status, number, value] = match msg {
             [s, n, v, ..] => [*s, *n & 0x7f, *v & 0x7f],
-            _ => return false,
+            _ => return Pressed::default(),
         };
         let channel = (status & 0x0f) + 1;
         let (message, on) = match status & 0xf0 {
             0x90 if value > 0 => (MidiMessage::Note, true),
             0x80 | 0x90 => (MidiMessage::Note, false),
             0xb0 => (MidiMessage::Cc, value >= 64),
-            _ => return false,
+            _ => return Pressed::default(),
         };
         let key = (message, channel, number);
         let press = on && self.held.insert(key);
@@ -148,7 +157,8 @@ impl MidiState {
                 BoundControl::Toggle => {}
             }
         }
-        press && self.tap.is_some_and(|t| matches(t.message, t.channel, t.number))
+        let hit = |trigger: Option<MidiTrigger>| press && trigger.is_some_and(|t| matches(t.message, t.channel, t.number));
+        Pressed { tap: hit(self.tap), blackout: hit(self.blackout) }
     }
 
     /// Flash buttons pressed since the last call.
@@ -247,10 +257,23 @@ mod tests {
     fn the_tap_trigger_fires_once_per_press() {
         let mut midi = MidiState { tap: Some(MidiTrigger { message: MidiMessage::Cc, channel: 0, number: 20 }), ..Default::default() };
         let mut controls = HashMap::new();
-        assert!(midi.feed("test", &[0xb3, 20, 127], &mut controls));
-        assert!(!midi.feed("test", &[0xb3, 20, 100], &mut controls), "still held");
-        assert!(!midi.feed("test", &[0xb3, 20, 0], &mut controls));
-        assert!(midi.feed("test", &[0xb3, 20, 127], &mut controls));
-        assert!(!midi.feed("test", &[0xb3, 21, 127], &mut controls), "another controller");
+        assert!(midi.feed("test", &[0xb3, 20, 127], &mut controls).tap);
+        assert!(!midi.feed("test", &[0xb3, 20, 100], &mut controls).tap, "still held");
+        assert!(!midi.feed("test", &[0xb3, 20, 0], &mut controls).tap);
+        assert!(midi.feed("test", &[0xb3, 20, 127], &mut controls).tap);
+        assert!(!midi.feed("test", &[0xb3, 21, 127], &mut controls).tap, "another controller");
+    }
+
+    #[test]
+    fn the_blackout_trigger_is_separate_from_tap() {
+        let mut midi = MidiState {
+            tap: Some(MidiTrigger { message: MidiMessage::Note, channel: 0, number: 36 }),
+            blackout: Some(MidiTrigger { message: MidiMessage::Note, channel: 0, number: 37 }),
+            ..Default::default()
+        };
+        let mut controls = HashMap::new();
+        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls), Pressed { tap: false, blackout: true });
+        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls), Pressed::default(), "still held");
+        assert_eq!(midi.feed("test", &[0x90, 36, 100], &mut controls), Pressed { tap: true, blackout: false });
     }
 }

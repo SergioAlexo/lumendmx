@@ -52,7 +52,7 @@ const ROW_H = FADER_SIZE.h;
 
 function defaultSize(view: NodeView): { w: number; h: number } {
   if (view.kind === "fader") return FADER_SIZE;
-  return { w: view.params.mode === "toggle" ? 96 : 80, h: 44 };
+  return { w: 88, h: 44 };
 }
 
 const MIN_SIZE = { fader: { w: 40, h: 72 }, button: { w: 40, h: 28 } };
@@ -64,7 +64,7 @@ function sizeOf(view: NodeView): { w: number; h: number } {
   return { w: typeof panelW === "number" ? panelW : size.w, h: typeof panelH === "number" ? panelH : size.h };
 }
 
-/** A button's custom colour ("#rrggbb"), if it has one. */
+/** A control's custom colour ("#rrggbb"), if it has one. */
 function colorOf(view: NodeView): string | null {
   const c = view.params.color;
   return typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c) ? c : null;
@@ -119,7 +119,7 @@ function FlashButton({ view, value, hint, onChange }: { view: NodeView; value: n
       className={cn(
         "flex h-full w-full select-none items-center gap-1.5 border text-xs font-semibold uppercase tracking-wide transition-colors",
         toggle
-          ? cn("rounded-full pl-3 pr-3", !color && (on ? "border-primary/70 bg-primary/15 text-foreground" : "border-border bg-muted text-muted-foreground hover:text-foreground"))
+          ? cn("rounded-md px-2", !color && (on ? "border-primary/70 bg-primary/15 text-foreground" : "border-border bg-muted text-muted-foreground hover:text-foreground"))
           : cn(
               "rounded-md px-2",
               !color && (on ? "border-primary bg-primary text-primary-foreground shadow-lg shadow-primary/30" : "border-border bg-muted text-muted-foreground hover:text-foreground"),
@@ -318,6 +318,7 @@ export function PlaybackBar({ popped = false }: { popped?: boolean }) {
                       onChange={(v) => setValue(view.id, v / 100)}
                       title={`${label(view)}. ${hint}`}
                       label={`${Math.round((values[view.id] ?? 0) * 100)}%`}
+                      color={colorOf(view) ?? undefined}
                       className="h-auto min-h-0 w-full flex-1"
                     />
                     <span className="w-full truncate text-center text-[11px] text-muted-foreground">{label(view)}</span>
@@ -339,22 +340,20 @@ export function PlaybackBar({ popped = false }: { popped?: boolean }) {
                     onPointerUp={() => endDrag(view)}
                     onPointerCancel={() => endDrag(view)}
                   >
-                    {view.kind === "button" && (
-                      <label
-                        className="absolute -left-1.5 -top-1.5 h-3.5 w-3.5 cursor-pointer overflow-hidden rounded-full border-2 border-foreground shadow"
-                        style={{ backgroundColor: colorOf(view) ?? "hsl(var(--primary))" }}
-                        title="Button colour"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onDoubleClick={() => setColor(view, null)}
-                      >
-                        <input
-                          type="color"
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          value={colorOf(view) ?? "#ffffff"}
-                          onChange={(e) => setColor(view, e.target.value)}
-                        />
-                      </label>
-                    )}
+                    <label
+                      className="absolute -left-1.5 -top-1.5 h-3.5 w-3.5 cursor-pointer overflow-hidden rounded-full border-2 border-foreground shadow"
+                      style={{ backgroundColor: colorOf(view) ?? "hsl(var(--primary))" }}
+                      title="Colour (double-click to reset)"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onDoubleClick={() => setColor(view, null)}
+                    >
+                      <input
+                        type="color"
+                        className="absolute inset-0 cursor-pointer opacity-0"
+                        value={colorOf(view) ?? "#ffffff"}
+                        onChange={(e) => setColor(view, e.target.value)}
+                      />
+                    </label>
                     <div
                       className="absolute -bottom-1.5 -right-1.5 h-3.5 w-3.5 cursor-nwse-resize rounded-sm border border-background bg-primary shadow"
                       title="Drag to resize"

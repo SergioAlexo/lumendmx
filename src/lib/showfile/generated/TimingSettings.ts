@@ -25,4 +25,8 @@ controllerPorts: Array<string>,
 /**
  * The pad or button (on a controller port) that taps the tempo.
  */
-tapMidi: MidiTrigger | null, };
+tapMidi: MidiTrigger | null, 
+/**
+ * The pad or button (on a controller port) that toggles the blackout.
+ */
+blackoutMidi: MidiTrigger | null, };

@@ -144,6 +144,8 @@ pub struct TimingHandles {
     pub midi: Arc<Mutex<MidiState>>,
     /// Playback-bar values, which bound MIDI moves.
     pub controls: Arc<Mutex<HashMap<String, f32>>>,
+    /// The output blackout, which a bound MIDI pad toggles.
+    pub blackout: Arc<AtomicBool>,
 }
 
 impl Default for EngineManager {
@@ -186,6 +188,7 @@ impl EngineManager {
             audio: self.shared.audio.clone(),
             midi: self.shared.midi.clone(),
             controls: self.shared.controls.clone(),
+            blackout: self.blackout.clone(),
         }
     }
 

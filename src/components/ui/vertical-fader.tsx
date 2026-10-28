@@ -11,6 +11,8 @@ interface VerticalFaderProps {
   /** Shown above the cap while dragging / always, e.g. "75%". */
   label?: string;
   disabled?: boolean;
+  /** "#rrggbb" for the fill and cap; the theme colour when omitted. */
+  color?: string;
 }
 
 const STEP = 1;
@@ -20,7 +22,7 @@ const BIG_STEP = 10;
  * or focus it and use the arrow / PageUp / PageDown / Home / End keys.
  * Built on pointer events rather than a rotated range input because
  * WebKit and Chromium disagree about vertical range inputs. */
-export function VerticalFader({ value, max = 100, onChange, title, className, label, disabled }: VerticalFaderProps) {
+export function VerticalFader({ value, max = 100, onChange, title, className, label, disabled, color }: VerticalFaderProps) {
   const trackRef = React.useRef<HTMLDivElement>(null);
   const clamped = Math.min(max, Math.max(0, value));
 
@@ -90,12 +92,12 @@ export function VerticalFader({ value, max = 100, onChange, title, className, la
       onKeyDown={disabled ? undefined : onKeyDown}
     >
       <div
-        className="absolute inset-x-0 bottom-0 rounded-b-md bg-primary/30"
-        style={{ height: `${(clamped / max) * 100}%` }}
+        className={cn("absolute inset-x-0 bottom-0 rounded-b-md", !color && "bg-primary/30")}
+        style={{ height: `${(clamped / max) * 100}%`, ...(color && { backgroundColor: `${color}4d` }) }}
       />
       <div
-        className="absolute inset-x-0.5 h-3 -translate-y-1/2 rounded-sm bg-primary shadow"
-        style={{ top: `${100 - (clamped / max) * 100}%` }}
+        className={cn("absolute inset-x-0.5 h-3 -translate-y-1/2 rounded-sm shadow", !color && "bg-primary")}
+        style={{ top: `${100 - (clamped / max) * 100}%`, ...(color && { backgroundColor: color }) }}
       />
       {label !== undefined && (
         <span className="pointer-events-none absolute inset-x-0 top-0.5 text-center text-[10px] tabular-nums text-muted-foreground">
