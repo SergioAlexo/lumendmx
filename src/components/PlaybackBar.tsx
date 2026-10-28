@@ -78,16 +78,30 @@ function contrastOn(hex: string): string {
 
 type Spot = { x: number; y: number };
 
-/** Each control's place: where it was put, else in a row left to right (in canvas order), bottom-aligned. */
+/** Each control's place: where it was put, else the first free spot along a bottom-aligned row,
+ * so a new control never lands on top of one that's already there. */
 function layout(controls: NodeView[]): Map<string, Spot> {
   const spots = new Map<string, Spot>();
-  let x = GAP;
+  const taken: { x: number; y: number; w: number; h: number }[] = [];
+  const unplaced: NodeView[] = [];
   for (const view of controls) {
     const { panelX, panelY } = view.params;
-    const size = sizeOf(view);
-    if (typeof panelX === "number" && typeof panelY === "number") spots.set(view.id, { x: panelX, y: panelY });
-    else spots.set(view.id, { x, y: GAP + ROW_H - size.h });
-    x += size.w + GAP;
+    if (typeof panelX === "number" && typeof panelY === "number") {
+      spots.set(view.id, { x: panelX, y: panelY });
+      taken.push({ x: panelX, y: panelY, ...sizeOf(view) });
+    } else unplaced.push(view);
+  }
+  const free = (x: number, y: number, w: number, h: number) =>
+    taken.every((t) => x + w + GRID <= t.x || t.x + t.w + GRID <= x || y + h + GRID <= t.y || t.y + t.h + GRID <= y);
+  for (const view of unplaced) {
+    const right = taken.reduce((r, t) => Math.max(r, t.x + t.w), 0);
+    const { w, h } = sizeOf(view);
+    const y = GAP + ROW_H - h;
+    let x = GAP;
+    // Past the right edge of everything is always free, so this stops.
+    while (x <= right && !free(x, y, w, h)) x += GRID;
+    spots.set(view.id, { x, y });
+    taken.push({ x, y, w, h });
   }
   return spots;
 }
