@@ -232,6 +232,23 @@ fn midi_params() -> Vec<ParamInfo> {
     ]
 }
 
+/// A Fader's step buttons, for a controller with only buttons: held, one raises it and one lowers it.
+fn step_params() -> Vec<ParamInfo> {
+    vec![
+        choice("upMidi", "Up button", &MIDI_BINDINGS, "none"),
+        number("upChannel", "Up channel", 0.0, 16.0, 1.0, 0.0),
+        number("upNumber", "Up number", 0.0, 127.0, 1.0, 0.0),
+        choice("downMidi", "Down button", &MIDI_BINDINGS, "none"),
+        number("downChannel", "Down channel", 0.0, 16.0, 1.0, 0.0),
+        number("downNumber", "Down number", 0.0, 127.0, 1.0, 0.0),
+        choice("sweepMidi", "Sweep pad", &MIDI_BINDINGS, "none"),
+        number("sweepChannel", "Sweep channel", 0.0, 16.0, 1.0, 0.0),
+        number("sweepNumber", "Sweep number", 0.0, 127.0, 1.0, 0.0),
+        number("travel", "Travel s", 0.1, 60.0, 0.1, 2.0),
+        bool_param("travelVelocity", "Travel follows velocity", false),
+    ]
+}
+
 fn rate_params() -> Vec<ParamInfo> {
     vec![
         number("rate", "Rate", 0.0, 64.0, 0.25, 1.0),
@@ -325,10 +342,10 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Fader => (
             "Fader",
             "Input",
-            "A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it.",
+            "A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it. With only buttons, bind an Up and a Down button instead: while held they move it, taking Travel seconds to cross the whole range. Or bind one Sweep pad: held, it moves the fader, the opposite way to its last press.",
             vec![],
             vec![output("value", "Value", Number)],
-            [vec![text_param("label", "Label", "Shown on the playback bar", "Fader")], midi_params()].concat(),
+            [vec![text_param("label", "Label", "Shown on the playback bar", "Fader")], midi_params(), step_params()].concat(),
         ),
         NodeKind::Button => (
             "Button",
@@ -419,10 +436,10 @@ pub fn node_type(kind: NodeKind) -> NodeTypeInfo {
         NodeKind::Smooth => (
             "Smooth",
             "Math",
-            "Follows its input, taking Attack ms to rise and Release ms to fall.",
-            vec![input("value", "Value", Number, n(0.0))],
+            "Follows its input, taking Attack ms to rise and Release ms to fall. Both times are inputs, so a fader (through a Map Range to milliseconds) can set them live.",
+            vec![input("value", "Value", Number, n(0.0)), input("attack", "Attack ms", Number, n(50.0)), input("release", "Release ms", Number, n(300.0))],
             vec![output("value", "Value", Number)],
-            vec![number("attack", "Attack ms", 0.0, 10000.0, 10.0, 50.0), number("release", "Release ms", 0.0, 10000.0, 10.0, 300.0)],
+            vec![],
         ),
         NodeKind::Envelope => (
             "Envelope",

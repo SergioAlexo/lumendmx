@@ -21,7 +21,7 @@ use super::mtc::{ClockEvent, MidiClockTracker, MtcDecoder};
 use crate::engine::audio::BandLevels;
 use crate::engine::manager::TimingHandles;
 use crate::engine::timecode::{parts_to_ms, TimecodeSource, TimecodeStatus};
-use crate::engine::midi::MidiTrigger;
+use crate::engine::midi::{BlackoutAction, BlackoutMode, GrandMasterMidi, MidiTrigger};
 use crate::io::midi::{self, MidiInputHandle};
 
 /// Where MIDI tap times are measured from.
@@ -69,6 +69,12 @@ pub struct TimingSettings {
     /// The pad or button (on a controller port) that toggles the blackout.
     #[serde(default)]
     pub blackout_midi: Option<MidiTrigger>,
+    /// Whether that pad toggles the blackout or holds it on.
+    #[serde(default)]
+    pub blackout_mode: BlackoutMode,
+    /// What moves the grand master.
+    #[serde(default)]
+    pub grand_master_midi: GrandMasterMidi,
 }
 
 impl Default for TimingSettings {
@@ -85,6 +91,8 @@ impl Default for TimingSettings {
             controller_ports: Vec::new(),
             tap_midi: None,
             blackout_midi: None,
+            blackout_mode: BlackoutMode::Toggle,
+            grand_master_midi: GrandMasterMidi::default(),
         }
     }
 }
@@ -208,6 +216,8 @@ impl TimingManager {
             let mut midi = self.handles.midi.lock().unwrap();
             midi.tap = settings.tap_midi;
             midi.blackout = settings.blackout_midi;
+            midi.blackout_mode = settings.blackout_mode;
+            midi.gm_bindings = settings.grand_master_midi.bindings();
         }
 
         let want_audio = settings.audio_analysis || settings.tempo_source == TempoSource::Audio;
@@ -347,8 +357,13 @@ impl TimingManager {
                 if pressed.tap {
                     tempo.lock().unwrap().tap_midi(started.elapsed().as_secs_f64() * 1000.0);
                 }
-                if pressed.blackout {
-                    blackout.fetch_xor(true, Ordering::Relaxed);
+                match pressed.blackout {
+                    Some(BlackoutAction::Toggle) => {
+                        blackout.fetch_xor(true, Ordering::Relaxed);
+                    }
+                    Some(BlackoutAction::On) => blackout.store(true, Ordering::Relaxed),
+                    Some(BlackoutAction::Off) => blackout.store(false, Ordering::Relaxed),
+                    None => {}
                 }
             }
             if !roles.clock {

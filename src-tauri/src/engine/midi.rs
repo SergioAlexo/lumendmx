@@ -64,7 +64,7 @@ pub struct MidiTrigger {
 }
 
 /// What a bound control does with its MIDI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BoundControl {
     /// Follows the value: a CC's position, a note's velocity (0 when released).
     Fader,
@@ -72,6 +72,58 @@ pub enum BoundControl {
     Flash,
     /// Flips on each press.
     Toggle,
+    /// A Fader's step button: while held, moves the value by this much per second
+    /// (negative for the down button). Lets a controller with only buttons drive a fader.
+    Nudge(f32),
+    /// A Fader's sweep pad: while held, moves the value by this much per second, in a
+    /// direction that flips with each press. One pad does what Up and Down do.
+    Sweep(f32),
+}
+
+/// With speed following velocity, the slowest a very soft hit goes, as a share of full speed.
+const MIN_VELOCITY_SPEED: f32 = 0.1;
+
+/// The control id the grand master goes by in the controls map, so the fader bindings can move it.
+pub const GM_KEY: &str = "@gm";
+
+/// How long the grand master takes to cross its range under a held Up, Down or Sweep pad, unless set.
+const GM_TRAVEL_S: f32 = 2.0;
+
+/// The MIDI bindings of the grand master, the same four a Fader has.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub struct GrandMasterMidi {
+    /// A knob or fader (a CC) that sets it.
+    pub knob: Option<MidiTrigger>,
+    /// Buttons that move it while held.
+    pub up: Option<MidiTrigger>,
+    pub down: Option<MidiTrigger>,
+    /// One pad that moves it while held, the opposite way each press.
+    pub sweep: Option<MidiTrigger>,
+    /// Seconds for Up, Down and Sweep to cross the whole range (at full velocity, if that is on).
+    pub travel: f32,
+    /// A harder hit on those pads moves it faster.
+    pub velocity: bool,
+}
+
+impl Default for GrandMasterMidi {
+    fn default() -> Self {
+        Self { knob: None, up: None, down: None, sweep: None, travel: GM_TRAVEL_S, velocity: false }
+    }
+}
+
+impl GrandMasterMidi {
+    pub fn bindings(&self) -> Vec<MidiBinding> {
+        let rate = 1.0 / self.travel.max(0.1);
+        [(self.knob, BoundControl::Fader), (self.up, BoundControl::Nudge(rate)), (self.down, BoundControl::Nudge(-rate)), (self.sweep, BoundControl::Sweep(rate))]
+            .into_iter()
+            .filter_map(|(trigger, control)| {
+                let t = trigger?;
+                Some(MidiBinding { node: Arc::from(GM_KEY), message: t.message, channel: t.channel, number: t.number, control, velocity: self.velocity })
+            })
+            .collect()
+    }
 }
 
 /// A Button or Fader node listening to one note or controller.
@@ -83,13 +135,35 @@ pub struct MidiBinding {
     pub channel: u8,
     pub number: u8,
     pub control: BoundControl,
+    /// For Nudge and Sweep: scale the speed by how hard the pad was hit.
+    pub velocity: bool,
+}
+
+/// How a MIDI pad drives the blackout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/showfile/generated/")]
+pub enum BlackoutMode {
+    /// Each press flips it.
+    #[default]
+    Toggle,
+    /// On while the pad is held.
+    Flash,
+}
+
+/// What a message did to the blackout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlackoutAction {
+    Toggle,
+    On,
+    Off,
 }
 
 /// Which of the global triggers a message pressed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Pressed {
     pub tap: bool,
-    pub blackout: bool,
+    pub blackout: Option<BlackoutAction>,
 }
 
 #[derive(Debug, Default)]
@@ -99,12 +173,18 @@ pub struct MidiState {
     seq: u64,
     /// From the compiled graph.
     pub bindings: Vec<MidiBinding>,
+    /// The grand master's, from the timing settings.
+    pub gm_bindings: Vec<MidiBinding>,
     /// What taps the tempo, from the timing settings.
     pub tap: Option<MidiTrigger>,
     /// What toggles the blackout, from the timing settings.
     pub blackout: Option<MidiTrigger>,
-    /// Notes / controllers currently held down: (message, channel 1-16, number).
-    held: HashSet<(MidiMessage, u8, u8)>,
+    pub blackout_mode: BlackoutMode,
+    /// Which way each sweep pad's fader moved on its last press (+1 up, -1 down).
+    sweep_dir: HashMap<Arc<str>, f32>,
+    /// Notes / controllers currently held down: (message, channel 1-16, number), with how hard
+    /// each was hit (0-1).
+    held: HashMap<(MidiMessage, u8, u8), f32>,
     /// Flash buttons pressed since the last tick. The tick sees them on even
     /// if a quick pad hit was already released, so no press is missed.
     pressed: HashSet<Arc<str>>,
@@ -128,14 +208,15 @@ impl MidiState {
             _ => return Pressed::default(),
         };
         let key = (message, channel, number);
-        let press = on && self.held.insert(key);
-        if !on {
-            self.held.remove(&key);
+        let press = on && !self.held.contains_key(&key);
+        if press {
+            self.held.insert(key, value as f32 / 127.0);
         }
+        let release = !on && self.held.remove(&key).is_some();
         // A binding's channel 0 listens on every channel.
         let matches = |m: MidiMessage, ch: u8, n: u8| m == message && n == number && (ch == 0 || ch == channel);
         let level = if on || message == MidiMessage::Cc { value as f32 / 127.0 } else { 0.0 };
-        for b in &self.bindings {
+        for b in self.bindings.iter().chain(&self.gm_bindings) {
             if !matches(b.message, b.channel, b.number) {
                 continue;
             }
@@ -154,11 +235,47 @@ impl MidiState {
                     let v = controls.entry(id).or_insert(0.0);
                     *v = if *v > 0.5 { 0.0 } else { 1.0 };
                 }
-                BoundControl::Toggle => {}
+                BoundControl::Sweep(_) if press => {
+                    // Away from an end it is at, else the opposite of last time (up the first time).
+                    let v = controls.get(&id).copied().unwrap_or(0.0);
+                    let last = self.sweep_dir.get(&b.node).copied().unwrap_or(-1.0);
+                    let dir = if v >= 1.0 {
+                        -1.0
+                    } else if v <= 0.0 {
+                        1.0
+                    } else {
+                        -last
+                    };
+                    self.sweep_dir.insert(b.node.clone(), dir);
+                }
+                BoundControl::Toggle | BoundControl::Nudge(_) | BoundControl::Sweep(_) => {}
             }
         }
-        let hit = |trigger: Option<MidiTrigger>| press && trigger.is_some_and(|t| matches(t.message, t.channel, t.number));
-        Pressed { tap: hit(self.tap), blackout: hit(self.blackout) }
+        let hit = |edge: bool, trigger: Option<MidiTrigger>| edge && trigger.is_some_and(|t| matches(t.message, t.channel, t.number));
+        let blackout = match self.blackout_mode {
+            BlackoutMode::Toggle => hit(press, self.blackout).then_some(BlackoutAction::Toggle),
+            BlackoutMode::Flash if hit(press, self.blackout) => Some(BlackoutAction::On),
+            BlackoutMode::Flash => hit(release, self.blackout).then_some(BlackoutAction::Off),
+        };
+        Pressed { tap: hit(press, self.tap), blackout }
+    }
+
+    /// Moves every Fader whose step or sweep pad is held. Called each tick.
+    pub fn advance_held(&self, dt_ms: f32, controls: &mut HashMap<String, f32>) {
+        for b in self.bindings.iter().chain(&self.gm_bindings) {
+            let per_second = match b.control {
+                BoundControl::Nudge(per_second) => per_second,
+                BoundControl::Sweep(rate) => rate * self.sweep_dir.get(&b.node).copied().unwrap_or(1.0),
+                _ => continue,
+            };
+            let hit = self.held.iter().filter(|(&(m, ch, n), _)| m == b.message && n == b.number && (b.channel == 0 || b.channel == ch)).map(|(_, &v)| v).reduce(f32::max);
+            if let Some(hit) = hit {
+                // A soft hit is slow but still moves.
+                let scale = if b.velocity { hit.max(MIN_VELOCITY_SPEED) } else { 1.0 };
+                let v = controls.entry(b.node.to_string()).or_insert(0.0);
+                *v = (*v + per_second * scale * dt_ms / 1000.0).clamp(0.0, 1.0);
+            }
+        }
     }
 
     /// Flash buttons pressed since the last call.
@@ -200,7 +317,7 @@ mod tests {
     use super::*;
 
     fn binding(node: &str, message: MidiMessage, channel: u8, number: u8, control: BoundControl) -> MidiBinding {
-        MidiBinding { node: node.into(), message, channel, number, control }
+        MidiBinding { node: node.into(), message, channel, number, control, velocity: false }
     }
 
     #[test]
@@ -265,6 +382,105 @@ mod tests {
     }
 
     #[test]
+    fn a_held_step_button_ramps_its_fader() {
+        let bind = |number, per_second| MidiBinding {
+            node: "f".into(),
+            message: MidiMessage::Note,
+            channel: 0,
+            number,
+            control: BoundControl::Nudge(per_second),
+            velocity: false,
+        };
+        let mut midi = MidiState { bindings: vec![bind(60, 0.5), bind(61, -0.5)], ..Default::default() };
+        let mut controls = HashMap::new();
+        midi.advance_held(500.0, &mut controls);
+        assert!(controls.is_empty(), "nothing held");
+        midi.feed("test", &[0x90, 60, 100], &mut controls);
+        midi.advance_held(500.0, &mut controls);
+        assert_eq!(controls["f"], 0.25);
+        midi.feed("test", &[0x80, 60, 0], &mut controls);
+        midi.advance_held(500.0, &mut controls);
+        assert_eq!(controls["f"], 0.25, "released");
+        midi.feed("test", &[0x91, 61, 100], &mut controls); // down, on another channel
+        midi.advance_held(2000.0, &mut controls);
+        assert_eq!(controls["f"], 0.0, "stops at the bottom");
+    }
+
+    #[test]
+    fn a_sweep_pad_alternates_direction_and_flips_at_the_ends() {
+        let mut midi = MidiState {
+            bindings: vec![MidiBinding { node: "f".into(), message: MidiMessage::Note, channel: 0, number: 60, control: BoundControl::Sweep(1.0), velocity: false }],
+            ..Default::default()
+        };
+        let mut controls = HashMap::new();
+        let hold = |midi: &mut MidiState, controls: &mut HashMap<String, f32>, ms: f32| {
+            midi.feed("test", &[0x90, 60, 100], controls);
+            midi.advance_held(ms, controls);
+            midi.feed("test", &[0x80, 60, 0], controls);
+        };
+        hold(&mut midi, &mut controls, 500.0);
+        assert_eq!(controls["f"], 0.5, "the first press goes up");
+        hold(&mut midi, &mut controls, 200.0);
+        assert_eq!(controls["f"], 0.3, "the next goes down");
+        hold(&mut midi, &mut controls, 100.0);
+        assert!((controls["f"] - 0.4).abs() < 1e-6, "and the next up again");
+        hold(&mut midi, &mut controls, 5000.0);
+        assert_eq!(controls["f"], 0.0, "then down, stopping at the bottom");
+        hold(&mut midi, &mut controls, 5000.0);
+        assert_eq!(controls["f"], 1.0, "at the bottom the next press goes up, stopping at the top");
+        hold(&mut midi, &mut controls, 300.0);
+        assert!((controls["f"] - 0.7).abs() < 1e-6, "at the top the next press goes down");
+        midi.advance_held(500.0, &mut controls);
+        assert!((controls["f"] - 0.7).abs() < 1e-6, "released");
+    }
+
+    #[test]
+    fn the_grand_master_takes_the_same_bindings_as_a_fader() {
+        let trigger = |number| Some(MidiTrigger { message: MidiMessage::Note, channel: 0, number });
+        let gm = GrandMasterMidi { up: trigger(60), down: trigger(61), ..Default::default() };
+        let mut midi = MidiState { gm_bindings: gm.bindings(), ..Default::default() };
+        let mut controls = HashMap::from([(GM_KEY.to_string(), 0.5)]);
+        midi.feed("test", &[0x90, 60, 100], &mut controls);
+        midi.advance_held(1000.0, &mut controls);
+        assert_eq!(controls[GM_KEY], 1.0, "up for a second: half the range in two seconds, clamped");
+        midi.feed("test", &[0x80, 60, 0], &mut controls);
+        midi.feed("test", &[0x90, 61, 100], &mut controls);
+        midi.advance_held(1000.0, &mut controls);
+        assert_eq!(controls[GM_KEY], 0.5);
+
+        // A longer travel is slower.
+        let slow = GrandMasterMidi { up: trigger(60), travel: 10.0, ..Default::default() };
+        let mut midi = MidiState { gm_bindings: slow.bindings(), ..Default::default() };
+        let mut controls = HashMap::from([(GM_KEY.to_string(), 0.0)]);
+        midi.feed("test", &[0x90, 60, 100], &mut controls);
+        midi.advance_held(1000.0, &mut controls);
+        assert!((controls[GM_KEY] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_harder_hit_moves_a_velocity_pad_faster() {
+        let pad = |velocity| MidiBinding {
+            node: "f".into(),
+            message: MidiMessage::Note,
+            channel: 0,
+            number: 60,
+            control: BoundControl::Nudge(1.0),
+            velocity,
+        };
+        let run = |velocity: bool, hit: u8| {
+            let mut midi = MidiState { bindings: vec![pad(velocity)], ..Default::default() };
+            let mut controls = HashMap::new();
+            midi.feed("test", &[0x90, 60, hit], &mut controls);
+            midi.advance_held(100.0, &mut controls);
+            controls["f"]
+        };
+        assert!((run(true, 127) - 0.1).abs() < 1e-6, "full velocity: full speed");
+        assert!((run(true, 64) - 0.1 * 64.0 / 127.0).abs() < 1e-6, "about half");
+        assert!((run(true, 1) - 0.01).abs() < 1e-6, "a very soft hit still moves, at a tenth");
+        assert!((run(false, 64) - 0.1).abs() < 1e-6, "off: velocity doesn't matter");
+    }
+
+    #[test]
     fn the_blackout_trigger_is_separate_from_tap() {
         let mut midi = MidiState {
             tap: Some(MidiTrigger { message: MidiMessage::Note, channel: 0, number: 36 }),
@@ -272,8 +488,23 @@ mod tests {
             ..Default::default()
         };
         let mut controls = HashMap::new();
-        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls), Pressed { tap: false, blackout: true });
+        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls), Pressed { tap: false, blackout: Some(BlackoutAction::Toggle) });
         assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls), Pressed::default(), "still held");
-        assert_eq!(midi.feed("test", &[0x90, 36, 100], &mut controls), Pressed { tap: true, blackout: false });
+        assert_eq!(midi.feed("test", &[0x90, 36, 100], &mut controls), Pressed { tap: true, blackout: None });
+    }
+
+    #[test]
+    fn a_flash_blackout_is_on_only_while_held() {
+        let mut midi = MidiState {
+            blackout: Some(MidiTrigger { message: MidiMessage::Note, channel: 0, number: 37 }),
+            blackout_mode: BlackoutMode::Flash,
+            ..Default::default()
+        };
+        let mut controls = HashMap::new();
+        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls).blackout, Some(BlackoutAction::On));
+        assert_eq!(midi.feed("test", &[0x90, 37, 100], &mut controls).blackout, None, "still held");
+        assert_eq!(midi.feed("test", &[0x80, 37, 0], &mut controls).blackout, Some(BlackoutAction::Off));
+        assert_eq!(midi.feed("test", &[0x80, 37, 0], &mut controls).blackout, None, "already released");
+        assert_eq!(midi.feed("test", &[0x80, 38, 0], &mut controls).blackout, None, "another note");
     }
 }

@@ -1,10 +1,11 @@
 import { Power } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as dmx from "../lib/dmx";
+import * as engine from "../lib/engine";
 import { describeTrigger, isPress } from "../lib/midiLearn";
 import * as timing from "../lib/timing";
-import type { MidiTrigger, TimingStatus } from "../lib/showfile/generated";
-import { MidiBindingMenu } from "./MidiBindingMenu";
+import type { BlackoutMode, GrandMasterMidi, MidiTrigger, TimingStatus } from "../lib/showfile/generated";
+import { MidiBindingMenu, SlotTabs, TravelField } from "./MidiBindingMenu";
 import { useDmxStore } from "../store/useDmxStore";
 import { EMPTY_UNIVERSES, useShowStore } from "../store/useShowStore";
 import { useUniverseStatusesStore } from "../store/useUniverseStatusesStore";
@@ -44,23 +45,89 @@ function UniverseStatusDots() {
   );
 }
 
+type GmSlot = "knob" | "up" | "down" | "sweep";
+const GM_SLOTS: Record<GmSlot, string> = { knob: "Knob", up: "Up", down: "Down", sweep: "Sweep" };
+
+/** Grand master, with a right-click menu to bind it like a Fader: a knob (CC), Up and Down buttons
+ * held to move it, or one Sweep pad. Saved per machine with the timing settings. A bound control
+ * moves it in Rust, so the value is polled. */
 function GrandMaster() {
   const grandMaster = useDmxStore((s) => s.grandMaster);
   const setGrandMaster = useDmxStore((s) => s.setGrandMaster);
+  const [status, setStatus] = useState<TimingStatus | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; slot: GmSlot } | null>(null);
+  const bindings = status?.settings.grandMasterMidi;
+
+  useEffect(() => {
+    void timing.timingStatus().then(setStatus).catch(() => undefined);
+    const poll = () => void engine.grandMaster().then((gm) => useDmxStore.setState({ grandMaster: Math.round(gm) })).catch(() => undefined);
+    const id = setInterval(poll, 50);
+    return () => clearInterval(id);
+  }, []);
+
+  // Saves on top of the settings as they are now, not as this component last saw them.
+  const configureGm = (changes: Partial<GrandMasterMidi>) =>
+    void timing
+      .timingStatus()
+      .then(({ settings }) => timing.timingConfigure({ ...settings, grandMasterMidi: { ...settings.grandMasterMidi, ...changes } }))
+      .then(setStatus)
+      .catch(() => undefined);
+  const described = bindings ? (Object.keys(GM_SLOTS) as GmSlot[]).flatMap((slot) => (bindings[slot] ? [`${GM_SLOTS[slot].toLowerCase()} ${describeTrigger(bindings[slot]!)}`] : [])) : [];
+
   return (
-    <label className="flex items-center gap-2 text-xs text-muted-foreground" title="Grand master: scales every intensity channel">
-      GM
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={grandMaster}
-        onChange={(e) => setGrandMaster(Number(e.target.value))}
-        className="w-24 accent-primary"
-        aria-label="Grand master"
-      />
-      <span className="w-8 tabular-nums text-foreground">{grandMaster}%</span>
-    </label>
+    <>
+      <label
+        className="relative flex items-center gap-2 text-xs text-muted-foreground"
+        title={`Grand master: scales every intensity channel${described.length > 0 ? ` (${described.join(", ")})` : ""}. Right-click to bind MIDI.`}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY, slot: "knob" });
+        }}
+      >
+        GM
+        {described.length > 0 && <span className="absolute -left-2 top-0 h-1.5 w-1.5 rounded-full bg-primary" />}
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={grandMaster}
+          onChange={(e) => setGrandMaster(Number(e.target.value))}
+          className="w-24 accent-primary"
+          aria-label="Grand master"
+        />
+        <span className="w-8 tabular-nums text-foreground">{grandMaster}%</span>
+      </label>
+      {menu && (
+        <MidiBindingMenu
+          key={menu.slot}
+          x={menu.x}
+          y={menu.y}
+          title="Grand master · MIDI"
+          binding={bindings?.[menu.slot] ?? null}
+          accept={menu.slot === "knob" ? (e) => e.kind === "cc" : isPress}
+          hint={menu.slot === "knob" ? "Move a knob or fader…" : "Press a pad or button…"}
+          noPorts={status?.settings.controllerPorts.length === 0}
+          header={
+            <SlotTabs
+              slots={GM_SLOTS}
+              value={menu.slot}
+              onChange={(slot) => setMenu({ ...menu, slot })}
+              title="Bind a knob, two buttons that move it up and down while held, or one sweep pad that moves it the opposite way each press"
+            />
+          }
+          footer={menu.slot !== "knob" && (
+              <TravelField
+                seconds={bindings?.travel ?? 2}
+                onCommit={(travel) => configureGm({ travel })}
+                velocity={bindings?.velocity ?? false}
+                onVelocity={(velocity) => configureGm({ velocity })}
+              />
+            )}
+          onBind={(trigger) => configureGm({ [menu.slot]: trigger })}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -81,13 +148,16 @@ function BlackoutButton() {
     return () => clearInterval(id);
   }, []);
 
-  const bind = (blackoutMidi: MidiTrigger | null) => {
-    if (!status) return;
+  const mode = status?.settings.blackoutMode ?? "toggle";
+
+  // Saves on top of the settings as they are now, not as this component last saw them.
+  const configure = (changes: { blackoutMidi?: MidiTrigger | null; blackoutMode?: BlackoutMode }) =>
     void timing
-      .timingConfigure({ ...status.settings, blackoutMidi })
+      .timingStatus()
+      .then(({ settings }) => timing.timingConfigure({ ...settings, ...changes }))
       .then(setStatus)
       .catch(() => undefined);
-  };
+  const bind = (blackoutMidi: MidiTrigger | null) => configure({ blackoutMidi });
 
   return (
     <>
@@ -98,7 +168,7 @@ function BlackoutButton() {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY });
         }}
-        title={`Blackout${binding ? ` (also ${describeTrigger(binding)})` : ""}. Right-click to bind a MIDI pad.`}
+        title={`Blackout${binding ? ` (also ${describeTrigger(binding)}, ${mode === "flash" ? "on while held" : "toggles"})` : ""}. Right-click to bind a MIDI pad.`}
         className={cn(
           "relative font-bold uppercase tracking-wider",
           blackout ? "shadow-lg shadow-destructive/40" : "text-destructive border-destructive/60 hover:bg-destructive/10 hover:text-destructive",
@@ -117,6 +187,21 @@ function BlackoutButton() {
           accept={isPress}
           hint="Press a pad or button…"
           noPorts={status?.settings.controllerPorts.length === 0}
+          header={
+            <div className="flex gap-1" title="Toggle: each press flips blackout. Flash: blackout is on only while the pad is held.">
+              {(["toggle", "flash"] as BlackoutMode[]).map((m) => (
+                <Button
+                  key={m}
+                  size="sm"
+                  variant={mode === m ? "default" : "ghost"}
+                  className="h-6 flex-1 px-2 text-xs capitalize"
+                  onClick={() => configure({ blackoutMode: m })}
+                >
+                  {m}
+                </Button>
+              ))}
+            </div>
+          }
           onBind={bind}
           onClose={() => setMenu(null)}
         />

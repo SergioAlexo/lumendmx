@@ -47,6 +47,8 @@ export * from "./ShowSettings";
 export * from "./ShowSnapshot";
 export * from "./SocketInfo";
 export * from "./SocketType";
+export * from "./BlackoutMode";
+export * from "./GrandMasterMidi";
 export * from "./TempoSource";
 export * from "./TempoStatus";
 export * from "./TimecodeSource";

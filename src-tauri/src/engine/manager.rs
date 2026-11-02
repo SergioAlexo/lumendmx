@@ -18,7 +18,7 @@ use super::state::{EngineState, Layer};
 use super::tempo::{Tempo, TempoStatus};
 use super::timecode::TimecodeClock;
 use crate::graph::compile::{GraphPlan, Val};
-use crate::engine::midi::{MidiEvent, MidiState};
+use crate::engine::midi::{MidiEvent, MidiState, GM_KEY};
 use crate::graph::eval::{GraphRuntime, Inputs};
 use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
@@ -64,6 +64,18 @@ struct TickShared {
 }
 
 impl TickShared {
+    /// MIDI moves the grand master through its entry in the controls map; apply that to the
+    /// engine. Shows loading replace the map, so a missing entry is put back as it is.
+    fn sync_grand_master(&self) {
+        let current = self.state.lock().unwrap().grand_master;
+        let wanted = *self.controls.lock().unwrap().entry(GM_KEY.to_string()).or_insert(current);
+        if (wanted - current).abs() > 1e-4 {
+            let master = wanted.clamp(0.0, 1.0);
+            self.state.lock().unwrap().grand_master = master;
+            self.draft_state.lock().unwrap().grand_master = master;
+        }
+    }
+
     /// Advances the clocks by `dt_ms` and re-evaluates the graph into its
     /// output layers. Output is the caller's job: merge and send.
     fn advance(&self, dt_ms: f64) {
@@ -84,7 +96,12 @@ impl TickShared {
         let plan = self.plan.lock().unwrap().clone();
         // MIDI-pressed Flash buttons count as on for this tick even if a
         // quick pad hit was released already. Lock order: midi, controls.
-        let pressed = self.midi.lock().unwrap().take_pressed();
+        let pressed = {
+            let mut midi = self.midi.lock().unwrap();
+            midi.advance_held(dt_ms as f32, &mut self.controls.lock().unwrap());
+            midi.take_pressed()
+        };
+        self.sync_grand_master();
         let live = self.controls.lock().unwrap();
         let latched;
         let controls = if pressed.is_empty() {
@@ -307,6 +324,7 @@ impl EngineManager {
         let master = percent.clamp(0.0, 100.0) / 100.0;
         self.shared.state.lock().unwrap().grand_master = master;
         self.shared.draft_state.lock().unwrap().grand_master = master;
+        self.shared.controls.lock().unwrap().insert(GM_KEY.to_string(), master);
     }
 
     pub fn grand_master(&self) -> f32 {
@@ -413,6 +431,22 @@ mod tests {
         engine.step(0.0);
         assert_eq!(engine.get_universe_data(1)[0], 128); // -0.5 wraps to the same half beat
         assert_eq!(engine.tempo_status().beat, 0.0); // the real beat doesn't move
+    }
+
+    #[test]
+    fn midi_moves_the_grand_master() {
+        use crate::engine::midi::{GrandMasterMidi, MidiMessage, MidiTrigger};
+        let engine = EngineManager::new();
+        let knob = MidiTrigger { message: MidiMessage::Cc, channel: 0, number: 7 };
+        engine.shared.midi.lock().unwrap().gm_bindings = GrandMasterMidi { knob: Some(knob), ..Default::default() }.bindings();
+        engine.step(10.0);
+        assert_eq!(engine.grand_master(), 100.0, "untouched");
+        engine.shared.midi.lock().unwrap().feed("test", &[0xb0, 7, 64], &mut engine.shared.controls.lock().unwrap());
+        engine.step(10.0);
+        assert!((engine.grand_master() - 50.4).abs() < 0.1);
+        engine.set_grand_master(20.0);
+        engine.step(10.0);
+        assert!((engine.grand_master() - 20.0).abs() < 0.1, "the UI's value isn't undone by the stale MIDI one");
     }
 
     #[test]

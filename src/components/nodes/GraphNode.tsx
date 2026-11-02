@@ -20,6 +20,9 @@ import { FanPreview, WavePreview, fanFeeding, fanSettings, targetFixtureCount, w
  * for Wave Custom, its width for the waves that use one. */
 function paramShown(view: NodeView, id: string): boolean {
   if (id === "midiChannel" || id === "midiNumber") return (view.params.midi ?? "none") !== "none";
+  if (id === "upChannel" || id === "upNumber") return (view.params.upMidi ?? "none") !== "none";
+  if (id === "downChannel" || id === "downNumber") return (view.params.downMidi ?? "none") !== "none";
+  if (id === "sweepChannel" || id === "sweepNumber") return (view.params.sweepMidi ?? "none") !== "none";
   if (view.kind !== "lfo") return true;
   const wave = String(view.params.waveform ?? "sine");
   if (id === "curve" || id === "curveMode") return wave === "custom";

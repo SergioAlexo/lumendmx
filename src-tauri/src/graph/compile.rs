@@ -69,6 +69,8 @@ pub enum Config {
     Compare(CompareOp),
     Seed(u64),
     Times { rise_ms: f32, fall_ms: f32 },
+    /// Smooth: its times are inputs.
+    Smooth,
     Steps(u32),
     Gradient { stops: Vec<(f32, Val)>, wrap: bool },
     Shape { shape: PositionShape, rate: Rate },
@@ -278,7 +280,7 @@ fn config(node: &Node) -> Config {
             _ => CompareOp::Greater,
         }),
         NodeKind::Random => Config::Seed(number(node, "seed", 0.0) as u64),
-        NodeKind::Smooth => Config::Times { rise_ms: number(node, "attack", 50.0), fall_ms: number(node, "release", 300.0) },
+        NodeKind::Smooth => Config::Smooth,
         NodeKind::Envelope => Config::Times { rise_ms: number(node, "attack", 10.0), fall_ms: number(node, "decay", 250.0) },
         NodeKind::Counter => Config::Steps(number(node, "steps", 4.0).max(1.0) as u32),
         NodeKind::Gradient => {
@@ -370,26 +372,42 @@ fn targets(node: &Node, patch: &ResolvedPatch, groups: &[Group]) -> (Vec<TargetI
     (items, problems)
 }
 
-/// A Button's or Fader's MIDI binding, if it has one.
-fn midi_binding(node: &Node) -> Option<MidiBinding> {
-    let message = match text(node, "midi", "none") {
-        "note" => MidiMessage::Note,
-        "cc" => MidiMessage::Cc,
-        _ => return None,
+/// The MIDI bindings of a Button or Fader: its own, and for a Fader its up and down step buttons.
+fn midi_bindings_of(node: &Node) -> Vec<MidiBinding> {
+    // The binding whose params are `midi`, `midiChannel`, `midiNumber` under `prefix`.
+    let binding = |prefix: &str, control: BoundControl| {
+        let mode = if prefix == "midi" { "midi".to_string() } else { format!("{prefix}Midi") };
+        let message = match text(node, &mode, "none") {
+            "note" => MidiMessage::Note,
+            "cc" => MidiMessage::Cc,
+            _ => return None,
+        };
+        Some(MidiBinding {
+            node: Arc::from(node.id.as_str()),
+            message,
+            channel: number(node, &format!("{prefix}Channel"), 0.0).clamp(0.0, 16.0) as u8,
+            number: number(node, &format!("{prefix}Number"), 0.0).clamp(0.0, 127.0) as u8,
+            control,
+            velocity: flag(node, "travelVelocity", false),
+        })
     };
-    let control = match (node.kind, text(node, "mode", "flash")) {
-        (NodeKind::Fader, _) => BoundControl::Fader,
-        (NodeKind::Button, "toggle") => BoundControl::Toggle,
-        (NodeKind::Button, _) => BoundControl::Flash,
-        _ => return None,
-    };
-    Some(MidiBinding {
-        node: Arc::from(node.id.as_str()),
-        message,
-        channel: number(node, "midiChannel", 0.0).clamp(0.0, 16.0) as u8,
-        number: number(node, "midiNumber", 0.0).clamp(0.0, 127.0) as u8,
-        control,
-    })
+    match (node.kind, text(node, "mode", "flash")) {
+        (NodeKind::Fader, _) => {
+            let rate = 1.0 / number(node, "travel", 2.0).max(0.05);
+            [
+                binding("midi", BoundControl::Fader),
+                binding("up", BoundControl::Nudge(rate)),
+                binding("down", BoundControl::Nudge(-rate)),
+                binding("sweep", BoundControl::Sweep(rate)),
+            ]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
+        (NodeKind::Button, "toggle") => binding("midi", BoundControl::Toggle).into_iter().collect(),
+        (NodeKind::Button, _) => binding("midi", BoundControl::Flash).into_iter().collect(),
+        _ => Vec::new(),
+    }
 }
 
 pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (GraphPlan, Vec<GraphIssue>) {
@@ -543,6 +561,6 @@ pub fn compile(graph: &Graph, patch: &ResolvedPatch, groups: &[Group]) -> (Graph
 
     let uniform_order =
         order.iter().copied().filter(|&i| !nodes[i].varying && !matches!(nodes[i].kind, NodeKind::Output | NodeKind::Frame)).collect();
-    let midi_bindings = graph.nodes.iter().filter_map(midi_binding).collect();
+    let midi_bindings = graph.nodes.iter().flat_map(midi_bindings_of).collect();
     (GraphPlan { nodes, uniform_order, outputs, midi_bindings }, issues)
 }

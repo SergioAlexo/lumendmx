@@ -239,6 +239,7 @@ impl GraphRuntime {
         let node = &plan.nodes[idx];
         let a = self.read(plan, node.inputs.first().unwrap_or(&Source::Const([0.0; 3])))[0];
         let b = node.inputs.get(1).map_or(0.0, |s| self.read(plan, s)[0]);
+        let c = node.inputs.get(2).map_or(0.0, |s| self.read(plan, s)[0]);
         let tick = self.tick;
         let state = self.state.entry((node.id.clone(), ctx.key)).or_default();
         if state.tick == tick && state.started {
@@ -258,11 +259,12 @@ impl GraphRuntime {
                 m[0] = a;
                 out[0][0] = m[1];
             }
-            Config::Times { rise_ms, fall_ms } if node.kind == NodeKind::Smooth => {
+            Config::Smooth => {
                 if first {
                     m[0] = a;
                 }
-                let tau = if a > m[0] { *rise_ms } else { *fall_ms };
+                // b: attack ms, c: release ms.
+                let tau = if a > m[0] { b } else { c };
                 let alpha = if tau <= 0.0 { 1.0 } else { 1.0 - (-dt / tau).exp() };
                 m[0] += (a - m[0]) * alpha;
                 out[0][0] = m[0];
@@ -659,6 +661,28 @@ mod tests {
         assert_eq!(rig.channel("out", 1), 255.0);
         rig.at(1.5); // 250ms later: half way down
         assert_eq!(rig.channel("out", 1).round(), 128.0);
+    }
+
+    #[test]
+    fn a_smooths_times_can_be_driven_by_other_nodes() {
+        let run = |attack: f64| {
+            let graph = Graph {
+                nodes: vec![
+                    node("f", NodeKind::Fader, &[]),
+                    node("ms", NodeKind::Number, &[("value", ParamValue::Number(attack))]),
+                    node("smooth", NodeKind::Smooth, &[]),
+                    output("out"),
+                ],
+                edges: vec![edge("f", "value", "smooth", "value"), edge("ms", "value", "smooth", "attack"), edge("smooth", "value", "out", "intensity")],
+            };
+            let mut rig = Rig::new(&graph, 1);
+            rig.at(0.0);
+            rig.controls.insert("f".into(), 1.0);
+            rig.at(2.0); // 1000 ms later
+            rig.channel("out", 1).round()
+        };
+        assert_eq!(run(0.0), 255.0, "no attack: straight to the input");
+        assert_eq!(run(1000.0), 161.0, "1 - 1/e of the way after one time constant");
     }
 
     #[test]

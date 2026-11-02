@@ -58,7 +58,7 @@ Params:
 
 ### Fader (`fader`)
 
-A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it.
+A fader on the playback bar, 0-1. Bind it to a knob or fader on a MIDI controller (a CC) and the MIDI moves it. With only buttons, bind an Up and a Down button instead: while held they move it, taking Travel seconds to cross the whole range. Or bind one Sweep pad: held, it moves the fader, the opposite way to its last press.
 
 Outputs:
 - `value` Value (number)
@@ -68,6 +68,17 @@ Params:
 - `midi` MIDI: none / note / cc, default `none`
 - `midiChannel` MIDI channel: number 0 to 16, default 0
 - `midiNumber` MIDI number: number 0 to 127, default 0
+- `upMidi` Up button: none / note / cc, default `none`
+- `upChannel` Up channel: number 0 to 16, default 0
+- `upNumber` Up number: number 0 to 127, default 0
+- `downMidi` Down button: none / note / cc, default `none`
+- `downChannel` Down channel: number 0 to 16, default 0
+- `downNumber` Down number: number 0 to 127, default 0
+- `sweepMidi` Sweep pad: none / note / cc, default `none`
+- `sweepChannel` Sweep channel: number 0 to 16, default 0
+- `sweepNumber` Sweep number: number 0 to 127, default 0
+- `travel` Travel s: number 0.1 to 60, default 2
+- `travelVelocity` Travel follows velocity: on/off, default false
 
 ### Button (`button`)
 
@@ -194,17 +205,15 @@ Params:
 
 ### Smooth (`smooth`)
 
-Follows its input, taking Attack ms to rise and Release ms to fall.
+Follows its input, taking Attack ms to rise and Release ms to fall. Both times are inputs, so a fader (through a Map Range to milliseconds) can set them live.
 
 Inputs:
 - `value` Value (number, default 0)
+- `attack` Attack ms (number, default 50)
+- `release` Release ms (number, default 300)
 
 Outputs:
 - `value` Value (number)
-
-Params:
-- `attack` Attack ms: number 0 to 10000, default 50
-- `release` Release ms: number 0 to 10000, default 300
 
 ### Envelope (`envelope`)
 
