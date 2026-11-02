@@ -170,21 +170,25 @@ impl PlaybackRuntime {
     /// `intensity_scale` (see `intensity_scale`), applied at merge time so
     /// it also scales effects on intensity channels.
     pub fn render_values(&self) -> HashMap<ChannelKey, f32> {
-        let manual = self.fader_mode == FaderMode::Crossfade;
-        let mut out: HashMap<ChannelKey, f32> = self
-            .transitions
-            .iter()
-            .map(|(&key, t)| {
-                let p = if manual {
-                    self.fader
-                } else {
-                    ((self.elapsed_ms - t.delay_ms) / t.fade_ms).clamp(0.0, 1.0) as f32
-                };
-                (key, t.from + (t.to - t.from) * p)
-            })
-            .collect();
-        out.extend(self.marks.iter().map(|(&k, &v)| (k, v)));
+        let mut out = HashMap::with_capacity(self.transitions.len() + self.marks.len());
+        self.render_values_into(&mut out);
         out
+    }
+
+    /// `render_values` into an existing map, reusing its allocation (the
+    /// tick calls this for every playback, every frame).
+    pub fn render_values_into(&self, out: &mut HashMap<ChannelKey, f32>) {
+        let manual = self.fader_mode == FaderMode::Crossfade;
+        out.clear();
+        out.extend(self.transitions.iter().map(|(&key, t)| {
+            let p = if manual {
+                self.fader
+            } else {
+                ((self.elapsed_ms - t.delay_ms) / t.fade_ms).clamp(0.0, 1.0) as f32
+            };
+            (key, t.from + (t.to - t.from) * p)
+        }));
+        out.extend(self.marks.iter().map(|(&k, &v)| (k, v)));
     }
 
     /// What this playback's layer's HTP channels are multiplied by.

@@ -52,11 +52,12 @@ pub fn channel_sources(state: &EngineState, universe: u32, tracked: &TrackedChan
         }
     };
 
+    let htp = htp_mask(state, universe);
     let mut out = [ChannelSource::Default; UNIVERSE_SIZE];
     for (i, slot) in out.iter_mut().enumerate() {
         let channel = (i + 1) as u16;
         let key = (universe, channel);
-        let winner = if state.is_htp(universe, channel) {
+        let winner = if htp[i] {
             let mut best: Option<(f32, Option<&str>, &Layer)> = None;
             for (id, _, layer) in &layers {
                 if let Some(v) = layer.get(&key) {
@@ -129,23 +130,72 @@ fn channel_value(state: &EngineState, layers: &[(i64, &Layer)], key: ChannelKey,
     }
 }
 
+/// Which of `universe`'s channels are HTP, by 0-based index.
+fn htp_mask(state: &EngineState, universe: u32) -> [bool; UNIVERSE_SIZE] {
+    let mut mask = [false; UNIVERSE_SIZE];
+    if let Some(set) = state.htp_channels.get(&universe) {
+        for &channel in set {
+            if (1..=UNIVERSE_SIZE as u16).contains(&channel) {
+                mask[(channel - 1) as usize] = true;
+            }
+        }
+    }
+    mask
+}
+
+/// `channel_value` for a whole universe at once. Walks each layer's own
+/// entries (highest priority first) instead of looking all 512 channels up
+/// in every layer, which is what keeps the 44Hz tick cheap with many layers.
+fn merge_values(state: &EngineState, universe: u32, with_effects: bool, htp: &[bool; UNIVERSE_SIZE]) -> [f32; UNIVERSE_SIZE] {
+    let mut out = [0.0f32; UNIVERSE_SIZE];
+    let mut ltp_taken = [false; UNIVERSE_SIZE];
+    for (_, layer) in sorted_layers(state) {
+        let mut apply = |&(u, channel): &ChannelKey, value: f32| {
+            if u != universe || channel == 0 || channel as usize > UNIVERSE_SIZE {
+                return;
+            }
+            let i = (channel - 1) as usize;
+            if htp[i] {
+                out[i] = out[i].max(value * layer.intensity_scale);
+            } else if !ltp_taken[i] {
+                out[i] = value;
+                ltp_taken[i] = true;
+            }
+        };
+        // A layer's effect output wins over its own static value.
+        let fx = if with_effects && !layer.fx_values.is_empty() { Some(&layer.fx_values) } else { None };
+        if let Some(fx) = fx {
+            for (key, &value) in fx {
+                apply(key, value);
+            }
+        }
+        for (key, &value) in &layer.values {
+            if fx.is_some_and(|fx| fx.contains_key(key)) {
+                continue;
+            }
+            apply(key, value);
+        }
+    }
+    out
+}
+
 fn merge(state: &EngineState, universe: u32, with_effects: bool, output_stage: bool) -> [u8; UNIVERSE_SIZE] {
-    let layers = sorted_layers(state);
+    let htp = htp_mask(state, universe);
+    let values = merge_values(state, universe, with_effects, &htp);
 
     let mut out = [0u8; UNIVERSE_SIZE];
     for (i, slot) in out.iter_mut().enumerate() {
-        let channel = (i + 1) as u16;
-        let key = (universe, channel);
-        let mut value = channel_value(state, &layers, key, with_effects);
+        let mut value = values[i];
         if output_stage {
             if let Some(highlight) = &state.highlight {
+                let key = (universe, (i + 1) as u16);
                 if let Some(&lit) = highlight.lit.get(&key) {
                     value = lit;
                 } else if highlight.dimmed.contains(&key) {
                     value *= LOWLIGHT_SCALE;
                 }
             }
-            if state.is_htp(universe, channel) {
+            if htp[i] {
                 value *= state.grand_master;
             }
         }
@@ -288,6 +338,44 @@ mod tests {
         let out = merge_universe(&state, 1);
         assert_eq!(out[0], 125); // effect value, then scaled
         assert_eq!(out[1], 200); // LTP channel unscaled
+    }
+
+    #[test]
+    fn layer_walk_matches_the_per_channel_merge() {
+        let mut state = EngineState::new();
+        state.htp_channels.entry(1).or_default().extend([1, 4, 7, 300, 512]);
+        let mut seed = 12345u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            seed >> 8
+        };
+        for n in 0..6 {
+            let mut l = Layer::default();
+            for _ in 0..200 {
+                let universe = 1 + next() % 2;
+                let channel = (next() % 514) as u16; // includes out-of-range 0 and 513
+                l.values.insert((universe, channel), (next() % 256) as f32);
+                if next() % 4 == 0 {
+                    l.fx_values.insert((universe, channel), (next() % 256) as f32);
+                }
+            }
+            l.intensity_scale = (n as f32 + 1.0) / 6.0;
+            state.playbacks.insert(format!("pb{n}"), ((next() % 5) as i64, l));
+        }
+        state.programmer.values.insert((1, 4), 3.0);
+        state.programmer.values.insert((1, 9), 77.0);
+
+        let layers = sorted_layers(&state);
+        for universe in [1, 2, 3] {
+            let htp = htp_mask(&state, universe);
+            for with_effects in [true, false] {
+                let fast = merge_values(&state, universe, with_effects, &htp);
+                for (i, &value) in fast.iter().enumerate() {
+                    let slow = channel_value(&state, &layers, (universe, (i + 1) as u16), with_effects);
+                    assert_eq!(value, slow, "universe {universe} channel {} effects {with_effects}", i + 1);
+                }
+            }
+        }
     }
 
     #[test]

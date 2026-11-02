@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useUniverseChannelsStore } from "../store/useUniverseChannelsStore";
@@ -17,7 +17,9 @@ import { useVisualFixtures, type VisualFixture } from "../lib/visualisation/useV
 /** Resolves a design-system HSL token (e.g. `--background`) to a three.js colour. */
 function tokenColor(name: string, fallback: string): THREE.Color {
   try {
-    const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    // From <body>: the dark tokens live on `body.dark`, so reading <html>
+    // would get the light theme's values.
+    const raw = getComputedStyle(document.body).getPropertyValue(name).trim();
     const [h, s, l] = raw.split(/\s+/).map((v) => parseFloat(v));
     if ([h, s, l].every(Number.isFinite)) return new THREE.Color().setHSL(h / 360, s / 100, l / 100);
   } catch {
@@ -55,15 +57,17 @@ function FixtureNode({ fixture, position, selected }: FixtureNodeProps) {
   const stale = useRef(true);
   const length = Math.max(position.z, 0.5) * 1.1;
   const color = useMemo(() => new THREE.Color(), []);
+  const invalidate = useThree((s) => s.invalidate);
 
   // Re-render the look when the fixture itself changes (re-patched, moved, new height).
   useEffect(() => {
     stale.current = true;
-  }, [length, def, mode, instance]);
+    invalidate();
+  }, [length, def, mode, instance, invalidate]);
 
   useFrame(() => {
     const frame = useUniverseChannelsStore.getState().channels[instance.universe];
-    // Frames arrive at ~20Hz; skip the work on render frames in between.
+    // Several fixtures share a frame; skip the work when ours hasn't changed.
     if (frame === lastFrame.current && !stale.current) return;
     lastFrame.current = frame;
     stale.current = false;
@@ -169,12 +173,21 @@ function StageSet() {
   );
 }
 
+/** The canvas renders on demand: draw a frame whenever the engine output
+ * changes (camera moves and React updates invalidate on their own). */
+function InvalidateOnFrames() {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => useUniverseChannelsStore.subscribe(() => invalidate()), [invalidate]);
+  return null;
+}
+
 function Scene() {
   const fixtures = useVisualFixtures();
   const selected = useSelectionStore((s) => s.selected);
   const layout = useMemo(() => layoutFixtures(fixtures.map((f) => f.instance)), [fixtures]);
   return (
     <>
+      <InvalidateOnFrames />
       <StageSet />
       {fixtures.map((f) => {
         const entry = layout.get(f.instance.id);
@@ -218,7 +231,7 @@ export default function Visualizer3D() {
   return (
     <div className="relative h-full w-full">
       <WebGlBoundary>
-        <Canvas camera={{ position: [0, 6, STAGE_DEPTH_M + 4], fov: 50 }} dpr={[1, 2]} gl={{ antialias: true }}>
+        <Canvas frameloop="demand" camera={{ position: [0, 6, STAGE_DEPTH_M + 4], fov: 50 }} dpr={[1, 2]} gl={{ antialias: true }}>
           <color attach="background" args={[bg]} />
           <Scene />
         </Canvas>

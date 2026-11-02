@@ -7,7 +7,7 @@ use super::manager::{list_audio_inputs, TimingManager, TimingSettings, TimingSta
 use crate::engine::audio_reactive::AudioTrigger;
 use crate::io::midi::{self, MidiPortInfo};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn timing_status(timing: State<TimingManager>) -> TimingStatus {
     timing.status()
 }
@@ -18,17 +18,17 @@ pub fn timing_configure(timing: State<TimingManager>, settings: TimingSettings) 
     timing.status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn timing_list_audio_inputs() -> Vec<AudioDeviceInfo> {
     list_audio_inputs()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn timing_list_midi_inputs() -> Vec<MidiPortInfo> {
     midi::list_input_ports()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn timing_list_triggers(timing: State<TimingManager>) -> Vec<AudioTrigger> {
     timing.list_triggers()
 }

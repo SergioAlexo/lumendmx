@@ -5,7 +5,7 @@ import type { ConsoleStatus, CuelistDto, FaderMode, PlaybackStatus } from "../li
 import { Button } from "./ui/button";
 import { Select } from "./ui/input";
 import { VerticalFader } from "./ui/vertical-fader";
-import { cn } from "../lib/utils";
+import { cn, unlessEqual } from "../lib/utils";
 
 const POLL_MS = 250;
 /** Cuelists are created/edited in another tab and there's no change event,
@@ -225,10 +225,11 @@ export function PlaybackBar() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const refresh = () => {
-    void engineApi.listPlaybacks().then(setStatuses).catch(() => undefined);
-    void engineApi.consoleStatus().then(setConsole).catch(() => undefined);
+    void engineApi.listPlaybacks().then((s) => setStatuses(unlessEqual(s))).catch(() => undefined);
+    void engineApi.consoleStatus().then((s) => setConsole(unlessEqual<ConsoleStatus | null>(s))).catch(() => undefined);
   };
-  const refreshCuelists = () => void engineApi.listCuelists().then(setCuelists).catch(() => undefined);
+  const refreshCuelists = () =>
+    void engineApi.listCuelists().then((l) => setCuelists(unlessEqual(l))).catch(() => undefined);
 
   useEffect(() => {
     refresh();

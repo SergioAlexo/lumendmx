@@ -3,9 +3,9 @@ import * as engineApi from "../lib/engine";
 import * as timing from "../lib/timing";
 import type { TimingStatus } from "../lib/showfile/generated";
 import { Button } from "./ui/button";
-import { cn } from "../lib/utils";
+import { cn, unlessEqual } from "../lib/utils";
 
-const POLL_MS = 50;
+const POLL_MS = 250;
 const TIMING_POLL_MS = 500;
 /** The beat light stays lit for this fraction of each beat. */
 const BEAT_FLASH = 0.15;
@@ -19,24 +19,53 @@ export function TempoControl() {
   const [timingStatus, setTimingStatus] = useState<TimingStatus | null>(null);
 
   useEffect(() => {
-    const poll = () => void timing.timingStatus().then(setTimingStatus).catch(() => undefined);
+    const poll = () =>
+      void timing
+        .timingStatus()
+        .then((s) => setTimingStatus(unlessEqual<TimingStatus | null>(s)))
+        .catch(() => undefined);
     poll();
     const id = setInterval(poll, TIMING_POLL_MS);
     return () => clearInterval(id);
   }, []);
 
+  // The beat light runs off a local clock between polls: the last polled
+  // beat position, advanced at the beat rate measured across polls (which
+  // folds in the rate master), so it flashes on time without polling at
+  // animation rate.
   useEffect(() => {
+    let sync: { beat: number; at: number; perMs: number } | null = null;
+    let raf = 0;
     const poll = () =>
       void engineApi
         .tempoStatus()
         .then((status) => {
+          const at = performance.now();
+          const nominal = status.bpm / 60_000;
+          let perMs = nominal;
+          if (sync) {
+            const measured = (status.beat - sync.beat) / (at - sync.at);
+            // Ignore jumps (beat re-align, BPM change) and stalls.
+            if (measured > 0 && measured < nominal * 3) perMs = measured;
+          }
+          sync = { beat: status.beat, at, perMs };
           setBpm(status.bpm);
-          setOnBeat(status.beat % 1 < BEAT_FLASH);
         })
         .catch(() => undefined);
+    const frame = () => {
+      if (sync) {
+        const beat = sync.beat + (performance.now() - sync.at) * sync.perMs;
+        setOnBeat(beat % 1 < BEAT_FLASH);
+      }
+      raf = requestAnimationFrame(frame);
+    };
     poll();
     const id = setInterval(poll, POLL_MS);
-    return () => clearInterval(id);
+    raf = requestAnimationFrame(frame);
+    return () => {
+      clearInterval(id);
+      cancelAnimationFrame(raf);
+    };
   }, []);
 
   const commit = () => {

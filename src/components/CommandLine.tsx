@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as engineApi from "../lib/engine";
 import type { ConsoleStatus } from "../lib/engine";
-import { cn } from "../lib/utils";
+import { cn, unlessEqual } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -102,7 +102,8 @@ export function CommandLine() {
   const inputRef = useRef<HTMLInputElement>(null);
   const recall = useRef(-1);
 
-  const refreshStatus = () => void engineApi.consoleStatus().then(setStatus).catch(() => undefined);
+  const refreshStatus = () =>
+    void engineApi.consoleStatus().then((s) => setStatus(unlessEqual<ConsoleStatus | null>(s))).catch(() => undefined);
   useEffect(() => {
     refreshStatus();
     const id = setInterval(refreshStatus, STATUS_POLL_MS);

@@ -32,7 +32,9 @@ use crate::output::manager::OutputManager;
 use crate::output::UNIVERSE_SIZE;
 
 const TICK_HZ: f64 = 44.0;
-const DISPLAY_HZ: f64 = 20.0;
+const DISPLAY_HZ: f64 = 30.0;
+/// How often an unchanged frame is re-sent to the UI anyway.
+const DISPLAY_KEEPALIVE: Duration = Duration::from_secs(1);
 /// A cuelist marked `Override` gets a priority at least this high (below the
 /// programmer's `i64::MAX`), so it wins LTP over any standard/chase playback
 /// or legacy-asset layer regardless of trigger order.
@@ -415,15 +417,20 @@ impl TickShared {
                 pb.tick(dt_ms, cuelist, &presets);
                 let entry = state.playbacks.entry(key).or_insert_with(|| (pb.priority, Default::default()));
                 entry.0 = pb.priority;
-                entry.1.values = pb.render_values();
+                pb.render_values_into(&mut entry.1.values);
                 entry.1.effects = pb.effects();
                 entry.1.intensity_scale = pb.intensity_scale();
             }
 
             // Pixel maps (Phase 7) are playback layers too.
             let maps = self.pixel_maps.lock().unwrap();
-            let index: HashMap<u32, &PatchIndexEntry> = patch.iter().map(|e| (e.fixture_number, e)).collect();
-            for runtime in self.map_runtimes.lock().unwrap().iter_mut() {
+            let mut runtimes = self.map_runtimes.lock().unwrap();
+            let index: HashMap<u32, &PatchIndexEntry> = if runtimes.is_empty() {
+                HashMap::new()
+            } else {
+                patch.iter().map(|e| (e.fixture_number, e)).collect()
+            };
+            for runtime in runtimes.iter_mut() {
                 let key = pixel_map_layer_key(runtime.map_id);
                 let Some(map) = maps.get(runtime.map_id) else {
                     state.playbacks.remove(&key);
@@ -434,6 +441,7 @@ impl TickShared {
                 entry.1.values = pixelmap::frame_to_channels(map, &frame, &index, runtime.intensity);
                 entry.1.intensity_scale = runtime.intensity;
             }
+            drop(runtimes);
             drop(maps);
 
             render_layer_effects(&mut state, &patch, &presets, clock, &audio_mods);
@@ -567,6 +575,11 @@ impl EngineManager {
             let display_interval = Duration::from_secs_f64(1.0 / DISPLAY_HZ);
             let mut last_tick = Instant::now();
             let mut last_display = Instant::now();
+            // What the UI last got per universe, and when: unchanged frames
+            // aren't re-sent (so an idle show costs the UI nothing), except
+            // as a periodic keepalive for listeners that attached late.
+            let mut displayed: HashMap<u32, ([u8; UNIVERSE_SIZE], Instant)> = HashMap::new();
+            let output = app.state::<OutputManager>();
 
             loop {
                 let now = Instant::now();
@@ -575,11 +588,10 @@ impl EngineManager {
 
                 shared.advance(dt_ms);
 
-                let output = app.state::<OutputManager>();
                 let universe_ids = output.universe_ids();
                 let show_display = now.duration_since(last_display) >= display_interval;
 
-                for universe_id in universe_ids {
+                for &universe_id in &universe_ids {
                     let frame = {
                         let state = state.lock().unwrap();
                         merge_universe(&state, universe_id)
@@ -587,14 +599,21 @@ impl EngineManager {
                     let _ = output.set_universe_data(universe_id, frame);
 
                     if show_display {
-                        let _ = app.emit(
-                            "engine://universe-frame",
-                            EngineFrame { universe_id, channels: frame.to_vec() },
-                        );
+                        let stale = displayed.get(&universe_id).is_none_or(|(last, at)| {
+                            *last != frame || now.duration_since(*at) >= DISPLAY_KEEPALIVE
+                        });
+                        if stale {
+                            displayed.insert(universe_id, (frame, now));
+                            let _ = app.emit(
+                                "engine://universe-frame",
+                                EngineFrame { universe_id, channels: frame.to_vec() },
+                            );
+                        }
                     }
                 }
                 if show_display {
                     last_display = now;
+                    displayed.retain(|id, _| universe_ids.contains(id));
                 }
 
                 let elapsed = now.elapsed();
@@ -1766,11 +1785,13 @@ impl EngineManager {
     }
 
     fn with_playback<R>(&self, id: u32, f: impl FnOnce(&mut PlaybackRuntime, &Cuelist, &PresetStore) -> R) -> Result<R, String> {
+        // Lock order matches the tick (cues, presets, then cue_playbacks):
+        // taking cue_playbacks first deadlocked GO against a running tick.
+        let cues = self.cues.lock().unwrap();
+        let presets = self.presets.lock().unwrap();
         let mut playbacks = self.cue_playbacks.lock().unwrap();
         let pb = playbacks.iter_mut().find(|p| p.id == id).ok_or_else(|| format!("No playback {id}"))?;
-        let cues = self.cues.lock().unwrap();
         let list = cues.get(pb.cuelist_id).ok_or_else(|| format!("Cuelist {} is missing", pb.cuelist_id))?;
-        let presets = self.presets.lock().unwrap();
         pb.info = self.current_play_info();
         pb.rate_master = f32::from_bits(self.rate_master.load(Ordering::Relaxed));
         Ok(f(pb, list, &presets))
@@ -2057,6 +2078,44 @@ mod tests {
 
         assert!(engine.execute_command("PREV").ok);
         assert_eq!(engine.list_playbacks()[0].current_cue_number, Some(1.0));
+    }
+
+    /// GO used to lock `cue_playbacks` before `cues` — the reverse of the
+    /// tick — so pressing GO while the tick ran could hang both for good.
+    #[test]
+    fn go_racing_the_tick_does_not_deadlock() {
+        use std::sync::mpsc;
+        let engine = Arc::new(EngineManager::new());
+        engine.set_patch_index(vec![patched_fixture(1, 1, 1)]);
+        let list = engine.create_cuelist("List".to_string(), CuelistKind::Standard, true);
+        let fixtures: HashSet<u32> = [1].into();
+        engine.record_cue(list, 1.0, "Cue 1".to_string(), &fixtures, 0.0, 0.0).unwrap();
+        engine.record_cue(list, 2.0, "Cue 2".to_string(), &fixtures, 0.0, 0.0).unwrap();
+        let pb = engine.create_playback(list).unwrap();
+
+        // Both sides on their own threads, so a deadlock fails the test
+        // instead of hanging it.
+        let (tx, rx) = mpsc::channel();
+        let (ticker, done) = (engine.clone(), tx.clone());
+        thread::spawn(move || {
+            for _ in 0..20_000 {
+                ticker.step(1.0);
+            }
+            done.send(()).unwrap();
+        });
+        thread::spawn(move || {
+            for i in 0..20_000 {
+                if i % 2 == 0 {
+                    engine.playback_go(pb).unwrap();
+                } else {
+                    engine.playback_go_back(pb).unwrap();
+                }
+            }
+            tx.send(()).unwrap();
+        });
+        for _ in 0..2 {
+            rx.recv_timeout(Duration::from_secs(30)).expect("GO deadlocked against the tick");
+        }
     }
 
     #[test]

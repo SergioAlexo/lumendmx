@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Trash2, X } from "lucide-react";
 import * as engineApi from "../lib/engine";
 import { useDmxStore } from "../store/useDmxStore";
@@ -84,15 +85,21 @@ function nextFreeAddress(fixtures: PatchedFixture[], allFixtures: FixtureDefinit
  * state, so the grid tile's color and the detail sliders can never drift from
  * what's actually being sent to the fixture. */
 function useFixtureChannelValues(instance: PatchedFixture, mode: FixtureMode | undefined) {
-  const channels = useUniverseChannelsStore((s) => s.channels[instance.universe]);
-  const values: Record<number, number> = {};
-  if (!mode) return values;
-  for (const ch of mode.channels) {
-    // address and offset are both 1-based, so this is the 0-based frame index.
-    const idx = instance.address + ch.offset - 2;
-    values[ch.offset] = idx >= 0 && channels && idx < channels.length ? channels[idx] : 0;
-  }
-  return values;
+  // Shallow-compared, so a tile only re-renders when one of its own channels
+  // changes, not on every frame of its universe.
+  return useUniverseChannelsStore(
+    useShallow((s) => {
+      const channels = s.channels[instance.universe];
+      const values: Record<number, number> = {};
+      if (!mode) return values;
+      for (const ch of mode.channels) {
+        // address and offset are both 1-based, so this is the 0-based frame index.
+        const idx = instance.address + ch.offset - 2;
+        values[ch.offset] = idx >= 0 && channels && idx < channels.length ? channels[idx] : 0;
+      }
+      return values;
+    }),
+  );
 }
 
 /** Approximates what the fixture is actually outputting right now, like a lighting

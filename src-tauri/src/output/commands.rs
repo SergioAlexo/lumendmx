@@ -19,7 +19,7 @@ pub struct SerialPortDescriptor {
     pub label: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_serial_ports() -> Result<Vec<SerialPortDescriptor>, String> {
     serialport::available_ports()
         .map(|ports| {
@@ -83,17 +83,17 @@ pub fn output_update_universe_data(
     manager.set_universe_data(universe_id, data)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_get_universe_data(manager: State<OutputManager>, universe_id: u32) -> Result<Vec<u8>, String> {
     manager.get_universe_data(universe_id).map(|d| d.to_vec())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_universe_status(manager: State<OutputManager>, universe_id: u32) -> Option<UniverseStatus> {
     manager.status(universe_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_all_statuses(manager: State<OutputManager>) -> Vec<UniverseStatus> {
     manager.all_statuses()
 }
@@ -107,14 +107,14 @@ pub fn output_set_blackout(manager: State<OutputManager>, active: bool) -> Resul
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_get_blackout(manager: State<OutputManager>) -> bool {
     manager.get_blackout()
 }
 
 /// The driver config a universe is currently running, if any (e.g. to
 /// prefill the Setup screen's edit form for it).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_get_universe_config(manager: State<OutputManager>, universe_id: u32) -> Option<DriverConfig> {
     manager.driver_config(universe_id)
 }
@@ -156,7 +156,7 @@ pub struct ArtNetNode {
 /// Broadcasts an ArtPoll and collects replies for ~2s. Best-effort discovery
 /// for the Setup screen; real interop still needs an on-network check (see
 /// HARDWARE_CHECKS.md).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn output_discover_artnet_nodes() -> Result<Vec<ArtNetNode>, String> {
     let nodes = artnet::discover_nodes(Duration::from_secs(2))?;
     Ok(nodes
@@ -177,7 +177,7 @@ pub fn input_start_artnet(manager: State<DmxInputManager>) -> Result<(), String>
     manager.start_artnet_listener()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn input_get_artnet_frame(
     manager: State<DmxInputManager>,
     net: u8,
@@ -197,7 +197,7 @@ pub fn input_stop_sacn(manager: State<DmxInputManager>, universe: u16) {
     manager.stop_sacn_listener(universe);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn input_get_sacn_frame(manager: State<DmxInputManager>, universe: u16) -> Option<Vec<u8>> {
     manager.sacn_frame(universe).map(|d| d.to_vec())
 }

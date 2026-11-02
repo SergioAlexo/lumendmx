@@ -10,7 +10,7 @@ import { useVisualFixtures } from "../lib/visualisation/useVisualFixtures";
 import type { ChannelType } from "../lib/fixtures/types";
 
 /** How often the winning-source map is re-queried from the engine. Values
- * themselves arrive with the ~20Hz frame event; sources change rarely. */
+ * themselves arrive with the engine's frame event; sources change rarely. */
 const SOURCE_POLL_MS = 250;
 
 const COLUMN_ORDER: ChannelType[] = [
@@ -24,6 +24,16 @@ function columnRank(type: ChannelType): number {
   return i === -1 ? COLUMN_ORDER.length : i;
 }
 
+function sameSources(a: Record<number, number[]>, b: Record<number, number[]>): boolean {
+  const keys = Object.keys(b);
+  if (Object.keys(a).length !== keys.length) return false;
+  return keys.every((k) => {
+    const x = a[Number(k)];
+    const y = b[Number(k)];
+    return x !== undefined && x.length === y.length && x.every((v, i) => v === y[i]);
+  });
+}
+
 /** Polls the engine for each universe's per-channel winning source. */
 function useUniverseSources(universes: number[]): Record<number, number[]> {
   const [sources, setSources] = useState<Record<number, number[]>>({});
@@ -34,7 +44,10 @@ function useUniverseSources(universes: number[]): Record<number, number[]> {
     const poll = async () => {
       try {
         const entries = await Promise.all(ids.map(async (id) => [id, await engineApi.getUniverseSources(id)] as const));
-        if (!cancelled) setSources(Object.fromEntries(entries));
+        if (cancelled) return;
+        const next: Record<number, number[]> = Object.fromEntries(entries);
+        // Sources rarely change: keep the old object so the table doesn't re-render.
+        setSources((prev) => (sameSources(prev, next) ? prev : next));
       } catch {
         // Outside the Tauri runtime (browser preview) there is no engine: every cell stays "default".
       }
